@@ -1,7 +1,25 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { obtenerPedidosFollowUp } from '../services/api';
+import {
+  agregarNotaCliente,
+  actualizarEstadoCliente,
+  obtenerNotasCliente,
+  obtenerPedidosFollowUp,
+} from '../services/api';
 
 const TASK_STATUS_STORAGE_KEY = 'velinne_followup_task_status_v1';
+const CUSTOMER_STATES = [
+  { value: 'happy', label: 'Happy' },
+  { value: 'neutral', label: 'Neutral' },
+  { value: 'issue', label: 'Issue' },
+  { value: 'repeat', label: 'Repeat' },
+];
+
+const CUSTOMER_STATE_META = {
+  happy: { label: 'Feliz', className: 'state-happy' },
+  neutral: { label: 'Neutral', className: 'state-neutral' },
+  issue: { label: 'Problema', className: 'state-issue' },
+  repeat: { label: 'Recurrente', className: 'state-repeat' },
+};
 
 function getTodayIso() {
   return new Date().toISOString().slice(0, 10);
@@ -38,6 +56,18 @@ function formatDate(iso) {
   return d.toLocaleDateString('es-UY');
 }
 
+function formatDateTime(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '-';
+  return d.toLocaleString('es-UY', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 function renderTemplate(templateBody, pedido) {
   const vars = {
     cliente_nombre: pedido.cliente_nombre || 'cliente',
@@ -55,6 +85,11 @@ function renderTemplate(templateBody, pedido) {
 function buildTaskScopeKey({ days, fromDate, toDate, estadoFiltro }) {
   const estado = estadoFiltro || 'default_finalizados';
   return `${days}|${fromDate}|${toDate}|${estado}`;
+}
+
+function getCustomerStateMeta(state) {
+  const key = String(state || 'neutral').toLowerCase();
+  return CUSTOMER_STATE_META[key] || CUSTOMER_STATE_META.neutral;
 }
 
 function FollowUpPanel({
@@ -76,6 +111,18 @@ function FollowUpPanel({
   const [showOnlyWithWhatsApp, setShowOnlyWithWhatsApp] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [estadoListaFiltro, setEstadoListaFiltro] = useState('');
+  const [customerStateFilter, setCustomerStateFilter] = useState('');
+  const [notesPanel, setNotesPanel] = useState({
+    open: false,
+    customerId: '',
+    customerName: '',
+    customerEmail: '',
+    orderNumber: '',
+    orderAge: '',
+    notes: [],
+    loading: false,
+    draft: '',
+  });
 
   useEffect(() => {
     try {
@@ -166,6 +213,11 @@ function FollowUpPanel({
       const matchEstado = !estadoListaFiltro || String(p.estado || '') === estadoListaFiltro;
       if (!matchEstado) return false;
 
+      const matchCustomerState =
+        !customerStateFilter ||
+        String(p.customer_state || 'neutral').toLowerCase() === customerStateFilter;
+      if (!matchCustomerState) return false;
+
       if (!query) return true;
 
       const text = [
@@ -181,7 +233,7 @@ function FollowUpPanel({
 
       return text.includes(query);
     });
-  }, [pedidosFiltrados, searchTerm, estadoListaFiltro]);
+  }, [pedidosFiltrados, searchTerm, estadoListaFiltro, customerStateFilter]);
 
   const resumen = useMemo(() => {
     const conTelefono = pedidosFiltradosLista.filter((p) => normalizePhoneForWa(p.cliente_telefono)).length;
@@ -191,6 +243,8 @@ function FollowUpPanel({
 
   const sentCount = pedidosFiltradosLista.filter((p) => isPedidoSent(p.id)).length;
   const pendingCount = pedidosFiltradosLista.length - sentCount;
+  const waPercent = resumen.total > 0 ? Math.round((resumen.conTelefono / resumen.total) * 100) : 0;
+  const noWaPercent = resumen.total > 0 ? Math.round((resumen.sinTelefono / resumen.total) * 100) : 0;
 
   const previewPedido = pedidos[0] || null;
   const previewTexto = previewPedido ? renderTemplate(activeTemplate?.body, previewPedido) : '';
@@ -214,6 +268,103 @@ function FollowUpPanel({
       mostrarToast?.(error.message || 'Error cargando follow-up', 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const actualizarEstadoClienteEnLista = (customerId, state) => {
+    setPedidos((prev) => prev.map((p) => (
+      p.customer_id === customerId
+        ? { ...p, customer_state: state }
+        : p
+    )));
+  };
+
+  const handleCambiarEstadoCliente = async (pedido, state) => {
+    const customerId = pedido.customer_id;
+    if (!customerId) return;
+
+    const prevState = String(pedido.customer_state || 'neutral');
+    if (prevState === state) return;
+
+    actualizarEstadoClienteEnLista(customerId, state);
+    try {
+      const result = await actualizarEstadoCliente(customerId, state);
+      if (!result.success) {
+        throw new Error(result.error || 'No se pudo actualizar estado');
+      }
+      mostrarToast?.(`Estado actualizado: ${state}`, 'success');
+    } catch (error) {
+      actualizarEstadoClienteEnLista(customerId, prevState);
+      mostrarToast?.(error.message || 'Error actualizando estado del cliente', 'error');
+    }
+  };
+
+  const openNotes = async (pedido) => {
+    const customerId = pedido.customer_id;
+    if (!customerId) {
+      mostrarToast?.('No se pudo identificar al cliente para notas', 'warning');
+      return;
+    }
+
+    setNotesPanel({
+      open: true,
+      customerId,
+      customerName: pedido.cliente_nombre || 'Cliente',
+      customerEmail: pedido.cliente_email || '',
+      orderNumber: pedido.numero_pedido || pedido.id,
+      orderAge: pedido.followup_days_elapsed ?? '',
+      notes: [],
+      loading: true,
+      draft: '',
+    });
+
+    try {
+      const result = await obtenerNotasCliente(customerId);
+      if (!result.success) {
+        throw new Error(result.error || 'No se pudieron cargar notas');
+      }
+      setNotesPanel((prev) => ({ ...prev, notes: result.data || [], loading: false }));
+    } catch (error) {
+      setNotesPanel((prev) => ({ ...prev, loading: false }));
+      mostrarToast?.(error.message || 'Error cargando notas', 'error');
+    }
+  };
+
+  const closeNotes = () => {
+    setNotesPanel({
+      open: false,
+      customerId: '',
+      customerName: '',
+      customerEmail: '',
+      orderNumber: '',
+      orderAge: '',
+      notes: [],
+      loading: false,
+      draft: '',
+    });
+  };
+
+  const handleAgregarNota = async () => {
+    const customerId = notesPanel.customerId;
+    const content = String(notesPanel.draft || '').trim();
+    if (!customerId || !content) return;
+
+    setNotesPanel((prev) => ({ ...prev, loading: true }));
+    try {
+      const result = await agregarNotaCliente(customerId, content);
+      if (!result.success) {
+        throw new Error(result.error || 'No se pudo guardar la nota');
+      }
+      setNotesPanel((prev) => ({
+        ...prev,
+        draft: '',
+        loading: false,
+        notes: [result.data, ...prev.notes],
+      }));
+      mostrarToast?.('Nota guardada', 'success');
+    } catch (error) {
+      setNotesPanel((prev) => ({ ...prev, loading: false }));
+      mostrarToast?.(error.message || 'Error guardando nota', 'error');
     }
   };
 
@@ -270,11 +421,35 @@ function FollowUpPanel({
       </div>
 
       <div className="followup-v2-statsbar">
-        <span className="followup-v2-pill">📅 Hoy: {getTodayLabel()}</span>
-        <span className="followup-v2-divider">|</span>
-        <span className="followup-v2-pill">👥 Total clientes: {resumen.total}</span>
-        <span className="followup-v2-pill is-pending">📌 Pendientes: {pendingCount}</span>
-        <span className="followup-v2-pill is-sent">✅ Hechos: {sentCount}</span>
+        <div className="followup-stat-card">
+          <span className="followup-stat-label">📅 Hoy</span>
+          <strong>{getTodayLabel()}</strong>
+        </div>
+        <div className="followup-stat-card">
+          <span className="followup-stat-label">👥 Total</span>
+          <strong>{resumen.total}</strong>
+          <small>Cargados hoy</small>
+        </div>
+        <div className="followup-stat-card">
+          <span className="followup-stat-label">🟢 Con WhatsApp</span>
+          <strong>{resumen.conTelefono}</strong>
+          <small>{waPercent}% del total</small>
+        </div>
+        <div className="followup-stat-card">
+          <span className="followup-stat-label">⚪ Sin Telefono</span>
+          <strong>{resumen.sinTelefono}</strong>
+          <small>{noWaPercent}% del total</small>
+        </div>
+        <div className="followup-stat-card is-pending">
+          <span className="followup-stat-label">📌 Pendientes</span>
+          <strong>{pendingCount}</strong>
+          <small>Por contactar</small>
+        </div>
+        <div className="followup-stat-card is-sent">
+          <span className="followup-stat-label">✅ Hechos</span>
+          <strong>{sentCount}</strong>
+          <small>Completados</small>
+        </div>
       </div>
 
       <div className="followup-v2-grid">
@@ -282,7 +457,7 @@ function FollowUpPanel({
           <div className="module-panel followup-step-panel">
             <div className="followup-step-header">
               <div>
-                <h3>1. Configuracion</h3>
+                <h3><span className="followup-section-icon">◉</span>1. Configuracion</h3>
                 <p>Defini el segmento diario de clientes a contactar</p>
               </div>
             </div>
@@ -359,7 +534,7 @@ function FollowUpPanel({
 
           <div className="module-panel followup-step-panel">
             <div className="followup-template-header">
-              <h3>2. Plantilla del mensaje</h3>
+              <h3><span className="followup-section-icon">✎</span>2. Plantilla del mensaje</h3>
               <button type="button" className="btn btn-secondary btn-sm" onClick={onOpenTemplateManager}>
                 Gestionar plantillas
               </button>
@@ -416,7 +591,7 @@ function FollowUpPanel({
           <div className="table-container followup-v2-exec">
             <div className="followup-v2-exec-header">
               <div>
-                <h3>3. Ejecucion</h3>
+                <h3><span className="followup-section-icon">☍</span>3. Ejecucion</h3>
                 <p>Revisa la lista y envia los mensajes por WhatsApp</p>
               </div>
               <button type="button" className="btn btn-secondary btn-sm">
@@ -426,7 +601,10 @@ function FollowUpPanel({
 
             <div className="followup-v2-subheader">
               <div className="followup-v2-subheader-top">
-                <strong>Clientes para hoy ({pedidosFiltradosLista.length})</strong>
+                <div className="followup-exec-title">
+                  <strong>Clientes para contactar hoy</strong>
+                  <span className="followup-count-pill">{pedidosFiltradosLista.length} clientes</span>
+                </div>
                 <button type="button" className="btn btn-secondary btn-sm">Filtrar</button>
               </div>
 
@@ -446,6 +624,16 @@ function FollowUpPanel({
                   <option value="">Todos los estados</option>
                   {estadosDisponibles.map((estado) => (
                     <option key={estado} value={estado}>{estado}</option>
+                  ))}
+                </select>
+                <select
+                  className="module-input followup-inline-select"
+                  value={customerStateFilter}
+                  onChange={(e) => setCustomerStateFilter(e.target.value)}
+                >
+                  <option value="">Todos los estados CX</option>
+                  {CUSTOMER_STATES.map((st) => (
+                    <option key={st.value} value={st.value}>{st.label}</option>
                   ))}
                 </select>
                 <label className="followup-switch">
@@ -520,6 +708,7 @@ function FollowUpPanel({
                     pedidosFiltradosLista.map((pedido) => {
                       const tieneTelefono = Boolean(normalizePhoneForWa(pedido.cliente_telefono));
                       const sent = isPedidoSent(pedido.id);
+                      const customerStateMeta = getCustomerStateMeta(pedido.customer_state);
                       return (
                         <tr key={pedido.id}>
                           <td>
@@ -539,8 +728,19 @@ function FollowUpPanel({
                             </div>
                           </td>
                           <td>{pedido.followup_days_elapsed ?? '-'}</td>
-                          <td>{pedido.cliente_telefono ? `🟢 ${pedido.cliente_telefono}` : '-'}</td>
-                          <td>{pedido.estado || '-'}</td>
+                          <td>
+                            <span className={`followup-phone-cell ${tieneTelefono ? 'is-valid' : 'is-empty'}`}>
+                              {pedido.cliente_telefono || 'Sin WhatsApp'}
+                            </span>
+                          </td>
+                          <td>
+                            <div className="followup-order-state-cell">
+                              <span>{pedido.estado || '-'}</span>
+                              <span className={`customer-state-badge ${customerStateMeta.className}`}>
+                                {customerStateMeta.label}
+                              </span>
+                            </div>
+                          </td>
                           <td>
                             <span className={`followup-task-chip ${sent ? 'is-sent' : 'is-pending'}`}>
                               {sent ? 'Enviado' : 'Pendiente'}
@@ -557,16 +757,24 @@ function FollowUpPanel({
                               >
                                 Abrir WhatsApp
                               </button>
-                              {sent && (
-                                <button
-                                  type="button"
-                                  className="btn btn-secondary btn-sm"
-                                  onClick={() => marcarEstadoPedido(pedido.id, false)}
-                                  title="Volver a pendiente"
-                                >
-                                  Pendiente
-                                </button>
-                              )}
+                              <details className="followup-actions-menu">
+                                <summary className="btn btn-secondary btn-sm">Acciones</summary>
+                                <div className="followup-actions-popover">
+                                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleCambiarEstadoCliente(pedido, 'happy')}>Marcar como Feliz</button>
+                                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleCambiarEstadoCliente(pedido, 'neutral')}>Marcar como Neutral</button>
+                                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleCambiarEstadoCliente(pedido, 'issue')}>Marcar como Problema</button>
+                                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleCambiarEstadoCliente(pedido, 'repeat')}>Marcar como Recurrente</button>
+                                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => openNotes(pedido)}>Agregar Nota</button>
+                                </div>
+                              </details>
+                              <button
+                                type="button"
+                                className={`followup-done-toggle ${sent ? 'is-sent' : ''}`}
+                                onClick={() => marcarEstadoPedido(pedido.id, !sent)}
+                                title={sent ? 'Marcar como pendiente' : 'Marcar como hecho'}
+                              >
+                                {sent ? '✓' : '○'}
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -579,6 +787,53 @@ function FollowUpPanel({
           </div>
         </section>
       </div>
+
+      {notesPanel.open && (
+        <div className="customer-notes-overlay" onClick={closeNotes}>
+          <div className="customer-notes-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="customer-notes-header">
+              <div>
+                <h4>Notas de {notesPanel.customerName}</h4>
+                <p>{notesPanel.customerEmail || 'Sin email'}{notesPanel.orderNumber ? ` · #${notesPanel.orderNumber}` : ''}{String(notesPanel.orderAge) ? ` · Hace ${notesPanel.orderAge} dias` : ''}</p>
+              </div>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={closeNotes}>Cerrar</button>
+            </div>
+
+            <div className="customer-notes-list">
+              {notesPanel.loading ? (
+                <div className="customer-notes-empty">Cargando notas...</div>
+              ) : notesPanel.notes.length === 0 ? (
+                <div className="customer-notes-empty">Sin notas todavia</div>
+              ) : (
+                notesPanel.notes.map((note) => (
+                  <div key={note.id} className="customer-note-item">
+                    <div className="customer-note-date">{formatDateTime(note.created_at)}</div>
+                    <div className="customer-note-content">{note.content}</div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="customer-notes-inputs">
+              <textarea
+                className="module-input"
+                rows={3}
+                placeholder="Agregar nota interna..."
+                value={notesPanel.draft}
+                onChange={(e) => setNotesPanel((prev) => ({ ...prev, draft: e.target.value }))}
+              />
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleAgregarNota}
+                disabled={notesPanel.loading || !String(notesPanel.draft || '').trim()}
+              >
+                Guardar nota
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

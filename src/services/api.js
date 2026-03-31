@@ -126,6 +126,26 @@ export async function obtenerPedidosFollowUp({ days = 15, from = '', to = '', es
   return await fetchAPI(`/followup/pedidos?${params.toString()}`, { method: 'GET' });
 }
 
+export async function actualizarEstadoCliente(customerId, state) {
+  return await fetchAPI(`/customers/${encodeURIComponent(customerId)}/state`, {
+    method: 'PATCH',
+    body: JSON.stringify({ state }),
+  });
+}
+
+export async function obtenerNotasCliente(customerId) {
+  return await fetchAPI(`/customers/${encodeURIComponent(customerId)}/notes`, {
+    method: 'GET',
+  });
+}
+
+export async function agregarNotaCliente(customerId, content) {
+  return await fetchAPI(`/customers/${encodeURIComponent(customerId)}/notes`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  });
+}
+
 /**
  * Obtener datos de un pedido específico
  */

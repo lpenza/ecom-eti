@@ -281,6 +281,34 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
   const getPedidoLabel = (pedidoItem) => pedidoItem.numero_pedido || pedidoItem.id?.substring(0, 8);
   const isPedidoChecked = (pedidoId) => !!formsByPedidoId[pedidoId]?.checked;
   const isPedidoLoaded = (pedidoId) => !!previewByPedidoId[pedidoId]?.data;
+  const getPedidoSidebarStatus = (pedidoId) => {
+    const checked = isPedidoChecked(pedidoId);
+    const loaded = isPedidoLoaded(pedidoId);
+    const itemValidation = getFormValidation(formsByPedidoId[pedidoId]);
+
+    if (checked) return { label: 'Revisado', tone: 'ok' };
+    if (!loaded) return { label: 'Cargando', tone: 'loading' };
+    if (itemValidation.blockers.length > 0) return { label: 'Error', tone: 'error' };
+    if (itemValidation.warnings.length > 0) return { label: 'Advertencia', tone: 'warn' };
+    return { label: 'Pendiente', tone: 'pending' };
+  };
+
+  const sidebarSummary = useMemo(() => {
+    const summary = {
+      ok: 0,
+      pending: 0,
+      warn: 0,
+      error: 0,
+      loading: 0,
+    };
+
+    pedidos.forEach((pedidoItem) => {
+      const tone = getPedidoSidebarStatus(pedidoItem.id).tone;
+      summary[tone] = (summary[tone] || 0) + 1;
+    });
+
+    return summary;
+  }, [pedidos, formsByPedidoId, previewByPedidoId]);
 
   const handleMarkOkAndNext = () => {
     if (!currentPedido || !canMarkCurrent) return;
@@ -326,16 +354,22 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
         </div>
         
         <div className="modal-body">
-          <div className={`preview-layout ${isBatch ? 'preview-layout-batch' : ''}`}>
-            {isBatch && (
-              <aside className="preview-sidebar">
-                <h4>Pedidos</h4>
+          <div className="preview-layout">
+            <aside className="preview-sidebar">
+              <h4>{isBatch ? 'Pedidos' : 'Resumen'}</h4>
+              <div className="preview-sidebar-summary">
+                <span className="preview-sidebar-summary-pill ok">Revisados: {sidebarSummary.ok}</span>
+                <span className="preview-sidebar-summary-pill pending">Pendientes: {sidebarSummary.pending}</span>
+                <span className="preview-sidebar-summary-pill error">Errores: {sidebarSummary.error}</span>
+                {sidebarSummary.warn > 0 && (
+                  <span className="preview-sidebar-summary-pill warn">Advertencias: {sidebarSummary.warn}</span>
+                )}
+              </div>
+              {isBatch ? (
                 <div className="preview-sidebar-list">
                   {pedidos.map((pedidoItem, index) => {
                     const active = index === currentIndex;
-                    const checked = isPedidoChecked(pedidoItem.id);
-                    const loaded = isPedidoLoaded(pedidoItem.id);
-                    const itemValidation = getFormValidation(formsByPedidoId[pedidoItem.id]);
+                    const status = getPedidoSidebarStatus(pedidoItem.id);
 
                     return (
                       <button
@@ -344,23 +378,35 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                         onClick={() => setCurrentIndex(index)}
                       >
                         <span className="preview-sidebar-item-main">#{getPedidoLabel(pedidoItem)}</span>
-                        <span className={`preview-sidebar-item-status ${checked ? 'ok' : 'pending'}`}>
-                          {checked
-                            ? 'Revisado'
-                            : !loaded
-                              ? 'Cargando'
-                              : itemValidation.blockers.length > 0
-                                ? 'Error'
-                                : itemValidation.warnings.length > 0
-                                  ? 'Advertencia'
-                                  : 'Pendiente'}
+                        <span className={`preview-sidebar-item-status ${status.tone}`}>
+                          {status.label}
                         </span>
                       </button>
                     );
                   })}
                 </div>
-              </aside>
-            )}
+              ) : (
+                <div className="preview-sidebar-single">
+                  <div className="preview-sidebar-single-row">
+                    <span>Orden</span>
+                    <strong>#{getPedidoLabel(currentPedido)}</strong>
+                  </div>
+                  <div className="preview-sidebar-single-row">
+                    <span>Cliente</span>
+                    <strong>{currentPedido.cliente_nombre || 'Sin nombre'}</strong>
+                  </div>
+                  <div className="preview-sidebar-single-row">
+                    <span>Estado</span>
+                    <span className={`preview-sidebar-item-status ${getPedidoSidebarStatus(currentPedido.id).tone}`}>
+                      {getPedidoSidebarStatus(currentPedido.id).label}
+                    </span>
+                  </div>
+                  <div className="preview-sidebar-single-note">
+                    Revisa y ajusta los datos antes de generar la etiqueta.
+                  </div>
+                </div>
+              )}
+            </aside>
 
             <div className="preview-content">
           <div className={`preview-validation-banner ${currentValidation.blockers.length > 0 ? 'error' : currentValidation.warnings.length > 0 ? 'warn' : 'ok'}`}>

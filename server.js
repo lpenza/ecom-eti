@@ -339,9 +339,11 @@ app.get('/api/followup/pedidos', async (req, res) => {
       followUpDate.setDate(followUpDate.getDate() + days);
 
       const diasTranscurridos = Math.floor((ahora - baseDate) / (1000 * 60 * 60 * 24));
+      const customerId = supabaseService.buildCustomerKey(pedido);
 
       return {
         ...pedido,
+        customer_id: customerId,
         followup_base_date: baseDate.toISOString(),
         followup_target_date: followUpDate.toISOString(),
         followup_days_elapsed: diasTranscurridos,
@@ -355,16 +357,84 @@ app.get('/api/followup/pedidos', async (req, res) => {
       return true;
     });
 
+    const customerIds = filtrados.map((p) => p.customer_id);
+    const statesByCustomer = await supabaseService.obtenerEstadosClientes(customerIds);
+
+    const withState = filtrados.map((pedido) => {
+      const persistedState = statesByCustomer[pedido.customer_id]?.state;
+      return {
+        ...pedido,
+        customer_state: persistedState || 'neutral',
+      };
+    });
+
     res.json({
       success: true,
       days,
       estado: estado || null,
-      count: filtrados.length,
-      data: filtrados,
+      count: withState.length,
+      data: withState,
     });
   } catch (error) {
     logService.error('Error en follow-up diario', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+const VALID_CUSTOMER_STATES = new Set(['happy', 'neutral', 'issue', 'repeat']);
+
+app.patch('/api/customers/:customerId/state', async (req, res) => {
+  try {
+    const customerId = String(req.params.customerId || '').trim();
+    const state = String(req.body?.state || '').trim().toLowerCase();
+
+    if (!customerId) {
+      return res.status(400).json({ success: false, error: 'customerId requerido' });
+    }
+    if (!VALID_CUSTOMER_STATES.has(state)) {
+      return res.status(400).json({ success: false, error: 'Estado invalido' });
+    }
+
+    const saved = await supabaseService.guardarEstadoCliente(customerId, state);
+    return res.json({ success: true, data: saved });
+  } catch (error) {
+    logService.error('Error guardando estado de cliente', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/customers/:customerId/notes', async (req, res) => {
+  try {
+    const customerId = String(req.params.customerId || '').trim();
+    if (!customerId) {
+      return res.status(400).json({ success: false, error: 'customerId requerido' });
+    }
+
+    const notes = await supabaseService.obtenerNotasCliente(customerId);
+    return res.json({ success: true, count: notes.length, data: notes });
+  } catch (error) {
+    logService.error('Error obteniendo notas de cliente', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/customers/:customerId/notes', async (req, res) => {
+  try {
+    const customerId = String(req.params.customerId || '').trim();
+    const content = String(req.body?.content || '').trim();
+
+    if (!customerId) {
+      return res.status(400).json({ success: false, error: 'customerId requerido' });
+    }
+    if (!content) {
+      return res.status(400).json({ success: false, error: 'Contenido requerido' });
+    }
+
+    const note = await supabaseService.agregarNotaCliente(customerId, content);
+    return res.status(201).json({ success: true, data: note });
+  } catch (error) {
+    logService.error('Error agregando nota de cliente', error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 

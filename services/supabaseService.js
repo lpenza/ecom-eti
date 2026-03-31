@@ -53,7 +53,90 @@ function normalizeText(value) {
     .toLowerCase();
 }
 
+function normalizePhoneDigits(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function normalizeEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function levenshteinDistance(a, b) {
+  const s = String(a || '');
+  const t = String(b || '');
+  const m = s.length;
+  const n = t.length;
+
+  if (m === 0) return n;
+  if (n === 0) return m;
+
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+
+  for (let i = 0; i <= m; i += 1) dp[i][0] = i;
+  for (let j = 0; j <= n; j += 1) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i += 1) {
+    for (let j = 1; j <= n; j += 1) {
+      const cost = s[i - 1] === t[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+
+  return dp[m][n];
+}
+
+function findBestLocalidadMatch(localidadKey, candidates, maxDistance = 2) {
+  if (!Array.isArray(candidates) || candidates.length === 0) return null;
+
+  let best = null;
+
+  for (const candidate of candidates) {
+    const candidateName = String(candidate?.nombre || candidate?.localidad_nombre || '').trim();
+    if (!candidateName) continue;
+
+    const distance = levenshteinDistance(localidadKey, normalizeText(candidateName));
+    if (!best || distance < best.distance) {
+      best = { candidate, distance };
+      if (distance === 0) break;
+    }
+  }
+
+  if (!best || best.distance > maxDistance) return null;
+  return best.candidate;
+}
+
+function buildCustomerKeyFromPedido(pedido = {}) {
+  const email = normalizeEmail(pedido.cliente_email);
+  if (email) return `email:${email}`;
+
+  const phone = normalizePhoneDigits(pedido.cliente_telefono);
+  if (phone) return `phone:${phone}`;
+
+  const name = normalizeText(pedido.cliente_nombre);
+  if (name) return `name:${name}`;
+
+  return `pedido:${pedido.id || 'unknown'}`;
+}
+
 class SupabaseService {
+  isMissingRelationError(error, relationName) {
+    const msg = String(error?.message || '').toLowerCase();
+    const code = String(error?.code || '');
+    return (
+      code === '42P01' ||
+      msg.includes(`relation \"${relationName}\"`) ||
+      msg.includes(`table 'public.${relationName}'`)
+    );
+  }
+
+  buildCustomerKey(pedido = {}) {
+    return buildCustomerKeyFromPedido(pedido);
+  }
+
   async obtenerDepartamentosUes() {
     const snapshot = getUesDepartamentosLocalidadesSnapshot();
     if (snapshot.length > 0) {
@@ -162,6 +245,25 @@ class SupabaseService {
           };
         }
       }
+
+      // Fallback difuso para tolerar typos menores (ej: Monteviddo -> Montevideo)
+      const fuzzyPool = departamentosCandidates.flatMap((dep) => {
+        const localidades = Array.isArray(dep.localidades) ? dep.localidades : [];
+        return localidades.map((loc) => ({
+          localidad_id: loc.localidad_id,
+          localidad_nombre: loc.localidad_nombre,
+          departamento_id: dep.departamento_id,
+        }));
+      });
+
+      const fuzzy = findBestLocalidadMatch(normalizedLocalidadKey, fuzzyPool);
+      if (fuzzy) {
+        return {
+          ues_id: String(fuzzy.localidad_id),
+          departamento_id: Number(fuzzy.departamento_id),
+          nombre: fuzzy.localidad_nombre,
+        };
+      }
     }
 
     // 1) Intento exacto (case-insensitive)
@@ -217,6 +319,25 @@ class SupabaseService {
     }
 
     if (!data || data.length === 0) {
+      // 4) Fallback difuso consultando DB cuando no hay snapshot utilizable
+      let fuzzyQuery = supabase
+        .from('localidades_ues')
+        .select('ues_id, departamento_id, nombre');
+
+      if (preferredDepartamentoId) {
+        fuzzyQuery = fuzzyQuery.eq('departamento_id', preferredDepartamentoId);
+      }
+
+      const fuzzyResult = await fuzzyQuery;
+      if (fuzzyResult.error) {
+        throw fuzzyResult.error;
+      }
+
+      const fuzzy = findBestLocalidadMatch(normalizedLocalidadKey, fuzzyResult.data || []);
+      if (fuzzy) {
+        return fuzzy;
+      }
+
       throw new Error(`No se encontró localidad UES para: ${normalizedLocalidad}${departamento ? ` (${departamento})` : ''}`);
     }
 
@@ -311,6 +432,102 @@ class SupabaseService {
 
     if (error) throw error;
     return data || [];
+  }
+
+  async obtenerEstadosClientes(customerIds = []) {
+    const ids = Array.from(new Set((customerIds || []).filter(Boolean)));
+    if (ids.length === 0) return {};
+
+    // Evitar URLs gigantes en `.in(...)` cuando hay cientos de clientes.
+    const batchSize = 80;
+    const byId = {};
+
+    for (let i = 0; i < ids.length; i += batchSize) {
+      const chunk = ids.slice(i, i + batchSize);
+      const { data, error } = await supabase
+        .from('customer_states')
+        .select('customer_id, state, updated_at')
+        .in('customer_id', chunk);
+
+      if (error) {
+        // Si la tabla aun no existe, no romper el flujo operativo.
+        if (this.isMissingRelationError(error, 'customer_states')) {
+          return {};
+        }
+        throw error;
+      }
+
+      for (const row of data || []) {
+        byId[row.customer_id] = {
+          state: row.state,
+          updated_at: row.updated_at,
+        };
+      }
+    }
+
+    return byId;
+  }
+
+  async guardarEstadoCliente(customerId, state) {
+    const now = new Date().toISOString();
+    const payload = {
+      customer_id: String(customerId),
+      state,
+      updated_at: now,
+    };
+
+    const { data, error } = await supabase
+      .from('customer_states')
+      .upsert(payload, { onConflict: 'customer_id' })
+      .select()
+      .single();
+
+    if (error) {
+      if (this.isMissingRelationError(error, 'customer_states')) {
+        throw new Error('Falta crear tabla customer_states en Supabase');
+      }
+      throw error;
+    }
+    return data;
+  }
+
+  async obtenerNotasCliente(customerId) {
+    const { data, error } = await supabase
+      .from('customer_notes')
+      .select('id, customer_id, content, created_at')
+      .eq('customer_id', String(customerId))
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      // Si la tabla aun no existe, no romper el flujo operativo.
+      if (this.isMissingRelationError(error, 'customer_notes')) {
+        return [];
+      }
+      throw error;
+    }
+    return data || [];
+  }
+
+  async agregarNotaCliente(customerId, content) {
+    const payload = {
+      customer_id: String(customerId),
+      content: String(content || '').trim(),
+      created_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from('customer_notes')
+      .insert(payload)
+      .select()
+      .single();
+
+    if (error) {
+      if (this.isMissingRelationError(error, 'customer_notes')) {
+        throw new Error('Falta crear tabla customer_notes en Supabase');
+      }
+      throw error;
+    }
+    return data;
   }
 
   // Actualizar pedido
