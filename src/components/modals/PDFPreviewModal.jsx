@@ -9,7 +9,7 @@ function PDFPreviewModal({ pdfUrl, onClose }) {
   };
 
   return (
-    <div className="modal" style={{ display: 'flex' }}>
+    <div className="modal modal-open">
       <div className="modal-content modal-large">
         <div className="modal-header">
           <h3>Vista Previa de Etiqueta PDF</h3>
@@ -20,7 +20,7 @@ function PDFPreviewModal({ pdfUrl, onClose }) {
           <iframe 
             src={pdfUrl}
             title="Vista previa de etiqueta PDF" 
-            style={{ width: '100%', height: '600px', border: 'none' }}
+            className="pdf-preview-frame"
           />
         </div>
 

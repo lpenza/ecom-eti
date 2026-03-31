@@ -49,7 +49,7 @@ function PedidosTable({
           <tbody>
             {pedidosOrdenados.length === 0 ? (
               <tr>
-                <td colSpan={showNotifyColumn && showTrackingColumn ? "7" : showNotifyColumn || showTrackingColumn ? "6" : "5"} style={{ textAlign: 'center', padding: '2rem' }}>
+                <td colSpan={showNotifyColumn && showTrackingColumn ? "7" : showNotifyColumn || showTrackingColumn ? "6" : "5"} className="table-empty-state">
                   No hay pedidos para mostrar
                 </td>
               </tr>
@@ -157,7 +157,7 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
   };
 
   return (
-    <tr style={fueNotificado ? { background: '#f0fdf4' } : {}}>
+    <tr className={fueNotificado ? 'pedidos-row-notified' : ''}>
       <td>
         <input 
           type="checkbox" 
@@ -166,8 +166,10 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
         />
       </td>
       <td>
-        {fueNotificado && <span style={{ color: '#22c55e', marginRight: '0.5rem', fontWeight: 'bold' }}>✓</span>}
-        {pedido.numero_pedido || pedido.id?.substring(0, 8)}
+        <span className="pedido-number-cell">
+          {fueNotificado && <span className="pedido-notified-check">✓</span>}
+          <span>{pedido.numero_pedido || pedido.id?.substring(0, 8)}</span>
+        </span>
       </td>
       <td>{pedido.cliente_nombre || 'Sin nombre'}</td>
       <td>{pedido.direccion_envio || 'Sin dirección'}</td>
@@ -178,7 +180,7 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
       {showNotifyColumn && (
         <td>
           {fueNotificado && (
-            <span style={{ color: '#22c55e', fontSize: '0.85em', marginRight: '0.5rem' }}>
+            <span className="pedido-notified-label">
               Notificado ✓
             </span>
           )}
@@ -192,7 +194,7 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
               💬 Notificar
             </button>
           ) : (
-            <span style={{ color: '#64748b', fontSize: '0.85em' }}>
+            <span className="pedido-email-label">
               📧 Shopify notifica
             </span>
           )}

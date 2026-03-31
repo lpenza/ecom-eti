@@ -37,6 +37,14 @@ export async function obtenerPedidos() {
 }
 
 /**
+ * Obtener pedidos finalizados para reclamos
+ */
+export async function obtenerPedidosFinalizados() {
+  const data = await fetchAPI('/pedidos-finalizados');
+  return Array.isArray(data) ? data : [];
+}
+
+/**
  * Sincronizar pedidos desde Shopify
  */
 export async function sincronizarShopify() {
@@ -83,6 +91,39 @@ export async function generarEtiqueta(pedidoId, payloadOverrides = null) {
     method: 'POST',
     body: JSON.stringify({ payloadOverrides })
   });
+}
+
+/**
+ * Generar etiqueta de reclamo asociada a un pedido existente
+ */
+export async function generarEtiquetaReclamo(pedidoId, notas = '') {
+  return await fetchAPI(`/reclamos/${pedidoId}/generar-etiqueta`, {
+    method: 'POST',
+    body: JSON.stringify({ notas })
+  });
+}
+
+/**
+ * Generar etiqueta de colaboracion (sin pedido Shopify)
+ */
+export async function generarEtiquetaColaboracion(data) {
+  return await fetchAPI('/colaboraciones/generar-etiqueta', {
+    method: 'POST',
+    body: JSON.stringify(data || {})
+  });
+}
+
+/**
+ * Obtener pedidos candidatos para follow-up comercial
+ */
+export async function obtenerPedidosFollowUp({ days = 15, from = '', to = '', estado = '' } = {}) {
+  const params = new URLSearchParams();
+  params.set('days', String(days));
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  if (estado) params.set('estado', estado);
+
+  return await fetchAPI(`/followup/pedidos?${params.toString()}`, { method: 'GET' });
 }
 
 /**

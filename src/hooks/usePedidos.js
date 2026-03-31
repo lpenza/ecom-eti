@@ -194,6 +194,40 @@ export function usePedidos() {
     }
   }, []);
 
+  // Generar etiqueta de reclamo (asociada a un pedido)
+  const generarEtiquetaReclamo = useCallback(async (pedidoId, notas = '') => {
+    console.log(`📦 Generando etiqueta de reclamo para pedido ${pedidoId}...`);
+    setLoading(true);
+    setLoadingText('Generando etiqueta de reclamo...');
+
+    try {
+      const result = await api.generarEtiquetaReclamo(pedidoId, notas);
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('❌ Error generando etiqueta de reclamo:', error);
+      return { success: false, error: error.message };
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Generar etiqueta de colaboracion
+  const generarEtiquetaColaboracion = useCallback(async (data) => {
+    console.log('📦 Generando etiqueta de colaboracion...');
+    setLoading(true);
+    setLoadingText('Generando etiqueta de colaboracion...');
+
+    try {
+      const result = await api.generarEtiquetaColaboracion(data);
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('❌ Error generando etiqueta de colaboracion:', error);
+      return { success: false, error: error.message };
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   // Generar etiquetas masivas
   const generarEtiquetasMasivo = useCallback(async () => {
     if (selectedPedidos.length === 0) {
@@ -285,6 +319,8 @@ export function usePedidos() {
     notificarTrackingPedido,
     marcarPedidoNotificado,
     generarEtiqueta,
+    generarEtiquetaReclamo,
+    generarEtiquetaColaboracion,
     generarEtiquetasMasivo,
     toggleSelectAll,
     toggleSelectPedido,

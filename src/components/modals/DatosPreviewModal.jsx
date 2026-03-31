@@ -305,7 +305,7 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
   };
 
   return (
-    <div className="modal" style={{ display: 'flex' }}>
+    <div className="modal modal-open">
       <div className="modal-content modal-large">
         <div className="modal-header">
           <h3>🔍 Vista Previa de Datos - Orden #{currentPedido.numero_pedido || currentPedido.id?.substring(0, 8)}</h3>
@@ -472,14 +472,14 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                   </div>
                 </div>
 
-                <div className="preview-edit-grid" style={{ marginTop: '1rem' }}>
+                <div className="preview-edit-grid preview-edit-grid-spaced">
                   <button className="btn btn-secondary btn-sm" onClick={() => setShowTechnicalDetails((v) => !v)}>
                     {showTechnicalDetails ? 'Ocultar detalle técnico' : 'Ver detalle técnico'}
                   </button>
                 </div>
 
                 {showTechnicalDetails && (
-                <div className="preview-edit-grid" style={{ marginTop: '1rem' }}>
+                <div className="preview-edit-grid preview-edit-grid-spaced">
                   <h5>guardarEnvio</h5>
 
                   <div className="preview-field">
@@ -560,13 +560,13 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
           {currentPedido.notas && (
             <div className="preview-section">
               <h4>📝 Notas</h4>
-              <p style={{ margin: '0.5rem 0', fontSize: '0.9rem', color: '#666' }}>
+              <p className="preview-notes-text">
                 {currentPedido.notas}
               </p>
             </div>
           )}
 
-          {validationError && <div className="preview-error" style={{ marginTop: '0.75rem' }}>{validationError}</div>}
+          {validationError && <div className="preview-error preview-error-spaced">{validationError}</div>}
 
           <div className="preview-alert">
             {isBatch

@@ -63,7 +63,7 @@ function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillme
           
           {/* Control de prioridad de canal */}
           <div className="channel-priority-control">
-            <label style={{ marginRight: '8px', fontSize: '0.9em' }}>Prioridad:</label>
+            <label className="channel-priority-label">Prioridad:</label>
             <button
               className={`btn btn-sm ${channelPriority === 'email' ? 'btn-primary' : 'btn-secondary'}`}
               onClick={() => onChannelPriorityChange?.('email')}
@@ -72,10 +72,9 @@ function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillme
               📧 Email
             </button>
             <button
-              className={`btn btn-sm ${channelPriority === 'whatsapp' ? 'btn-primary' : 'btn-secondary'}`}
+              className={`btn btn-sm channel-priority-option ${channelPriority === 'whatsapp' ? 'btn-primary' : 'btn-secondary'}`}
               onClick={() => onChannelPriorityChange?.('whatsapp')}
               title="Priorizar WhatsApp (notificación manual)"
-              style={{ marginLeft: '4px' }}
             >
               💬 WhatsApp
             </button>

@@ -292,6 +292,27 @@ class SupabaseService {
     return data || [];
   }
 
+  // Obtener pedidos candidatos para follow-up comercial
+  // Si se pasa estado, filtra por ese estado puntual.
+  // Si no se pasa, mantiene el criterio original (finalizados/notificados).
+  async obtenerPedidosParaFollowUp(estado = '') {
+    let query = supabase
+      .from('pedidos')
+      .select('*');
+
+    const estadoNormalizado = String(estado || '').trim().toLowerCase();
+    if (estadoNormalizado) {
+      query = query.eq('estado', estadoNormalizado);
+    } else {
+      query = query.or('estado.eq.enviado,notificacion_enviada_at.not.is.null');
+    }
+
+    const { data, error } = await query.order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  }
+
   // Actualizar pedido
   async actualizarPedido(pedidoId, datos) {
     console.log('📝 Actualizando pedido:', pedidoId, 'con datos:', datos);

@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const path = require('path');
+const fs = require('fs').promises;
 require('dotenv').config();
 
 const app = express();
@@ -41,6 +42,22 @@ app.get('/api/pedidos', async (req, res) => {
     console.error('❌ Error en /api/pedidos:', error.message);
     logService.error('Error al obtener pedidos', error);
     // En caso de error, devolver array vacío en lugar de objeto
+    res.status(500).json([]);
+  }
+});
+
+// Obtener pedidos finalizados para reclamos
+app.get('/api/pedidos-finalizados', async (req, res) => {
+  try {
+    console.log('📥 GET /api/pedidos-finalizados - Obteniendo pedidos finalizados...');
+    const pedidos = await supabaseService.obtenerPedidosParaFollowUp('enviado');
+
+    const pedidosArray = Array.isArray(pedidos) ? pedidos : [];
+    console.log(`✅ Enviando ${pedidosArray.length} pedidos finalizados al cliente`);
+    res.json(pedidosArray);
+  } catch (error) {
+    console.error('❌ Error en /api/pedidos-finalizados:', error.message);
+    logService.error('Error al obtener pedidos finalizados', error);
     res.status(500).json([]);
   }
 });
@@ -302,6 +319,55 @@ app.post('/api/marcar-notificado/:pedidoId', async (req, res) => {
   }
 });
 
+// Panel de follow-up: pedidos a contactar segun dias transcurridos
+app.get('/api/followup/pedidos', async (req, res) => {
+  try {
+    const days = Math.max(parseInt(req.query.days || '15', 10) || 15, 1);
+    const from = String(req.query.from || '').trim();
+    const to = String(req.query.to || '').trim();
+    const estado = String(req.query.estado || '').trim().toLowerCase();
+
+    const fromDate = from ? new Date(`${from}T00:00:00`) : null;
+    const toDate = to ? new Date(`${to}T23:59:59`) : null;
+
+    const pedidos = await supabaseService.obtenerPedidosParaFollowUp(estado);
+    const ahora = new Date();
+
+    const enrich = pedidos.map((pedido) => {
+      const baseDate = new Date(pedido.notificacion_enviada_at || pedido.created_at);
+      const followUpDate = new Date(baseDate);
+      followUpDate.setDate(followUpDate.getDate() + days);
+
+      const diasTranscurridos = Math.floor((ahora - baseDate) / (1000 * 60 * 60 * 24));
+
+      return {
+        ...pedido,
+        followup_base_date: baseDate.toISOString(),
+        followup_target_date: followUpDate.toISOString(),
+        followup_days_elapsed: diasTranscurridos,
+      };
+    });
+
+    const filtrados = enrich.filter((pedido) => {
+      const fechaObjetivo = new Date(pedido.followup_target_date);
+      if (fromDate && fechaObjetivo < fromDate) return false;
+      if (toDate && fechaObjetivo > toDate) return false;
+      return true;
+    });
+
+    res.json({
+      success: true,
+      days,
+      estado: estado || null,
+      count: filtrados.length,
+      data: filtrados,
+    });
+  } catch (error) {
+    logService.error('Error en follow-up diario', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Generar etiqueta UES (con ID en URL para React)
 app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
   try {
@@ -428,6 +494,126 @@ app.post('/api/generar-etiquetas-masivo', async (req, res) => {
     res.json({ success: true, data: resultados });
   } catch (error) {
     logService.error('Error en generación masiva', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+const COLAB_SEQ_PATH = path.join(__dirname, 'data', 'colaboraciones-seq.json');
+
+async function getNextColReference() {
+  await fs.mkdir(path.dirname(COLAB_SEQ_PATH), { recursive: true });
+
+  let current = 0;
+  try {
+    const raw = await fs.readFile(COLAB_SEQ_PATH, 'utf8');
+    const parsed = JSON.parse(raw);
+    current = Number(parsed?.next || 0);
+  } catch (error) {
+    current = 0;
+  }
+
+  const next = current + 1;
+  await fs.writeFile(
+    COLAB_SEQ_PATH,
+    JSON.stringify({ next }, null, 2),
+    'utf8'
+  );
+
+  return `COL${current}`;
+}
+
+// Generar etiqueta para reclamo asociado a pedido existente
+app.post('/api/reclamos/:pedidoId/generar-etiqueta', async (req, res) => {
+  try {
+    const { pedidoId } = req.params;
+    const { notas = '' } = req.body || {};
+
+    const pedido = await supabaseService.obtenerPedido(pedidoId);
+    if (!pedido) {
+      return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    }
+
+    const referencia = `RCL${pedido.numero_pedido || pedido.id}`;
+    const payloadOverrides = {
+      payloadEnvio: { referencia },
+      guia: { comentario: referencia },
+      payloadDireccion: {
+        observaciones: [pedido.notas, notas].filter(Boolean).join(' | '),
+      },
+    };
+
+    const etiqueta = await uesService.generarEtiqueta(pedido, payloadOverrides);
+
+    logService.info(`Etiqueta de reclamo generada para pedido ${pedidoId}: ${referencia}`);
+
+    res.json({
+      success: true,
+      tipo: 'reclamo',
+      pedidoId,
+      referencia,
+      tracking: etiqueta.numeroSeguimiento,
+      pdfUrl: etiqueta.urlPdf,
+    });
+  } catch (error) {
+    logService.error('Error al generar etiqueta de reclamo', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Generar etiqueta para colaboracion (sin pedido Shopify)
+app.post('/api/colaboraciones/generar-etiqueta', async (req, res) => {
+  try {
+    const {
+      cliente_nombre,
+      cliente_email = '',
+      cliente_telefono = '',
+      direccion_envio,
+      localidad,
+      departamento,
+      codigo_postal = '',
+      notas = '',
+    } = req.body || {};
+
+    if (!cliente_nombre || !direccion_envio || !localidad || !departamento) {
+      return res.status(400).json({
+        success: false,
+        error: 'Faltan campos requeridos: cliente_nombre, direccion_envio, localidad, departamento',
+      });
+    }
+
+    const referencia = await getNextColReference();
+
+    const pedidoColaboracion = {
+      id: referencia,
+      numero_pedido: referencia,
+      cliente_nombre,
+      cliente_email,
+      cliente_telefono,
+      direccion_envio,
+      localidad,
+      departamento,
+      codigo_postal,
+      notas,
+    };
+
+    const payloadOverrides = {
+      payloadEnvio: { referencia },
+      guia: { comentario: referencia },
+    };
+
+    const etiqueta = await uesService.generarEtiqueta(pedidoColaboracion, payloadOverrides);
+
+    logService.info(`Etiqueta de colaboracion generada: ${referencia}`);
+
+    res.json({
+      success: true,
+      tipo: 'colaboracion',
+      referencia,
+      tracking: etiqueta.numeroSeguimiento,
+      pdfUrl: etiqueta.urlPdf,
+    });
+  } catch (error) {
+    logService.error('Error al generar etiqueta de colaboracion', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
