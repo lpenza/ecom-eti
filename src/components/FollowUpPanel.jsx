@@ -68,9 +68,15 @@ function formatDateTime(iso) {
   });
 }
 
+function formatPrimerNombre(nombreCompleto) {
+  if (!nombreCompleto) return 'cliente';
+  // Extraer solo el primer nombre (antes del primer espacio)
+  return String(nombreCompleto).trim().split(/\s+/)[0];
+}
+
 function renderTemplate(templateBody, pedido) {
   const vars = {
-    cliente_nombre: pedido.cliente_nombre || 'cliente',
+    cliente_nombre: formatPrimerNombre(pedido.cliente_nombre),
     numero_pedido: pedido.numero_pedido || pedido.id,
     tracking: pedido.numero_seguimiento_ues || '-',
     dias_transcurridos: String(pedido.followup_days_elapsed ?? ''),
@@ -100,7 +106,7 @@ function FollowUpPanel({
   templates = [],
   activeTemplateId,
   setActiveTemplateId,
-  setTemplates,
+  onUpdateTemplate,
   onOpenTemplateManager,
 }) {
   const [days, setDays] = useState(15);
@@ -252,7 +258,7 @@ function FollowUpPanel({
   const noWaPercent = resumen.total > 0 ? Math.round((resumen.sinTelefono / resumen.total) * 100) : 0;
 
   const previewPedido = pedidos[0] || null;
-  const previewTexto = previewPedido ? renderTemplate(activeTemplate?.body, previewPedido) : '';
+  const previewTexto = previewPedido ? renderTemplate(activeTemplate?.content, previewPedido) : '';
 
   const cargarGrupo = async () => {
     try {
@@ -385,7 +391,7 @@ function FollowUpPanel({
       return;
     }
 
-    const message = renderTemplate(activeTemplate?.body, pedido);
+    const message = renderTemplate(activeTemplate?.content, pedido);
     const url = `https://wa.me/${waNumber}?text=${encodeURIComponent(message)}`;
     window.open(url, '_blank', 'noopener,noreferrer');
     marcarEstadoPedido(pedido.id, true);
@@ -584,16 +590,14 @@ function FollowUpPanel({
             <textarea
               className="module-input"
               rows={5}
-              value={activeTemplate?.body || ''}
+              value={activeTemplate?.content || ''}
               onChange={(e) => {
                 const nextBody = e.target.value;
                 if (!activeTemplate?.id) return;
-                setTemplates((prev) => prev.map((tpl) =>
-                  tpl.id === activeTemplate.id ? { ...tpl, body: nextBody } : tpl
-                ));
+                onUpdateTemplate?.(activeTemplate.id, { body: nextBody });
               }}
             />
-            <div className="followup-char-counter">{(activeTemplate?.body || '').length} caracteres</div>
+            <div className="followup-char-counter">{(activeTemplate?.content || '').length} caracteres</div>
             <p className="followup-inline-tip">💡 Tip: Usa plantillas personalizadas y habla en tono cercano y humano.</p>
 
             {previewPedido && (

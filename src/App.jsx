@@ -9,14 +9,14 @@ import Toast from './components/Toast';
 import FollowUpPanel from './components/FollowUpPanel';
 import TemplateManagerPanel from './components/TemplateManagerPanel';
 import { usePedidos } from './hooks/usePedidos';
-import { obtenerPedidosFinalizados } from './services/api';
-
-const FOLLOWUP_TEMPLATES_STORAGE_KEY = 'velinne_followup_templates_v1';
-const DEFAULT_FOLLOWUP_TEMPLATE = {
-  id: 'default-1',
-  name: 'Seguimiento Nutritivo',
-  body: 'Hola {{cliente_nombre}}, como estas?\n\nHace {{dias_transcurridos}} dias recibiste tu pedido #{{numero_pedido}} y queria saber como te sentiste con los resultados.\n\nSi queres, te ayudo a ajustar tu rutina para potenciar el resultado 💚',
-};
+import { 
+  obtenerPedidosFinalizados,
+  obtenerPlantillas,
+  crearPlantilla,
+  actualizarPlantilla,
+  eliminarPlantilla,
+  activarPlantilla
+} from './services/api';
 
 function App() {
   const {
@@ -57,8 +57,9 @@ function App() {
   const [reclamoNotas, setReclamoNotas] = useState('');
   const [pedidosFinalizados, setPedidosFinalizados] = useState([]);
   const [pedidosFinalizadosLoaded, setPedidosFinalizadosLoaded] = useState(false);
-  const [followupTemplates, setFollowupTemplates] = useState([DEFAULT_FOLLOWUP_TEMPLATE]);
-  const [activeFollowupTemplateId, setActiveFollowupTemplateId] = useState(DEFAULT_FOLLOWUP_TEMPLATE.id);
+  const [templates, setTemplates] = useState([]);
+  const [activeTemplateId, setActiveTemplateId] = useState('');
+  const [activeTrackingTemplateId, setActiveTrackingTemplateId] = useState('');
   const [colForm, setColForm] = useState({
     cliente_nombre: '',
     cliente_email: '',
@@ -187,29 +188,62 @@ function App() {
     cargarPedidos();
   }, []);
 
+  // Cargar plantillas desde la API
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(FOLLOWUP_TEMPLATES_STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        setFollowupTemplates(parsed);
-        setActiveFollowupTemplateId(parsed[0].id);
-      }
-    } catch (error) {
-      console.error('No se pudieron cargar las plantillas follow-up:', error);
-    }
+    let cancelled = false;
+    
+    obtenerPlantillas()
+      .then((plantillas) => {
+        if (cancelled) return;
+        
+        // Mapear de formato DB a formato frontend
+        const plantillasMapeadas = plantillas.map((p) => ({
+          id: String(p.id),
+          name: p.name,
+          content: p.content,
+          isActive: p.is_active
+        }));
+        
+        setTemplates(plantillasMapeadas);
+        
+        // Establecer plantilla activa para follow-up
+        const activa = plantillasMapeadas.find((p) => p.isActive);
+        if (activa) {
+          setActiveTemplateId(activa.id);
+        } else if (plantillasMapeadas.length > 0) {
+          setActiveTemplateId(plantillasMapeadas[0].id);
+        }
+        
+        // Establecer plantilla activa para tracking (buscar por nombre)
+        const trackingTemplate = plantillasMapeadas.find((p) => 
+          p.name.toLowerCase().includes('envío') || 
+          p.name.toLowerCase().includes('tracking') ||
+          p.name.toLowerCase().includes('notificación')
+        );
+        if (trackingTemplate) {
+          setActiveTrackingTemplateId(trackingTemplate.id);
+        } else if (plantillasMapeadas.length > 0) {
+          // Si no hay plantilla de tracking, usar la primera
+          setActiveTrackingTemplateId(plantillasMapeadas[0].id);
+        }
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('Error al cargar plantillas:', error);
+        mostrarToast('No se pudieron cargar las plantillas', 'error');
+      });
+    
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
+  // Sincronizar activeTemplateId si se elimina la plantilla activa
   useEffect(() => {
-    localStorage.setItem(FOLLOWUP_TEMPLATES_STORAGE_KEY, JSON.stringify(followupTemplates));
-  }, [followupTemplates]);
-
-  useEffect(() => {
-    if (!followupTemplates.some((tpl) => tpl.id === activeFollowupTemplateId)) {
-      setActiveFollowupTemplateId(followupTemplates[0]?.id || '');
+    if (!templates.some((tpl) => tpl.id === activeTemplateId)) {
+      setActiveTemplateId(templates[0]?.id || '');
     }
-  }, [followupTemplates, activeFollowupTemplateId]);
+  }, [templates, activeTemplateId]);
 
   useEffect(() => {
     const shouldLoadFinalizados = activeView === 'especiales' && etiquetaMode === 'reclamos' && !pedidosFinalizadosLoaded;
@@ -284,6 +318,119 @@ function App() {
     setTimeout(() => setToast({ show: false, message: '', type: '' }), 3000);
   };
 
+  // ==================== FUNCIONES DE PLANTILLAS ====================
+
+  // Recargar plantillas desde la API
+  const recargarPlantillas = async () => {
+    try {
+      const plantillas = await obtenerPlantillas();
+      console.log('📝 Plantillas recibidas desde API:', plantillas);
+      const plantillasMapeadas = plantillas.map((p) => ({
+        id: String(p.id),
+        name: p.name,
+        content: p.content,
+        isActive: p.is_active
+      }));
+      console.log('📝 Plantillas mapeadas:', plantillasMapeadas);
+      setTemplates(plantillasMapeadas);
+      
+      // Actualizar plantilla activa si es necesaria
+      const activa = plantillasMapeadas.find((p) => p.isActive);
+      if (activa) {
+        setActiveTemplateId(activa.id);
+      }
+    } catch (error) {
+      console.error('Error al recargar plantillas:', error);
+      throw error;
+    }
+  };
+
+  // Crear nueva plantilla
+  const handleCrearPlantilla = async (plantilla) => {
+    try {
+      await crearPlantilla({
+        name: plantilla.name,
+        content: plantilla.content,
+        is_active: false
+      });
+      await recargarPlantillas();
+      mostrarToast('✅ Plantilla creada', 'success');
+    } catch (error) {
+      console.error('Error al crear plantilla:', error);
+      mostrarToast('Error al crear plantilla', 'error');
+      throw error;
+    }
+  };
+
+  // Actualizar plantilla existente
+  const handleActualizarPlantilla = async (id, cambios) => {
+    try {
+      const cambiosAPI = {};
+      if (cambios.name !== undefined) cambiosAPI.name = cambios.name;
+      if (cambios.content !== undefined) cambiosAPI.content = cambios.content;
+      if (cambios.isActive !== undefined) cambiosAPI.is_active = cambios.isActive;
+      
+      await actualizarPlantilla(id, cambiosAPI);
+      
+      // Actualizar solo localmente para evitar recargar y perder el foco
+      setTemplates(prevTemplates => 
+        prevTemplates.map(t => 
+          t.id === id 
+            ? { ...t, ...cambios } 
+            : t
+        )
+      );
+    } catch (error) {
+      console.error('Error al actualizar plantilla:', error);
+      mostrarToast('Error al actualizar plantilla', 'error');
+      throw error;
+    }
+  };
+
+  // Eliminar plantilla
+  const handleEliminarPlantilla = async (id) => {
+    try {
+      await eliminarPlantilla(id);
+      await recargarPlantillas();
+      mostrarToast('✅ Plantilla eliminada', 'success');
+    } catch (error) {
+      console.error('Error al eliminar plantilla:', error);
+      mostrarToast('Error al eliminar plantilla', 'error');
+      throw error;
+    }
+  };
+
+  // Activar plantilla
+  const handleActivarPlantilla = async (id) => {
+    try {
+      await activarPlantilla(id);
+      await recargarPlantillas();
+    } catch (error) {
+      console.error('Error al activar plantilla:', error);
+      mostrarToast('Error al activar plantilla', 'error');
+      throw error;
+    }
+  };
+
+  // Duplicar plantilla
+  const handleDuplicarPlantilla = async (plantilla) => {
+    try {
+      await crearPlantilla({
+        name: `${plantilla.name} (copia)`,
+        content: plantilla.content,
+        is_active: false
+      });
+      await recargarPlantillas();
+      mostrarToast('✅ Plantilla duplicada', 'success');
+    } catch (error) {
+      console.error('Error al duplicar plantilla:', error);
+      mostrarToast('Error al duplicar plantilla', 'error');
+      throw error;
+    }
+  };
+
+  // ==================== FIN FUNCIONES DE PLANTILLAS ====================
+
   // Handler para sincronización Shopify
   const handleSincronizarShopify = async () => {
     const resultado = await sincronizarShopify();
@@ -320,18 +467,63 @@ function App() {
       return;
     }
 
-    const pedidoIds = enPreview ? seleccionadosEnPreview : null;
-    const resultado = await ejecutarFulfillmentShopify(pedidoIds);
-    setFulfillmentPreviewIds(null);
-    if (!resultado.success) {
-      mostrarToast(resultado.error || 'Error enviando tracking', 'error');
-      return;
-    }
+    try {
+       setLoading(true);
+      setLoadingMessage('Creando fulfillments en Shopify...');
 
-    if (resultado.failCount > 0) {
-      mostrarToast(`⚠️ Tracking: ${resultado.successCount}/${resultado.count} OK`, 'warning');
-    } else {
-      mostrarToast(`✅ Tracking enviado a ${resultado.successCount} pedido(s)`, 'success');
+      // Crear fulfillments en Shopify (sin notificar automáticamente)
+      const pedidoIds = enPreview ? seleccionadosEnPreview : null;
+      const resultado = await api.ejecutarFulfillmentShopify(pedidoIds);
+      
+      setFulfillmentPreviewIds(null);
+      
+      if (!resultado.success) {
+        mostrarToast(resultado.error || 'Error en fulfillment', 'error');
+        return;
+      }
+
+      if (resultado.failCount > 0) {
+        mostrarToast(`⚠️ Fulfillment: ${resultado.successCount}/${resultado.count} OK`, 'warning');
+      } else {
+        mostrarToast(`✅ ${resultado.successCount} fulfillment(s) creados`, 'success');
+      }
+
+      // Obtener la plantilla activa de tracking
+      const activeTemplate = templates.find(t => t.id === activeTrackingTemplateId);
+      
+      // Solo generar links de WhatsApp para pedidos SIN email
+      // (los que tienen email ya fueron notificados por Shopify automáticamente)
+      const pedidosSinEmail = resultado.pedidosSinEmail || [];
+
+      if (pedidosSinEmail.length > 0) {
+        setLoadingMessage(`Abriendo ${pedidosSinEmail.length} tabs de WhatsApp para pedidos sin email...`);
+        
+        // Generar links en paralelo
+        const promesas = pedidosSinEmail.map(pedido => 
+          api.generarLinkWhatsApp(pedido, activeTemplate?.content)
+        );
+
+        const resultadosLinks = await Promise.all(promesas);
+
+        // Abrir cada link en una nueva pestaña con delay para no saturar el navegador
+        resultadosLinks.forEach((result, index) => {
+          if (result.success) {
+            setTimeout(() => window.open(result.url, '_blank'), index * 500);
+          }
+        });
+
+        const linksExitosos = resultadosLinks.filter(r => r.success).length;
+        mostrarToast(`📱 ${linksExitosos} notificaciones por WhatsApp (sin email)`, 'info');
+      } else if(resultado.successCount > 0) {
+        mostrarToast(`✉️ Todos los pedidos fueron notificados por email automáticamente`, 'info');
+      }
+
+      await cargarPedidos(); // Recargar lista de pedidos
+    } catch (error) {
+      console.error('Error en fulfillment:', error);
+      mostrarToast('Error al procesar fulfillment', 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -343,31 +535,23 @@ function App() {
 
   // Handler para reenvio manual de notificacion de tracking
   const handleReenviarNotificacion = async (pedidoId) => {
-    const resultado = await notificarTrackingPedido(pedidoId);
+    const pedido = pedidos.find(p => p.id === pedidoId);
+    if (!pedido || !pedido.telefono) {
+      mostrarToast('Pedido sin teléfono válido', 'error');
+      return;
+    }
+
+    const activeTemplate = templates.find((t) => t.id === activeTrackingTemplateId);
+    const resultado = await api.generarLinkWhatsApp(pedido, activeTemplate?.content);
+    
     if (!resultado.success) {
-      mostrarToast(resultado.error || 'Error reenviando notificacion', 'error');
+      mostrarToast(resultado.error || 'Error al generar link de WhatsApp', 'error');
       return;
     }
 
-    const notif = resultado.notification || {};
-    const emailOk = Boolean(notif.email?.success);
-    const wppOk = Boolean(notif.whatsapp?.success);
-
-    if (notif.handledByShopifyEmail) {
-      mostrarToast('ℹ️ Email gestionado por Shopify (no se envia desde la app)', 'info');
-      return;
-    }
-
-    if (!emailOk && !wppOk) {
-      const canal = notif.canal || (notif.whatsapp?.skippedReason ? 'email' : 'whatsapp');
-      mostrarToast(`⚠️ No se pudo enviar por ${canal}`, 'warning');
-      return;
-    }
-
-    mostrarToast(
-      wppOk ? '✅ Notificado por WhatsApp' : '✅ Notificado por Email',
-      'success'
-    );
+    // Abrir WhatsApp Web con el link generado
+    window.open(resultado.url, '_blank');
+    mostrarToast('WhatsApp abierto con el mensaje', 'success');
   };
 
   // Handler para login UES
@@ -522,6 +706,9 @@ function App() {
             onChannelPriorityChange={setChannelPriority}
             pendingCount={pedidosPendientes.length}
             uesAuthenticated={uesAuthenticated}
+            activeTrackingTemplate={templates.find(t => t.id === activeTrackingTemplateId)}
+            templates={templates}
+            onTrackingTemplateChange={setActiveTrackingTemplateId}
           />
 
           {/* Tabla de pedidos */}
@@ -546,6 +733,7 @@ function App() {
               channelPriority={channelPriority}
               showNotifyColumn={tableFilter !== 'porValidar'}
               showTrackingColumn={tableFilter !== 'porValidar'}
+              activeTrackingTemplate={templates.find((t) => t.id === activeTrackingTemplateId)}
             />
           </div>
         </>
@@ -707,20 +895,23 @@ function App() {
       {activeView === 'followup' && (
         <FollowUpPanel
           mostrarToast={mostrarToast}
-          templates={followupTemplates}
-          activeTemplateId={activeFollowupTemplateId}
-          setActiveTemplateId={setActiveFollowupTemplateId}
-          setTemplates={setFollowupTemplates}
+          templates={templates}
+          activeTemplateId={activeTemplateId}
+          setActiveTemplateId={setActiveTemplateId}
+          onUpdateTemplate={handleActualizarPlantilla}
           onOpenTemplateManager={() => setActiveView('plantillas')}
         />
       )}
 
       {activeView === 'plantillas' && (
         <TemplateManagerPanel
-          templates={followupTemplates}
-          activeTemplateId={activeFollowupTemplateId}
-          onActiveTemplateChange={setActiveFollowupTemplateId}
-          onTemplatesChange={setFollowupTemplates}
+          templates={templates}
+          activeTemplateId={activeTemplateId}
+          onActiveTemplateChange={setActiveTemplateId}
+          onCreateTemplate={handleCrearPlantilla}
+          onUpdateTemplate={handleActualizarPlantilla}
+          onDeleteTemplate={handleEliminarPlantilla}
+          onDuplicateTemplate={handleDuplicarPlantilla}
           onBackToFollowUp={() => setActiveView('followup')}
           mostrarToast={mostrarToast}
         />

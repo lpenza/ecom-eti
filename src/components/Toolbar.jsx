@@ -1,6 +1,6 @@
 import React from 'react';
 
-function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillment, onCancelarFulfillment, fulfillmentPreviewCount, fulfillmentPreviewTotalCount, fulfillmentReadyCount, notifPreview, notifChannelFilter, onNotifChannelFilter, channelPriority, onChannelPriorityChange, pendingCount, uesAuthenticated }) {
+function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillment, onCancelarFulfillment, fulfillmentPreviewCount, fulfillmentPreviewTotalCount, fulfillmentReadyCount, notifPreview, notifChannelFilter, onNotifChannelFilter, channelPriority, onChannelPriorityChange, pendingCount, uesAuthenticated, activeTrackingTemplate, templates, onTrackingTemplateChange }) {
 
   const handleChipClick = (canal) => {
     onNotifChannelFilter?.(notifChannelFilter === canal ? null : canal);
@@ -79,6 +79,24 @@ function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillme
               💬 WhatsApp
             </button>
           </div>
+          
+          {/* Indicador de plantilla activa */}
+          {activeTrackingTemplate && templates && templates.length > 0 && (
+            <div className="active-template-selector">
+              <label>📋 Plantilla:</label>
+              <select 
+                value={activeTrackingTemplate.id} 
+                onChange={(e) => onTrackingTemplateChange?.(e.target.value)}
+                className="template-selector"
+              >
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </>
       )}
     </div>

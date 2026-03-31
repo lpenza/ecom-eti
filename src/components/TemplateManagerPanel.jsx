@@ -1,20 +1,30 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 
 function TemplateManagerPanel({
   templates = [],
   activeTemplateId,
   onActiveTemplateChange,
-  onTemplatesChange,
+  onCreateTemplate,
+  onUpdateTemplate,
+  onDeleteTemplate,
+  onDuplicateTemplate,
   onBackToFollowUp,
   mostrarToast,
 }) {
   const [newName, setNewName] = useState('');
   const [newBody, setNewBody] = useState('');
+  
+  // Estado local para edición sin causar re-renders
+  const [localName, setLocalName] = useState('');
+  const [localBody, setLocalBody] = useState('');
+  const nameTimeoutRef = useRef(null);
+  const bodyTimeoutRef = useRef(null);
 
   const templateVars = [
     '{{cliente_nombre}}',
     '{{numero_pedido}}',
     '{{tracking}}',
+    '{{tracking_url}}',
     '{{dias_transcurridos}}',
     '{{fecha_objetivo}}',
   ];
@@ -24,39 +34,106 @@ function TemplateManagerPanel({
     [templates, activeTemplateId]
   );
 
-  const handleCreate = () => {
-    const name = String(newName || '').trim();
-    const body = String(newBody || '').trim();
+  // Sincronizar estado local cuando cambia la plantilla activa
+  useEffect(() => {
+    console.log('🔄 Plantilla activa cambió:', activeTemplate);
+    if (activeTemplate) {
+      setLocalName(activeTemplate.name || '');
+      setLocalBody(activeTemplate.content || '');
+      console.log('✅ Local state actualizado:', { name: activeTemplate.name, content: activeTemplate.content });
+    }
+  }, [activeTemplate?.id]); // Solo cuando cambia de plantilla, no en cada edit
 
-    if (!name || !body) {
+  // Limpiar timeouts al desmontar
+  useEffect(() => {
+    return () => {
+      if (nameTimeoutRef.current) clearTimeout(nameTimeoutRef.current);
+      if (bodyTimeoutRef.current) clearTimeout(bodyTimeoutRef.current);
+    };
+  }, []);
+
+  const handleCreate = async () => {
+    const name = String(newName || '').trim();
+    const content = String(newBody || '').trim();
+
+    if (!name || !content) {
       mostrarToast?.('Completa nombre y contenido para crear la plantilla', 'warning');
       return;
     }
 
-    const next = {
-      id: `tpl-${Date.now()}`,
-      name,
-      body,
-    };
-
-    onTemplatesChange((prev) => [...prev, next]);
-    onActiveTemplateChange?.(next.id);
-    setNewName('');
-    setNewBody('');
-    mostrarToast?.('✅ Plantilla creada', 'success');
+    try {
+      await onCreateTemplate({ name, content });
+      setNewName('');
+      setNewBody('');
+    } catch (error) {
+      console.error('Error creando plantilla:', error);
+    }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!activeTemplate) return;
     if (templates.length <= 1) {
       mostrarToast?.('Debe existir al menos una plantilla', 'warning');
       return;
     }
 
-    onTemplatesChange((prev) => prev.filter((tpl) => tpl.id !== activeTemplate.id));
-    const fallback = templates.find((tpl) => tpl.id !== activeTemplate.id);
-    onActiveTemplateChange?.(fallback?.id || '');
-    mostrarToast?.('🗑️ Plantilla eliminada', 'info');
+    try {
+      await onDeleteTemplate(activeTemplate.id);
+    } catch (error) {
+      console.error('Error eliminando plantilla:', error);
+    }
+  };
+
+  const handleDuplicate = async () => {
+    if (!activeTemplate) return;
+
+    try {
+      await onDuplicateTemplate(activeTemplate);
+    } catch (error) {
+      console.error('Error duplicando plantilla:', error);
+    }
+  };
+
+  const handleNameChange = (newName) => {
+    if (!activeTemplate) return;
+    
+    // Actualizar estado local inmediatamente
+    setLocalName(newName);
+    
+    // Cancelar timeout anterior
+    if (nameTimeoutRef.current) {
+      clearTimeout(nameTimeoutRef.current);
+    }
+    
+    // Guardar en DB después de 500ms de inactividad
+    nameTimeoutRef.current = setTimeout(async () => {
+      try {
+        await onUpdateTemplate(activeTemplate.id, { name: newName });
+      } catch (error) {
+        console.error('Error actualizando nombre:', error);
+      }
+    }, 500);
+  };
+
+  const handleBodyChange = (newBody) => {
+    if (!activeTemplate) return;
+    
+    // Actualizar estado local inmediatamente
+    setLocalBody(newBody);
+    
+    // Cancelar timeout anterior
+    if (bodyTimeoutRef.current) {
+      clearTimeout(bodyTimeoutRef.current);
+    }
+    
+    // Guardar en DB después de 500ms de inactividad
+    bodyTimeoutRef.current = setTimeout(async () => {
+      try {
+        await onUpdateTemplate(activeTemplate.id, { content: newBody });
+      } catch (error) {
+        console.error('Error actualizando contenido:', error);
+      }
+    }, 500);
   };
 
   return (
@@ -65,7 +142,7 @@ function TemplateManagerPanel({
         <div className="template-manager-header">
           <div>
             <h3>Plantillas de Mensajes</h3>
-            <p>Gestiona las plantillas para el Follow-Up. La creacion y mantenimiento viven en este modulo.</p>
+            <p>Gestiona las plantillas para Follow-Up y Notificaciones de Tracking.</p>
           </div>
           <div className="template-manager-top-actions">
             <button type="button" className="btn btn-secondary" onClick={onBackToFollowUp}>
@@ -78,11 +155,18 @@ function TemplateManagerPanel({
           <section className="template-manager-card template-manager-card-main">
             <div className="template-manager-card-head">
               <h4>Plantilla activa</h4>
-              {activeTemplate && (
-                <button type="button" className="btn btn-danger btn-sm" onClick={handleDelete}>
-                  Eliminar plantilla
-                </button>
-              )}
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {activeTemplate && (
+                  <>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={handleDuplicate}>
+                      Duplicar
+                    </button>
+                    <button type="button" className="btn btn-danger btn-sm" onClick={handleDelete}>
+                      Eliminar
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             <label className="module-label" htmlFor="tpl-manager-active">Seleccion</label>
@@ -103,30 +187,20 @@ function TemplateManagerPanel({
                 <input
                   id="tpl-manager-name"
                   className="module-input"
-                  value={activeTemplate.name}
-                  onChange={(e) => {
-                    const nextName = e.target.value;
-                    onTemplatesChange((prev) => prev.map((tpl) => (
-                      tpl.id === activeTemplate.id ? { ...tpl, name: nextName } : tpl
-                    )));
-                  }}
+                  value={localName}
+                  onChange={(e) => handleNameChange(e.target.value)}
                 />
 
                 <div className="template-manager-subhead">
                   <label className="module-label" htmlFor="tpl-manager-body">Mensaje</label>
-                  <span className="template-manager-counter">{activeTemplate.body.length} caracteres</span>
+                  <span className="template-manager-counter">{(localBody || '').length} caracteres</span>
                 </div>
                 <textarea
                   id="tpl-manager-body"
                   className="module-input"
                   rows={12}
-                  value={activeTemplate.body}
-                  onChange={(e) => {
-                    const nextBody = e.target.value;
-                    onTemplatesChange((prev) => prev.map((tpl) => (
-                      tpl.id === activeTemplate.id ? { ...tpl, body: nextBody } : tpl
-                    )));
-                  }}
+                  value={localBody}
+                  onChange={(e) => handleBodyChange(e.target.value)}
                 />
               </>
             )}
@@ -149,7 +223,7 @@ function TemplateManagerPanel({
                 id="tpl-manager-new-body"
                 className="module-input"
                 rows={8}
-                placeholder="Usa variables como {{cliente_nombre}}, {{numero_pedido}}, {{dias_transcurridos}}"
+                placeholder="Usa variables como {{cliente_nombre}}, {{numero_pedido}}, etc."
                 value={newBody}
                 onChange={(e) => setNewBody(e.target.value)}
               />

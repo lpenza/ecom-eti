@@ -54,23 +54,20 @@ export async function sincronizarShopify() {
 /**
  * Ejecutar fulfillment Shopify para pedidos con etiqueta generada
  */
-export async function ejecutarFulfillmentShopify(pedidoIds = null) {
+export async function ejecutarFulfillmentShopify(pedidoIds = null, trackingTemplate = null) {
   return await fetchAPI('/fulfillment-shopify', {
     method: 'POST',
-    body: JSON.stringify({ pedidoIds })
+    body: JSON.stringify({ pedidoIds, trackingTemplate })
   });
 }
 
 /**
- * Reenviar notificacion de tracking para un pedido
+ * Generar link de WhatsApp con tracking
  */
-export async function notificarTrackingPedido(pedidoId, options = {}) {
-  return await fetchAPI(`/notificar-tracking/${pedidoId}`, {
+export async function generarLinkWhatsApp(pedido, trackingTemplate) {
+  return await fetchAPI(`/generar-link-whatsapp`, {
     method: 'POST',
-    body: JSON.stringify({
-      sendEmail: options.sendEmail !== false,
-      sendWhatsApp: options.sendWhatsApp !== false
-    })
+    body: JSON.stringify({ pedido, trackingTemplate })
   });
 }
 
@@ -183,3 +180,59 @@ export async function obtenerCatalogoLocalidadesUES(departamentoId) {
   const query = departamentoId ? `?departamento_id=${encodeURIComponent(departamentoId)}` : '';
   return await fetchAPI(`/ues/catalog/localidades${query}`, { method: 'GET' });
 }
+
+// ==================== PLANTILLAS ====================
+
+/**
+ * Obtener todas las plantillas
+ */
+export async function obtenerPlantillas() {
+  const response = await fetchAPI('/templates', { method: 'GET' });
+  return response.data || [];
+}
+
+/**
+ * Crear una nueva plantilla
+ */
+export async function crearPlantilla(plantilla) {
+  const response = await fetchAPI('/templates', {
+    method: 'POST',
+    body: JSON.stringify(plantilla)
+  });
+  return response.data;
+}
+
+/**
+ * Actualizar una plantilla existente
+ */
+export async function actualizarPlantilla(id, cambios) {
+  const response = await fetchAPI(`/templates/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(cambios)
+  });
+  return response.data;
+}
+
+/**
+ * Eliminar una plantilla
+ */
+export async function eliminarPlantilla(id) {
+  return await fetchAPI(`/templates/${id}`, { method: 'DELETE' });
+}
+
+/**
+ * Establecer plantilla activa
+ */
+export async function activarPlantilla(id) {
+  const response = await fetchAPI(`/templates/${id}/activate`, { method: 'POST' });
+  return response.data;
+}
+
+/**
+ * Inicializar plantillas por defecto
+ */
+export async function inicializarPlantillas() {
+  const response = await fetchAPI('/templates/initialize', { method: 'POST' });
+  return response.data || [];
+}
+

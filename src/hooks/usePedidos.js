@@ -104,13 +104,13 @@ export function usePedidos() {
   }, [cargarPedidos]);
 
   // Ejecutar fulfillment en Shopify para pedidos con etiqueta generada
-  const ejecutarFulfillmentShopify = useCallback(async (pedidoIds = null) => {
+  const ejecutarFulfillmentShopify = useCallback(async (pedidoIds = null, trackingTemplate = null) => {
     console.log('🚚 Ejecutando fulfillment Shopify...');
     setLoading(true);
     setLoadingText('Ejecutando fulfillment Shopify...');
 
     try {
-      const result = await api.ejecutarFulfillmentShopify(pedidoIds);
+      const result = await api.ejecutarFulfillmentShopify(pedidoIds, trackingTemplate);
       await cargarPedidos();
       return { success: true, ...result };
     } catch (error) {

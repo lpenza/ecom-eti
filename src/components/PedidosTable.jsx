@@ -10,7 +10,8 @@ function PedidosTable({
   fulfillmentPreview,
   channelPriority = 'email',
   showNotifyColumn = true,
-  showTrackingColumn = true
+  showTrackingColumn = true,
+  activeTrackingTemplate
 }) {
   const allSelected = pedidos.length > 0 && selectedPedidos.length === pedidos.length;
 
@@ -65,6 +66,7 @@ function PedidosTable({
                   channelPriority={channelPriority}
                   showNotifyColumn={showNotifyColumn}
                   showTrackingColumn={showTrackingColumn}
+                  activeTrackingTemplate={activeTrackingTemplate}
                 />
               ))
             )}
@@ -75,7 +77,7 @@ function PedidosTable({
   );
 }
 
-function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion, onMarcarNotificado, channelPriority = 'email', showNotifyColumn = true, showTrackingColumn = true }) {
+function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion, onMarcarNotificado, channelPriority = 'email', showNotifyColumn = true, showTrackingColumn = true, activeTrackingTemplate }) {
   const estadoClass = pedido.estado === 'procesado' ? 'badge-success' : 'badge-warning';
   const estadoText = pedido.estado === 'procesado' ? 'Procesado' : 
                      pedido.estado === 'etiqueta_generada' ? 'Etiqueta Generada' : 
@@ -102,7 +104,7 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
       console.log('🔵 Botón WhatsApp clickeado, pedido ID:', pedido.id);
       console.log('🔵 onMarcarNotificado disponible?', !!onMarcarNotificado);
       
-      // Abrir WhatsApp con mensaje precargado
+      // Abrir WhatsApp con la plantilla activa de tracking
       const phoneNormalized = String(pedido.cliente_telefono || '')
         .replace(/\D/g, '')
         .replace(/^0+/, '');
@@ -111,30 +113,22 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
         ? phoneNormalized 
         : `598${phoneNormalized}`;
 
-      const nombre = pedido.cliente_nombre || '';
+      // Usar la plantilla activa de tracking
+      const nombreCompleto = pedido.cliente_nombre || '';
+      const primerNombre = nombreCompleto.trim().split(/\s+/)[0] || '';
       const trackingNumber = pedido.numero_seguimiento_ues || '';
       const trackingUrl = 'https://ues.com.uy/rastreo_paquete.html';
 
-      // Construir mensaje sin template literals para mejor compatibilidad de emojis
-      const lineas = [
-        'Hola ' + nombre + ' 💜 Te escribe Flor de Velinne 💅',
-        '',
-        '¡Tu pedido ya está en camino! 🚚✨',
-        '',
-        'Te dejo los datos para que puedas seguirlo cuando quieras:',
-        '',
-        '📦 Número de seguimiento: ' + trackingNumber,
-        '🔗 Link de rastreo: ' + trackingUrl,
-        '',
-        '💅 Recomendación:',
-        'Para una correcta aplicación y un mejor resultado, te recomendamos visitar nuestra guía paso a paso sobre cómo colocar las uñas en el siguiente enlace:',
-        '👉 https://www.velinneuy.com/pages/como-aplicar',
-        '',
-        'Gracias por confiar en nosotras 💫',
-        '¡Que lo disfrutes mucho! 💜'
-      ];
+      // Renderizar la plantilla con las variables
+      let mensaje = activeTrackingTemplate?.content || 
+        `Hola ${primerNombre}!\n\nTu pedido ya está en camino.\n\n📦 Tracking: ${trackingNumber}\n🔗 ${trackingUrl}`;
+
+      mensaje = mensaje
+        .replace(/\{\{cliente_nombre\}\}/g, primerNombre)
+        .replace(/\{\{numero_pedido\}\}/g, pedido.numero_pedido || '')
+        .replace(/\{\{tracking\}\}/g, trackingNumber)
+        .replace(/\{\{tracking_url\}\}/g, trackingUrl);
       
-      const mensaje = lineas.join('\n');
       const whatsappUrl = `https://api.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(mensaje)}`;
       window.open(whatsappUrl, '_blank');
       

@@ -10,14 +10,20 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(bodyParser.json());
+app.use(bodyParser.json({ charset: 'utf-8' }));
 app.use(express.static('public'));
+
+// Asegurar respuestas en UTF-8
+app.use((req, res, next) => {
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  next();
+});
 
 // Importar servicios
 const supabaseService = require('./services/supabaseService');
 const uesService = require('./services/uesService');
 const shopifyService = require('./services/shopifyService');
-const notificationService = require('./services/notificationService');
+const { generarLinkWhatsApp } = require('./services/notificationService');
 const logService = require('./services/logService');
 
 // Rutas
@@ -152,7 +158,7 @@ app.post('/api/sincronizar-shopify', async (req, res) => {
 
 async function handleFulfillmentShopify(req, res) {
   try {
-    const { pedidoIds, notifyEmail = true, notifyWhatsApp = true } = req.body || {};
+    const { pedidoIds } = req.body || {};
 
     let pedidos = [];
     if (Array.isArray(pedidoIds) && pedidoIds.length > 0) {
@@ -196,6 +202,7 @@ async function handleFulfillmentShopify(req, res) {
           shopifyOrderId,
           success: true,
           fulfillmentId: fulfillment?.id || null,
+          pedido: pedido // Devolver pedido completo para generar links de WhatsApp
         });
       } catch (error) {
         resultados.push({
@@ -210,43 +217,26 @@ async function handleFulfillmentShopify(req, res) {
     const successCount = resultados.filter((r) => r.success).length;
     const failCount = resultados.length - successCount;
 
-    let notificationSuccessCount = 0;
-    let notificationFailCount = 0;
+    // Identificar pedidos sin email para notificar por WhatsApp
+    const pedidosSinEmail = resultados
+      .filter(r => r.success && r.pedido && !r.pedido.email)
+      .map(r => ({
+        id: r.pedido.id,
+        numero_pedido: r.pedido.numero_pedido,
+        cliente_nombre: r.pedido.cliente_nombre,
+        telefono: r.pedido.telefono,
+        tracking: r.pedido.numero_seguimiento_ues
+      }));
 
-    for (const result of resultados) {
-      if (!result.success) continue;
-      const pedido = candidatos.find((p) => p.id === result.pedidoId);
-      if (!pedido) continue;
-
-      const notification = await notificationService.notificarTracking(pedido, {
-        trackingNumber: pedido.numero_seguimiento_ues,
-        sendEmail: notifyEmail,
-        sendWhatsApp: notifyWhatsApp,
-      });
-
-      result.notification = notification;
-
-      if (notification.anySent || notification.handledByShopifyEmail) {
-        notificationSuccessCount += 1;
-        // Actualizar timestamp de notificación
-        await supabaseService.actualizarPedido(pedido.id, {
-          notificacion_enviada_at: new Date().toISOString(),
-        });
-      } else {
-        notificationFailCount += 1;
-      }
-    }
-
-    logService.info(`Fulfillment Shopify ejecutado: ${successCount} OK, ${failCount} error`);
+    logService.info(`Fulfillment Shopify ejecutado: ${successCount} OK, ${failCount} error. ${pedidosSinEmail.length} sin email requieren WhatsApp`);
 
     res.json({
       success: true,
       count: resultados.length,
       successCount,
       failCount,
-      notificationSuccessCount,
-      notificationFailCount,
       data: resultados,
+      pedidosSinEmail // Frontend abrirá WhatsApp solo para estos
     });
   } catch (error) {
     logService.error('Error en fulfillment Shopify', error);
@@ -260,35 +250,25 @@ app.post('/api/fulfillment-shopify', handleFulfillmentShopify);
 // Alias legacy con typo historico (.NET): fullfilment
 app.post('/api/fullfilment-shopify', handleFulfillmentShopify);
 
-// Reintentar notificacion de tracking para un pedido puntual
-app.post('/api/notificar-tracking/:pedidoId', async (req, res) => {
+// Generar link de WhatsApp con tracking (simplificado - no envía por API)
+app.post('/api/generar-link-whatsapp', async (req, res) => {
   try {
-    const { pedidoId } = req.params;
-    const { sendEmail = true, sendWhatsApp = true } = req.body || {};
-
-    const pedido = await supabaseService.obtenerPedido(pedidoId);
-    if (!pedido) {
-      return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    const { pedido, trackingTemplate } = req.body;
+    
+    if (!pedido || !pedido.telefono) {
+      return res.status(400).json({ error: 'Datos de pedido incompletos o sin teléfono' });
     }
 
-    if (!pedido.numero_seguimiento_ues) {
-      return res.status(400).json({ success: false, error: 'Pedido sin numero de seguimiento' });
+    const resultado = generarLinkWhatsApp(pedido, trackingTemplate);
+    
+    if (resultado.success) {
+      res.json({ success: true, url: resultado.url, phone: resultado.phone });
+    } else {
+      res.status(500).json({ success: false, error: resultado.error });
     }
-
-    const notification = await notificationService.notificarTracking(pedido, {
-      trackingNumber: pedido.numero_seguimiento_ues,
-      sendEmail,
-      sendWhatsApp,
-    });
-
-    res.json({
-      success: true,
-      pedidoId,
-      notification,
-    });
   } catch (error) {
-    logService.error('Error al notificar tracking', error);
-    res.status(500).json({ success: false, error: error.message });
+    logService.error('Error al generar link de WhatsApp', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -747,8 +727,136 @@ app.get('/api/estadisticas', async (req, res) => {
   }
 });
 
+// ==================== RUTAS DE PLANTILLAS ====================
+
+// Obtener todas las plantillas
+app.get('/api/templates', async (req, res) => {
+  try {
+    const plantillas = await supabaseService.obtenerPlantillas();
+    res.json({ success: true, data: plantillas });
+  } catch (error) {
+    logService.error('Error al obtener plantillas', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Crear una nueva plantilla
+app.post('/api/templates', async (req, res) => {
+  try {
+    const { name, content, is_active } = req.body;
+
+    if (!name || !content) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Nombre y contenido son requeridos' 
+      });
+    }
+
+    const plantilla = await supabaseService.crearPlantilla({
+      name,
+      content,
+      is_active: is_active || false
+    });
+
+    logService.info(`Plantilla creada: ${name}`);
+    res.status(201).json({ success: true, data: plantilla });
+  } catch (error) {
+    logService.error('Error al crear plantilla', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Actualizar una plantilla existente
+app.put('/api/templates/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const cambios = req.body;
+
+    if (!id) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'ID de plantilla requerido' 
+      });
+    }
+
+    const plantilla = await supabaseService.actualizarPlantilla(id, cambios);
+    
+    logService.info(`Plantilla actualizada: ${id}`);
+    res.json({ success: true, data: plantilla });
+  } catch (error) {
+    logService.error('Error al actualizar plantilla', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Eliminar una plantilla
+app.delete('/api/templates/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'ID de plantilla requerido' 
+      });
+    }
+
+    await supabaseService.eliminarPlantilla(id);
+    
+    logService.info(`Plantilla eliminada: ${id}`);
+    res.json({ success: true, message: 'Plantilla eliminada' });
+  } catch (error) {
+    logService.error('Error al eliminar plantilla', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Establecer plantilla activa
+app.post('/api/templates/:id/activate', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'ID de plantilla requerido' 
+      });
+    }
+
+    const plantilla = await supabaseService.establecerPlantillaActiva(id);
+    
+    logService.info(`Plantilla activada: ${plantilla.name}`);
+    res.json({ success: true, data: plantilla });
+  } catch (error) {
+    logService.error('Error al activar plantilla', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Inicializar plantillas por defecto (se llama automáticamente en el arranque)
+app.post('/api/templates/initialize', async (req, res) => {
+  try {
+    await supabaseService.inicializarPlantillasDefecto();
+    const plantillas = await supabaseService.obtenerPlantillas();
+    
+    res.json({ 
+      success: true, 
+      message: 'Plantillas inicializadas',
+      data: plantillas 
+    });
+  } catch (error) {
+    logService.error('Error al inicializar plantillas', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Iniciar servidor
 app.listen(PORT, () => {
   console.log(`🚀 VELINNE Server corriendo en http://localhost:${PORT}`);
   logService.info(`Servidor iniciado en puerto ${PORT}`);
+  
+  // Inicializar plantillas por defecto al arrancar el servidor
+  supabaseService.inicializarPlantillasDefecto().catch(err => {
+    logService.error('Error al inicializar plantillas por defecto', err);
+  });
 });

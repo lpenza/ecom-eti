@@ -647,6 +647,159 @@ class SupabaseService {
     };
     return mapeo[fulfillmentStatus] || 'pendiente';
   }
+
+  // ==================== GESTIÓN DE PLANTILLAS ====================
+
+  // Función auxiliar para asegurar UTF-8 válido
+  ensureUtf8(text) {
+    if (!text) return text;
+    try {
+      return Buffer.from(text, 'utf8').toString('utf8');
+    } catch (e) {
+      return text;
+    }
+  }
+
+  // Obtener todas las plantillas
+  async obtenerPlantillas() {
+    try {
+      const { data, error } = await supabase
+        .from('templates')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+      
+      // Asegurar UTF-8 en el contenido
+      return (data || []).map(t => ({
+        ...t,
+        content: this.ensureUtf8(t.content)
+      }));
+    } catch (error) {
+      console.error('Error al obtener plantillas:', error);
+      throw error;
+    }
+  }
+
+  // Crear una nueva plantilla
+  async crearPlantilla(plantilla) {
+    try {
+      const { data, error } = await supabase
+        .from('templates')
+        .insert({
+          name: plantilla.name,
+          content: this.ensureUtf8(plantilla.content),
+          is_active: plantilla.is_active || false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .select();
+
+      if (error) throw error;
+      return data[0];
+    } catch (error) {
+      console.error('Error al crear plantilla:', error);
+      throw error;
+    }
+  }
+
+  // Actualizar una plantilla existente
+  async actualizarPlantilla(id, cambios) {
+    try {
+      // Asegurar UTF-8 en el content si viene en los cambios
+      const cambiosUtf8 = { ...cambios };
+      if (cambiosUtf8.content) {
+        cambiosUtf8.content = this.ensureUtf8(cambiosUtf8.content);
+      }
+      
+      const { data, error } = await supabase
+        .from('templates')
+        .update({
+          ...cambiosUtf8,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select();
+
+      if (error) throw error;
+      return data[0];
+    } catch (error) {
+      console.error('Error al actualizar plantilla:', error);
+      throw error;
+    }
+  }
+
+  // Eliminar una plantilla
+  async eliminarPlantilla(id) {
+    try {
+      const { error } = await supabase
+        .from('templates')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+      return { success: true };
+    } catch (error) {
+      console.error('Error al eliminar plantilla:', error);
+      throw error;
+    }
+  }
+
+  // Establecer plantilla activa (desactiva las demás)
+  async establecerPlantillaActiva(id) {
+    try {
+      // Desactivar todas las plantillas
+      await supabase
+        .from('templates')
+        .update({ is_active: false });
+
+      // Activar la plantilla seleccionada
+      const { data, error } = await supabase
+        .from('templates')
+        .update({ 
+          is_active: true,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select();
+
+      if (error) throw error;
+      return data[0];
+    } catch (error) {
+      console.error('Error al establecer plantilla activa:', error);
+      throw error;
+    }
+  }
+
+  // Inicializar plantillas por defecto si la tabla está vacía
+  async inicializarPlantillasDefecto() {
+    try {
+      const plantillas = await this.obtenerPlantillas();
+      
+      if (plantillas.length === 0) {
+        const plantillasDefecto = [
+          {
+            name: 'Seguimiento Nutritivo',
+            content: 'Hola {{cliente_nombre}}! 🌱\n\n¿Cómo va tu experiencia con tu pedido #{{numero_pedido}}? Ya pasaron {{dias_transcurridos}} días. \n\nNos encantaría saber cómo te sentís y si tenés alguna consulta sobre tu plan nutricional. Estamos acá para acompañarte! 💚\n\n¿Hay algo en lo que podamos ayudarte?',
+            is_active: true
+          },
+          {
+            name: 'Notificación de Envío',
+            content: '¡Hola {{cliente_nombre}}! 🚚\n\nTu pedido #{{numero_pedido}} ya está en camino.\n\n📦 Código de seguimiento: {{tracking}}\n🔗 Seguí tu envío acá: {{tracking_url}}\n\n¡Gracias por tu compra! 💚',
+            is_active: false
+          }
+        ];
+
+        for (const plantilla of plantillasDefecto) {
+          await this.crearPlantilla(plantilla);
+        }
+
+        console.log('✅ Plantillas por defecto inicializadas en la base de datos');
+      }
+    } catch (error) {
+      console.error('Error al inicializar plantillas por defecto:', error);
+    }
+  }
 }
 
 module.exports = new SupabaseService();

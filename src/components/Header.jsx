@@ -5,7 +5,6 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
     <header className="header">
       <div className="header-top">
         <div className="logo">
-          <h1>🚚 VELINNE</h1>
           <p>Sistema de Gestión de Envíos</p>
           <p className="header-flow">Flujo: Sincronizar → Validar → Enviar Tracking</p>
         </div>

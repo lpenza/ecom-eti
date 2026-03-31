@@ -1148,6 +1148,36 @@ body {
   gap: 0.5rem;
 }
 
+.template-manager-tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--brand-border);
+  padding-bottom: 0;
+}
+
+.template-tab {
+  background: none;
+  border: none;
+  padding: 0.5rem 1rem;
+  color: var(--brand-text-soft);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.2s;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.template-tab:hover {
+  color: var(--brand-primary);
+  background: var(--brand-surface-alt);
+}
+
+.template-tab-active {
+  color: var(--brand-primary);
+  border-bottom-color: var(--brand-primary);
+}
+
 .template-manager-grid {
   display: grid;
   grid-template-columns: minmax(540px, 1.45fr) minmax(320px, 1fr);
@@ -1618,6 +1648,46 @@ body {
 
 .channel-priority-option {
   margin-left: 0.1rem;
+}
+
+/* Active template selector */
+.active-template-selector {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.9rem;
+  background: var(--brand-primary-soft);
+  border: 1px solid var(--brand-border);
+  border-radius: 999px;
+  font-size: 0.85rem;
+  color: var(--brand-primary);
+  font-weight: 500;
+}
+
+.active-template-selector label {
+  margin: 0;
+  font-weight: 600;
+}
+
+.active-template-selector .template-selector {
+  background: var(--brand-surface);
+  border: 1px solid var(--brand-border);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--brand-text);
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.active-template-selector .template-selector:hover {
+  border-color: var(--brand-primary);
+}
+
+.active-template-selector .template-selector:focus {
+  outline: none;
+  border-color: var(--brand-primary);
+  box-shadow: 0 0 0 3px rgba(123, 47, 77, 0.1);
 }
 
 .btn-primary {
