@@ -434,6 +434,21 @@ class SupabaseService {
     return data || [];
   }
 
+  async buscarPedidosPorNumero(numeroPedido = '') {
+    const query = String(numeroPedido || '').trim();
+    if (!query) return [];
+
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .ilike('numero_pedido', `%${query}%`)
+      .order('created_at', { ascending: false })
+      .limit(200);
+
+    if (error) throw error;
+    return data || [];
+  }
+
   async obtenerEstadosClientes(customerIds = []) {
     const ids = Array.from(new Set((customerIds || []).filter(Boolean)));
     if (ids.length === 0) return {};

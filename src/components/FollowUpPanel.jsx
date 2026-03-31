@@ -82,9 +82,12 @@ function renderTemplate(templateBody, pedido) {
   });
 }
 
-function buildTaskScopeKey({ days, fromDate, toDate, estadoFiltro }) {
+function buildTaskScopeKey({ days, fromDate, toDate, estadoFiltro, pedidoPrioritario }) {
   const estado = estadoFiltro || 'default_finalizados';
-  return `${days}|${fromDate}|${toDate}|${estado}`;
+  const pedido = String(pedidoPrioritario || '').trim();
+  return pedido
+    ? `pedido:${pedido}`
+    : `${days}|${fromDate}|${toDate}|${estado}`;
 }
 
 function getCustomerStateMeta(state) {
@@ -104,6 +107,7 @@ function FollowUpPanel({
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState(getTodayIso());
   const [estadoFiltro, setEstadoFiltro] = useState('');
+  const [pedidoPrioritario, setPedidoPrioritario] = useState('');
   const [loading, setLoading] = useState(false);
   const [pedidos, setPedidos] = useState([]);
   const [taskStatus, setTaskStatus] = useState({});
@@ -151,7 +155,8 @@ function FollowUpPanel({
     fromDate,
     toDate,
     estadoFiltro,
-  }), [days, fromDate, toDate, estadoFiltro]);
+    pedidoPrioritario,
+  }), [days, fromDate, toDate, estadoFiltro, pedidoPrioritario]);
 
   const isPedidoSent = (pedidoId) => Boolean(taskStatus[`${taskScopeKey}:${pedidoId}`]);
 
@@ -257,6 +262,7 @@ function FollowUpPanel({
         from: fromDate,
         to: toDate,
         estado: estadoFiltro,
+        pedido: pedidoPrioritario,
       });
       if (!result.success) {
         mostrarToast?.(result.error || 'No se pudo cargar follow-up', 'error');
@@ -465,6 +471,18 @@ function FollowUpPanel({
             <div className="followup-card-box">
               <h4>Segmento del dia</h4>
               <p className="followup-section-hint">Paso 1: Defini los filtros del grupo que queres contactar.</p>
+              <div>
+                <label className="module-label" htmlFor="followup-pedido-prioritario">Pedido puntual (prioritario)</label>
+                <input
+                  id="followup-pedido-prioritario"
+                  className="module-input"
+                  type="text"
+                  placeholder="Ej: 1550"
+                  value={pedidoPrioritario}
+                  onChange={(e) => setPedidoPrioritario(e.target.value)}
+                />
+                <small className="module-help">Si completas este campo, se ignoran dias, fechas y estado para traer ese pedido rapido.</small>
+              </div>
               <div className="module-grid followup-segment-grid">
                 <div>
                   <label className="module-label" htmlFor="followup-days">Dias desde la compra</label>

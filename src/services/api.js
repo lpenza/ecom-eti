@@ -116,12 +116,13 @@ export async function generarEtiquetaColaboracion(data) {
 /**
  * Obtener pedidos candidatos para follow-up comercial
  */
-export async function obtenerPedidosFollowUp({ days = 15, from = '', to = '', estado = '' } = {}) {
+export async function obtenerPedidosFollowUp({ days = 15, from = '', to = '', estado = '', pedido = '' } = {}) {
   const params = new URLSearchParams();
   params.set('days', String(days));
   if (from) params.set('from', from);
   if (to) params.set('to', to);
   if (estado) params.set('estado', estado);
+  if (pedido) params.set('pedido', pedido);
 
   return await fetchAPI(`/followup/pedidos?${params.toString()}`, { method: 'GET' });
 }

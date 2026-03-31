@@ -326,11 +326,14 @@ app.get('/api/followup/pedidos', async (req, res) => {
     const from = String(req.query.from || '').trim();
     const to = String(req.query.to || '').trim();
     const estado = String(req.query.estado || '').trim().toLowerCase();
+    const pedido = String(req.query.pedido || '').trim();
 
     const fromDate = from ? new Date(`${from}T00:00:00`) : null;
     const toDate = to ? new Date(`${to}T23:59:59`) : null;
 
-    const pedidos = await supabaseService.obtenerPedidosParaFollowUp(estado);
+    const pedidos = pedido
+      ? await supabaseService.buscarPedidosPorNumero(pedido)
+      : await supabaseService.obtenerPedidosParaFollowUp(estado);
     const ahora = new Date();
 
     const enrich = pedidos.map((pedido) => {
@@ -350,12 +353,14 @@ app.get('/api/followup/pedidos', async (req, res) => {
       };
     });
 
-    const filtrados = enrich.filter((pedido) => {
-      const fechaObjetivo = new Date(pedido.followup_target_date);
-      if (fromDate && fechaObjetivo < fromDate) return false;
-      if (toDate && fechaObjetivo > toDate) return false;
-      return true;
-    });
+    const filtrados = pedido
+      ? enrich
+      : enrich.filter((pedido) => {
+          const fechaObjetivo = new Date(pedido.followup_target_date);
+          if (fromDate && fechaObjetivo < fromDate) return false;
+          if (toDate && fechaObjetivo > toDate) return false;
+          return true;
+        });
 
     const customerIds = filtrados.map((p) => p.customer_id);
     const statesByCustomer = await supabaseService.obtenerEstadosClientes(customerIds);
@@ -372,6 +377,8 @@ app.get('/api/followup/pedidos', async (req, res) => {
       success: true,
       days,
       estado: estado || null,
+      pedido: pedido || null,
+      prioritizedByPedido: Boolean(pedido),
       count: withState.length,
       data: withState,
     });
