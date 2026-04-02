@@ -5,7 +5,7 @@ import {
   obtenerPayloadPreviewUES,
 } from '../../services/api';
 
-function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex = 0, onReviewedChange, onClose, onConfirm }) {
+function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex = 0, onReviewedChange, onClose, onConfirm, isReclamoMode = false }) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [departamentos, setDepartamentos] = useState([]);
   const [localidadesByDep, setLocalidadesByDep] = useState({});
@@ -13,6 +13,8 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
   const [formsByPedidoId, setFormsByPedidoId] = useState({});
   const [validationError, setValidationError] = useState('');
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
+  const [localidadSugerida, setLocalidadSugerida] = useState(null); // { id, nombre, score }
+  const [numeroPuertaSugerido, setNumeroPuertaSugerido] = useState(false); // true si se autocompletó con s/n
 
   const currentPedido = pedidos[currentIndex] || null;
   const currentPreview = currentPedido ? previewByPedidoId[currentPedido.id] : null;
@@ -36,20 +38,27 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     const warnings = [];
 
     if (!String(form.payloadDireccion?.calle || '').trim()) blockers.push('Falta calle');
-    if (!String(form.payloadDireccion?.nro_puerta || '').trim()) blockers.push('Falta número de puerta');
+    
+    const nroPuerta = String(form.payloadDireccion?.nro_puerta || '').trim();
+    // Tratar "s/n" como si estuviera vacío - es solo una sugerencia
+    if (!nroPuerta || nroPuerta.toLowerCase() === 's/n') {
+      blockers.push('Falta número de puerta');
+    }
+    
     if (!String(form.payloadDireccion?.departamento_id || '').trim()) blockers.push('Falta departamento');
     if (!String(form.payloadDireccion?.localidad_id || '').trim()) blockers.push('Falta localidad');
     if (!String(form.payloadEnvio?.nombre_recibe || '').trim()) blockers.push('Falta nombre destinatario');
     if (!String(form.payloadEnvio?.telefono_recibe || '').trim()) blockers.push('Falta teléfono destinatario');
 
     if (!String(form.payloadEnvio?.email_recibe || '').trim()) warnings.push('Sin email destinatario');
-    if (!String(form.payloadDireccion?.observaciones || '').trim()) warnings.push('Sin observaciones');
 
     return { blockers, warnings };
   };
 
   useEffect(() => {
     setCurrentIndex(initialIndex);
+    setLocalidadSugerida(null); // Limpiar sugerencia al cambiar de pedido
+    setNumeroPuertaSugerido(false); // Limpiar indicador de sugerencia
   }, [initialIndex]);
 
   useEffect(() => {
@@ -78,7 +87,7 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     }
   };
 
-  const ensurePreviewLoaded = async (pedidoId) => {
+  const ensurePreviewLoaded = async (pedidoId, pedidoData) => {
     if (previewByPedidoId[pedidoId]?.data || previewByPedidoId[pedidoId]?.loading) return;
 
     setPreviewByPedidoId((prev) => ({
@@ -155,20 +164,197 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
           loading: false,
           data: null,
           error: error.message || 'No se pudo obtener el preview UES',
+          pedidoDataFallback: pedidoData, // Guardar datos del pedido para usar después
+          direccionParseada: error.response?.direccionParseada, // Guardar dirección parseada si está disponible
         },
       }));
+
+      // Inicializar formulario básico - el departamento se autodetectará en useEffect
+      setFormsByPedidoId((prev) => {
+        if (prev[pedidoId]) return prev;
+
+        if (!pedidoData) return prev;
+
+        // Usar dirección parseada del backend si está disponible
+        const direccionParseada = error.response?.direccionParseada;
+
+        return {
+          ...prev,
+          [pedidoId]: {
+            checked: selectedPedidoIds.includes(pedidoId),
+            bypassValidation: false,
+            payloadDireccion: {
+              calle: direccionParseada?.calle || pedidoData.calle || pedidoData.direccion_envio || '',
+              nro_puerta: direccionParseada?.numeroPuerta || pedidoData.numero_puerta || '',
+              numero_apartamento: direccionParseada?.apartamento || pedidoData.apartamento || '',
+              zip_code: pedidoData.codigo_postal || '11000',
+              latitud: pedidoData.latitud || '',
+              longitud: pedidoData.longitud || '',
+              departamento_id: '', // Se autodetectará después
+              localidad_id: '',
+              observaciones: direccionParseada?.observaciones || '',
+            },
+            payloadEnvio: {
+              referencia: pedidoData.numero_pedido ? `#${pedidoData.numero_pedido}` : '',
+              nombre_recibe: pedidoData.cliente_nombre || '',
+              telefono_recibe: pedidoData.cliente_telefono || '',
+              email_recibe: pedidoData.cliente_email || '',
+              servicio_id: '1473',
+              direccion_remitente_id: '24225033',
+            },
+            guia: {
+              comentario: pedidoData.numero_pedido ? `Pedido #${pedidoData.numero_pedido}` : '',
+              peso: '',
+              ci: '',
+              valor_declarado: '',
+            },
+          },
+        };
+      });
     }
   };
 
   useEffect(() => {
     if (!currentPedido) return;
-    ensurePreviewLoaded(currentPedido.id);
+    ensurePreviewLoaded(currentPedido.id, currentPedido);
+    setLocalidadSugerida(null); // Limpiar sugerencia al cambiar de pedido
   }, [currentPedido]);
 
   useEffect(() => {
     if (!currentDepartamentoId) return;
     loadLocalidades(currentDepartamentoId);
   }, [currentDepartamentoId]);
+
+  // Autodetectar departamento cuando hay error de preview y los departamentos ya se cargaron
+  useEffect(() => {
+    if (!currentPedido || !currentPreview?.error || departamentos.length === 0) return;
+    
+    const form = formsByPedidoId[currentPedido.id];
+    // Solo autodetectar si el formulario existe pero no tiene departamento asignado
+    if (!form || form.payloadDireccion?.departamento_id) return;
+
+    const pedidoData = currentPreview.pedidoDataFallback || currentPedido;
+    const nombreDepartamento = String(pedidoData.departamento || '').toLowerCase().trim();
+    
+    if (nombreDepartamento) {
+      const depEncontrado = departamentos.find(
+        dep => String(dep.nombre || '').toLowerCase().trim() === nombreDepartamento
+      );
+      
+      if (depEncontrado) {
+        const depId = String(depEncontrado.id);
+        console.log(`✅ Departamento autodetectado: ${depEncontrado.nombre} (ID: ${depId})`);
+        
+        // Actualizar el formulario con el departamento detectado
+        setFormsByPedidoId((prev) => ({
+          ...prev,
+          [currentPedido.id]: {
+            ...prev[currentPedido.id],
+            payloadDireccion: {
+              ...prev[currentPedido.id]?.payloadDireccion,
+              departamento_id: depId,
+            },
+          },
+        }));
+        
+        // Cargar localidades de este departamento
+        loadLocalidades(depId);
+      }
+    }
+  }, [currentPedido, currentPreview, departamentos, formsByPedidoId]);
+
+  // Sugerir localidad inteligente cuando las localidades se cargan y hay error
+  useEffect(() => {
+    if (!currentPedido || !currentPreview?.error) return;
+    if (localidadesActuales.length === 0) return;
+
+    const pedidoData = currentPreview.pedidoDataFallback || currentPedido;
+    const localidadOriginal = String(pedidoData.localidad || '').trim();
+    
+    if (!localidadOriginal) return;
+
+    // Función de fuzzy matching simple
+    const calcularSimilitud = (str1, str2) => {
+      const s1 = str1.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const s2 = str2.toLowerCase().replace(/[^a-z0-9]/g, '');
+      
+      // Coincidencia exacta
+      if (s1 === s2) return 100;
+      
+      // Contiene
+      if (s1.includes(s2) || s2.includes(s1)) return 80;
+      
+      // Levenshtein simplificado (primeras letras)
+      const prefix = Math.min(s1.length, s2.length, 5);
+      let matches = 0;
+      for (let i = 0; i < prefix; i++) {
+        if (s1[i] === s2[i]) matches++;
+      }
+      return (matches / prefix) * 60;
+    };
+
+    // Buscar mejor coincidencia
+    let mejorMatch = null;
+    let mejorScore = 0;
+
+    for (const loc of localidadesActuales) {
+      const score = calcularSimilitud(localidadOriginal, loc.nombre);
+      if (score > mejorScore) {
+        mejorScore = score;
+        mejorMatch = { id: String(loc.id), nombre: loc.nombre, score };
+      }
+    }
+
+    // Solo sugerir si el score es razonable (> 50%)
+    if (mejorMatch && mejorScore > 50) {
+      console.log(`💡 Localidad sugerida: ${mejorMatch.nombre} (score: ${mejorScore})`);
+      setLocalidadSugerida(mejorMatch);
+      
+      // Auto-seleccionar la sugerencia en el formulario
+      setFormsByPedidoId((prev) => ({
+        ...prev,
+        [currentPedido.id]: {
+          ...prev[currentPedido.id],
+          payloadDireccion: {
+            ...prev[currentPedido.id]?.payloadDireccion,
+            localidad_id: mejorMatch.id,
+          },
+        },
+      }));
+    } else {
+      setLocalidadSugerida(null);
+    }
+  }, [currentPedido, currentPreview, localidadesActuales]);
+
+  // Auto-completar número de puerta con "s/n" si está vacío
+  useEffect(() => {
+    if (!currentPedido || !currentForm) return;
+    
+    const nroPuerta = String(currentForm.payloadDireccion?.nro_puerta || '').trim();
+    
+    // Si el número de puerta está vacío, autocompletar con "s/n"
+    if (!nroPuerta) {
+      console.log(`💡 Autocompletando nro_puerta con "s/n" (sin número)`);
+      setNumeroPuertaSugerido(true);
+      
+      setFormsByPedidoId((prev) => ({
+        ...prev,
+        [currentPedido.id]: {
+          ...prev[currentPedido.id],
+          payloadDireccion: {
+            ...prev[currentPedido.id]?.payloadDireccion,
+            nro_puerta: 's/n',
+          },
+        },
+      }));
+    } else if (nroPuerta.toLowerCase() === 's/n') {
+      // Si es s/n, mantener el indicador de sugerencia
+      setNumeroPuertaSugerido(true);
+    } else {
+      // Si tiene un valor DIFERENTE de s/n, limpiar el indicador
+      setNumeroPuertaSugerido(false);
+    }
+  }, [currentPedido, currentForm?.payloadDireccion?.nro_puerta]);
 
   const updateCurrentForm = (section, key, value) => {
     if (!currentPedido) return;
@@ -215,20 +401,23 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     const items = pedidos.map((pedido) => {
       const form = formsByPedidoId[pedido.id];
       const validation = getFormValidation(form);
+      const payloadOverrides = form ? {
+        payloadDireccion: form.payloadDireccion || {},
+        payloadEnvio: form.payloadEnvio || {},
+        guia: form.guia || {},
+      } : null;
+
       return {
         pedidoId: pedido.id,
         checked: !!form?.checked,
         bypassValidation: !!form?.bypassValidation,
         blockers: validation.blockers,
-        payloadOverrides: {
-          payloadDireccion: form?.payloadDireccion || {},
-          payloadEnvio: form?.payloadEnvio || {},
-          guia: form?.guia || {},
-        },
+        payloadOverrides: payloadOverrides,
       };
     });
 
     const checkedItems = items.filter((item) => item.checked);
+
     if (checkedItems.length === 0) {
       setValidationError('Marca al menos un pedido como revisado para generar.');
       return;
@@ -280,7 +469,10 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
 
   const getPedidoLabel = (pedidoItem) => pedidoItem.numero_pedido || pedidoItem.id?.substring(0, 8);
   const isPedidoChecked = (pedidoId) => !!formsByPedidoId[pedidoId]?.checked;
-  const isPedidoLoaded = (pedidoId) => !!previewByPedidoId[pedidoId]?.data;
+  const isPedidoLoaded = (pedidoId) => {
+    const preview = previewByPedidoId[pedidoId];
+    return preview && preview.loading === false;
+  };
   const getPedidoSidebarStatus = (pedidoId) => {
     const checked = isPedidoChecked(pedidoId);
     const loaded = isPedidoLoaded(pedidoId);
@@ -336,17 +528,40 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     <div className="modal modal-open">
       <div className="modal-content modal-large">
         <div className="modal-header">
-          <h3>🔍 Vista Previa de Datos - Orden #{currentPedido.numero_pedido || currentPedido.id?.substring(0, 8)}</h3>
+          <h3>
+            {isReclamoMode ? '🔄 ' : '🔍 '}
+            Vista Previa de Datos - Orden #{currentPedido.numero_pedido || currentPedido.id?.substring(0, 8)}
+            {isReclamoMode && <span style={{color: '#d93025', fontSize: '0.9em', marginLeft: '8px'}}>(RECLAMO - RCL)</span>}
+          </h3>
           <button className="btn-close" onClick={onClose}>✕</button>
         </div>
-        <div className="preview-topbar">
-          <div className="preview-counter">
-            Pedido {currentIndex + 1} de {pedidos.length}
+        {isReclamoMode && (
+          <div style={{
+            background: '#fff3cd',
+            border: '1px solid #ffc107',
+            borderRadius: '4px',
+            padding: '12px',
+            margin: '0 16px 12px',
+            fontSize: '13px'
+          }}>
+            <strong>⚠️ Modo Reclamo:</strong> Esta etiqueta se generará con referencia RCL{currentPedido.numero_pedido || currentPedido.id?.substring(0, 8)}. 
+            Revisa y edita la dirección de envío si es necesario.
           </div>
+        )}
+        <div className="preview-topbar">
+          {!isReclamoMode && (
+            <div className="preview-counter">
+              Pedido {currentIndex + 1} de {pedidos.length}
+            </div>
+          )}
           <div className="preview-nav-actions">
-            <button className="btn btn-secondary btn-sm" onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))} disabled={currentIndex === 0}>◀ Anterior</button>
-            <button className="btn btn-secondary btn-sm" onClick={() => setCurrentIndex((i) => Math.min(pedidos.length - 1, i + 1))} disabled={currentIndex === pedidos.length - 1}>Siguiente ▶</button>
-            <button className="btn btn-primary btn-sm" onClick={handleMarkOkAndNext} disabled={!canMarkCurrent}>✔ Marcar OK y siguiente</button>
+            {!isReclamoMode && (
+              <>
+                <button className="btn btn-secondary btn-sm" onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))} disabled={currentIndex === 0}>◀ Anterior</button>
+                <button className="btn btn-secondary btn-sm" onClick={() => setCurrentIndex((i) => Math.min(pedidos.length - 1, i + 1))} disabled={currentIndex === pedidos.length - 1}>Siguiente ▶</button>
+                <button className="btn btn-primary btn-sm" onClick={handleMarkOkAndNext} disabled={!canMarkCurrent}>✔ Marcar OK y siguiente</button>
+              </>
+            )}
             <button className={`btn btn-sm ${currentForm?.checked ? 'btn-success' : 'btn-warning'}`} onClick={toggleCurrentChecked}>
               {currentForm?.checked ? '✅ Revisado' : '☑ Marcar Revisado'}
             </button>
@@ -466,9 +681,25 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
               <p className="preview-loading">Cargando payload real de UES...</p>
             )}
             {!currentPreview?.loading && currentPreview?.error && (
-              <p className="preview-error">{currentPreview.error}</p>
+              <div className="preview-error-banner" style={{
+                background: '#fff3cd',
+                border: '2px solid #ff9800',
+                borderRadius: '4px',
+                padding: '12px',
+                marginBottom: '16px',
+                fontSize: '14px'
+              }}>
+                <strong>⚠️ No se pudo detectar automáticamente la localidad:</strong>
+                <p style={{margin: '8px 0 0 0', fontSize: '13px', color: '#666'}}>
+                  {currentPreview.error}
+                </p>
+                <p style={{margin: '8px 0 0 0', fontSize: '13px', fontWeight: 'bold', color: '#d93025'}}>
+                  👉 Por favor, verifica manualmente que la <strong>Localidad</strong> sea la correcta{!currentForm?.payloadDireccion?.departamento_id && ' y el Departamento'}. 
+                  Los demás campos ya están precargados y son editables en caso de que se requiera.
+                </p>
+              </div>
             )}
-            {!currentPreview?.loading && !currentPreview?.error && currentForm && (
+            {!currentPreview?.loading && currentForm && (
               <>
                 <div className="preview-edit-grid">
                   <h5>guardarDireccion</h5>
@@ -480,6 +711,11 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                   <div className="preview-field">
                     <strong>Nro puerta:</strong>
                     <input value={currentForm.payloadDireccion?.nro_puerta || ''} onChange={(e) => updateCurrentForm('payloadDireccion', 'nro_puerta', e.target.value)} />
+                    {numeroPuertaSugerido && currentForm.payloadDireccion?.nro_puerta?.toLowerCase() === 's/n' && (
+                      <span className="preview-ref" style={{color: '#ff9800', fontWeight: 'bold'}}>
+                        💡 Sug: s/n (verificar número real)
+                      </span>
+                    )}
                   </div>
                   <div className="preview-field">
                     <strong>Apartamento:</strong>
@@ -509,7 +745,13 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                         <option key={loc.id} value={loc.id}>{loc.id} - {loc.nombre}</option>
                       ))}
                     </select>
-                    <span className="preview-ref">Ref: {localidadRefNombre}</span>
+                    {localidadSugerida && currentPreview?.error ? (
+                      <span className="preview-ref" style={{color: '#1976d2', fontWeight: 'bold'}}>
+                        💡 Sug: {localidadSugerida.nombre} ({Math.round(localidadSugerida.score)}% match)
+                      </span>
+                    ) : (
+                      <span className="preview-ref">Ref: {localidadRefNombre}</span>
+                    )}
                   </div>
                   <div className="preview-field preview-field-column preview-observaciones">
                     <strong>Observaciones de direccion:</strong>
@@ -628,7 +870,7 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
             Cancelar
           </button>
           <button className="btn btn-primary" onClick={handleConfirmClick}>
-            {isBatch ? '✅ Confirmar y Generar Todos' : '✅ Confirmar y Generar'}
+            {isReclamoMode ? '🔄 Generar Etiqueta RCL' : isBatch ? '✅ Confirmar y Generar Todos' : '✅ Confirmar y Generar'}
           </button>
         </div>
       </div>

@@ -1,6 +1,6 @@
 import React from 'react';
 
-function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES, uesAuthenticated }) {
+function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES, onRegenerarCache, uesAuthenticated }) {
   return (
     <header className="header">
       <div className="header-top">
@@ -19,6 +19,15 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
           >
             {uesAuthenticated ? '✅ UES Conectado' : '🔐 Login UES'}
           </button>
+          {uesAuthenticated && onRegenerarCache && (
+            <button 
+              className="btn btn-secondary header-btn" 
+              onClick={onRegenerarCache}
+              title="Actualizar catálogo de localidades desde UES"
+            >
+              🔄 Actualizar Catálogo
+            </button>
+          )}
         </div>
       </div>
       <div className="stats" id="stats">

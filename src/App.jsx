@@ -15,7 +15,10 @@ import {
   crearPlantilla,
   actualizarPlantilla,
   eliminarPlantilla,
-  activarPlantilla
+  activarPlantilla,
+  combinarPdfsEtiquetas,
+  regenerarCacheUES,
+  obtenerEstadoCacheUES
 } from './services/api';
 
 function App() {
@@ -57,6 +60,7 @@ function App() {
   const [reclamoNotas, setReclamoNotas] = useState('');
   const [pedidosFinalizados, setPedidosFinalizados] = useState([]);
   const [pedidosFinalizadosLoaded, setPedidosFinalizadosLoaded] = useState(false);
+  const [previewMode, setPreviewMode] = useState('normal'); // 'normal' | 'reclamo'
   const [templates, setTemplates] = useState([]);
   const [activeTemplateId, setActiveTemplateId] = useState('');
   const [activeTrackingTemplateId, setActiveTrackingTemplateId] = useState('');
@@ -188,6 +192,38 @@ function App() {
     cargarPedidos();
   }, []);
 
+  // Monitorear estado del caché UES en background
+  useEffect(() => {
+    let cacheCheckInterval;
+    let cacheNotified = false;
+    
+    const verificarCacheUES = async () => {
+      try {
+        const estado = await obtenerEstadoCacheUES();
+        
+        if (estado.ready && !cacheNotified) {
+          mostrarToast('✅ Catálogo UES disponible', 'success');
+          cacheNotified = true;
+        } else if (!estado.ready && estado.error && !cacheNotified) {
+          // Mostrar warning si hay error persistente después de 10 segundos
+          mostrarToast('⚠️ Catálogo UES aún actualizándose...', 'info');
+        }
+      } catch (err) {
+        // Silenciar errores de consulta (no es crítico)
+      }
+    };
+    
+    // Verificar estado cada 3 segundos durante 30 segundos max
+    let checkCount = 0;
+    cacheCheckInterval = setInterval(() => {
+      verificarCacheUES();
+      checkCount++;
+      if (checkCount > 10) clearInterval(cacheCheckInterval); // Max 30 segundos
+    }, 3000);
+    
+    return () => clearInterval(cacheCheckInterval);
+  }, []);
+
   // Cargar plantillas desde la API
   useEffect(() => {
     let cancelled = false;
@@ -275,7 +311,13 @@ function App() {
       return;
     }
     
+    // Si estamos en modo reclamo, usar el handler específico
+    if (previewMode === 'reclamo') {
+      return handleConfirmarReclamo(items);
+    }
+    
     setShowDatosModal(false);
+    setPreviewMode('normal');
 
     if (items.length === 1) {
       const item = items[0];
@@ -292,15 +334,36 @@ function App() {
 
     let exitosos = 0;
     let fallidos = 0;
+    const pdfUrlsExitosas = [];
     const totalMarcados = items.length;
 
     for (const item of items) {
       const resultado = await generarEtiqueta(item.pedidoId, item.payloadOverrides || null);
       if (resultado.success) {
         exitosos += 1;
+        if (resultado.pdfUrl) {
+          pdfUrlsExitosas.push(resultado.pdfUrl);
+        }
       } else {
         fallidos += 1;
       }
+    }
+
+    if (pdfUrlsExitosas.length > 1) {
+      try {
+        const combinado = await combinarPdfsEtiquetas(pdfUrlsExitosas);
+        if (combinado?.success && combinado?.pdfUrl) {
+          setPdfUrl(combinado.pdfUrl);
+          setShowPDFModal(true);
+        }
+      } catch (error) {
+        mostrarToast('Se generaron etiquetas, pero no se pudo combinar el PDF. Mostrando la primera.', 'warning');
+        setPdfUrl(pdfUrlsExitosas[0]);
+        setShowPDFModal(true);
+      }
+    } else if (pdfUrlsExitosas.length === 1) {
+      setPdfUrl(pdfUrlsExitosas[0]);
+      setShowPDFModal(true);
     }
 
     limpiarSeleccion();
@@ -565,6 +628,21 @@ function App() {
     }
   };
 
+  // Handler para regenerar caché de catálogo UES
+  const handleRegenerarCacheUES = async () => {
+    try {
+      mostrarToast('🔄 Actualizando catálogo de localidades...', 'info');
+      const resultado = await regenerarCacheUES();
+      if (resultado.success) {
+        mostrarToast(`✅ ${resultado.message}`, 'success');
+      } else {
+        mostrarToast(resultado.error || 'Error al actualizar catálogo', 'error');
+      }
+    } catch (error) {
+      mostrarToast('❌ Error al actualizar catálogo UES', 'error');
+    }
+  };
+
   // Handler para validación masiva previa a generar
   const handleValidarSeleccionados = async () => {
     if (pedidosPendientes.length === 0) {
@@ -588,7 +666,41 @@ function App() {
       return;
     }
 
-    const resultado = await generarEtiquetaReclamo(reclamoPedidoId, reclamoNotas);
+    // Buscar el pedido seleccionado en la lista de finalizados
+    const pedidoSeleccionado = pedidosFinalizados.find(p => p.id === reclamoPedidoId);
+    if (!pedidoSeleccionado) {
+      mostrarToast('No se encontró el pedido seleccionado', 'error');
+      return;
+    }
+
+    // Abrir modal de preview en modo reclamo
+    setPreviewPedidos([pedidoSeleccionado]);
+    setPreviewInitialIndex(0);
+    setPreviewMode('reclamo');
+    setShowDatosModal(true);
+  };
+
+  const handleConfirmarReclamo = async (items) => {
+    if (!Array.isArray(items) || items.length === 0) return;
+    
+    setShowDatosModal(false);
+    setPreviewMode('normal');
+
+    const item = items[0]; // Solo hay un pedido en modo reclamo
+    
+    // Agregar las notas del reclamo a las observaciones si hay
+    if (reclamoNotas && item.payloadOverrides?.payloadDireccion) {
+      const obsActuales = item.payloadOverrides.payloadDireccion.observaciones || '';
+      item.payloadOverrides.payloadDireccion.observaciones = 
+        [obsActuales, reclamoNotas].filter(Boolean).join(' | ');
+    }
+
+    const resultado = await generarEtiquetaReclamo(
+      item.pedidoId, 
+      reclamoNotas, 
+      item.payloadOverrides
+    );
+    
     if (!resultado.success) {
       mostrarToast(resultado.error || 'Error generando etiqueta de reclamo', 'error');
       return;
@@ -598,7 +710,13 @@ function App() {
       setPdfUrl(resultado.pdfUrl);
       setShowPDFModal(true);
     }
+    
     mostrarToast(`✅ Reclamo ${resultado.referencia} generado`, 'success');
+    
+    // Limpiar campos del formulario
+    setReclamoPedidoId('');
+    setReclamoNotas('');
+    setReclamoBusqueda('');
   };
 
   const handleGenerarColaboracion = async () => {
@@ -683,6 +801,7 @@ function App() {
             onFilterChange={setTableFilter}
             onActualizar={cargarPedidos}
             onLoginUES={handleLoginUES}
+            onRegenerarCache={handleRegenerarCacheUES}
             uesAuthenticated={uesAuthenticated}
           />
         )}
@@ -921,11 +1040,15 @@ function App() {
       {showDatosModal && previewPedidos.length > 0 && (
         <DatosPreviewModal
           pedidos={previewPedidos}
-          selectedPedidoIds={selectedPedidos}
+          selectedPedidoIds={previewMode === 'reclamo' ? [reclamoPedidoId] : selectedPedidos}
           initialIndex={previewInitialIndex}
           onReviewedChange={setPedidoSeleccionado}
-          onClose={() => setShowDatosModal(false)}
+          onClose={() => {
+            setShowDatosModal(false);
+            setPreviewMode('normal');
+          }}
           onConfirm={handleConfirmarGeneracion}
+          isReclamoMode={previewMode === 'reclamo'}
         />
       )}
 

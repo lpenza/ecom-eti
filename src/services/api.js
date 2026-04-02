@@ -16,8 +16,11 @@ async function fetchAPI(url, options = {}) {
     });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ message: 'Error desconocido' }));
-      throw new Error(error.message || `HTTP ${response.status}`);
+      const errorData = await response.json().catch(() => ({ message: 'Error desconocido' }));
+      const error = new Error(errorData.message || `HTTP ${response.status}`);
+      error.response = errorData; // Incluir datos completos del error
+      error.status = response.status;
+      throw error;
     }
 
     return await response.json();
@@ -93,10 +96,10 @@ export async function generarEtiqueta(pedidoId, payloadOverrides = null) {
 /**
  * Generar etiqueta de reclamo asociada a un pedido existente
  */
-export async function generarEtiquetaReclamo(pedidoId, notas = '') {
+export async function generarEtiquetaReclamo(pedidoId, notas = '', payloadOverrides = null) {
   return await fetchAPI(`/reclamos/${pedidoId}/generar-etiqueta`, {
     method: 'POST',
-    body: JSON.stringify({ notas })
+    body: JSON.stringify({ notas, payloadOverrides })
   });
 }
 
@@ -179,6 +182,27 @@ export async function obtenerCatalogoDepartamentosUES() {
 export async function obtenerCatalogoLocalidadesUES(departamentoId) {
   const query = departamentoId ? `?departamento_id=${encodeURIComponent(departamentoId)}` : '';
   return await fetchAPI(`/ues/catalog/localidades${query}`, { method: 'GET' });
+}
+
+export async function combinarPdfsEtiquetas(pdfUrls = []) {
+  return await fetchAPI('/ues/combinar-pdfs', {
+    method: 'POST',
+    body: JSON.stringify({ pdfUrls })
+  });
+}
+
+/**
+ * Regenerar caché de contexto UES (departamentos y localidades)
+ */
+export async function regenerarCacheUES() {
+  return await fetchAPI('/ues/regenerar-cache', { method: 'POST' });
+}
+
+/**
+ * Obtener estado del caché UES
+ */
+export async function obtenerEstadoCacheUES() {
+  return await fetchAPI('/ues/cache-status');
 }
 
 // ==================== PLANTILLAS ====================
