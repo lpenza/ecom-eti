@@ -3,6 +3,7 @@ const cors = require('cors');
 const bodyParser = require('body-parser');
 const path = require('path');
 const fs = require('fs').promises;
+const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
@@ -25,6 +26,14 @@ const uesService = require('./services/uesService');
 const shopifyService = require('./services/shopifyService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
 const logService = require('./services/logService');
+
+// Estado global para cache UES
+let uesCacheStatus = {
+  ready: false,
+  lastUpdate: null,
+  error: null,
+  departamentos: 0
+};
 
 // Rutas
 app.get('/', (req, res) => {
@@ -68,12 +77,23 @@ app.get('/api/pedidos-finalizados', async (req, res) => {
   }
 });
 
+// Obtener estado del caché UES
+app.get('/api/ues/cache-status', (req, res) => {
+  res.json(uesCacheStatus);
+});
+
 // Login en UES
 app.post('/api/ues/login', async (req, res) => {
   try {
     console.log('🔐 Intentando login en UES...');
     const token = await uesService.autenticarManual();
     logService.info('Login exitoso en UES');
+    
+    // Verificar y actualizar caché automáticamente después del login
+    uesService.verificarYActualizarCache().catch(err => {
+      logService.warning('No se pudo verificar caché después del login', err);
+    });
+    
     res.json({ success: true, token: token ? 'authenticated' : null });
   } catch (error) {
     logService.error('Error al hacer login en UES', error);
@@ -104,6 +124,30 @@ app.get('/api/ues/payload-preview/:pedidoId', async (req, res) => {
     const preview = await uesService.construirPayloadsUes(pedido);
     res.json({ success: true, data: preview });
   } catch (error) {
+    // Distinguir entre errores de validación (datos incorrectos) y errores del sistema
+    if (error.isValidationError) {
+      logService.warning('Error de validación en preview payload UES', { 
+        error: error.message,
+        field: error.field,
+        value: error.originalValue 
+      });
+      
+      // Parsear dirección de todas formas para enviar al frontend
+      const pedido = await supabaseService.obtenerPedido(req.params.pedidoId);
+      const { parseAddress } = require('./services/direccionParserService');
+      const direccionParseada = pedido ? parseAddress(pedido.direccion_envio || '') : null;
+      
+      return res.status(400).json({ 
+        success: false, 
+        error: error.message,
+        field: error.field,
+        value: error.originalValue,
+        type: 'validation',
+        direccionParseada: direccionParseada, // Enviar dirección parseada incluso en error
+      });
+    }
+    
+    // Error del sistema (500)
     logService.error('Error al construir preview payload UES', error);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -126,6 +170,22 @@ app.get('/api/ues/catalog/localidades', async (req, res) => {
     res.json({ success: true, data });
   } catch (error) {
     logService.error('Error obteniendo catalogo de localidades UES', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Regenerar caché de contexto UES (manual)
+app.post('/api/ues/regenerar-cache', async (req, res) => {
+  try {
+    const resultado = await uesService.regenerarCacheContexto();
+    logService.info('Caché UES regenerado manualmente');
+    res.json({ 
+      success: true, 
+      message: `Caché actualizado con ${resultado.departamentos} departamentos`,
+      ...resultado
+    });
+  } catch (error) {
+    logService.error('Error regenerando caché UES', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -430,6 +490,13 @@ app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
   try {
     const { pedidoId } = req.params;
     const { payloadOverrides } = req.body || {};
+
+    logService.info('🧾 /api/generar-etiqueta/:pedidoId request', {
+      pedidoId,
+      observacionesOverride: payloadOverrides?.payloadDireccion?.observaciones || '',
+      referenciaOverride: payloadOverrides?.payloadEnvio?.referencia || '',
+      comentarioOverride: payloadOverrides?.guia?.comentario || '',
+    });
     
     if (!pedidoId) {
       return res.status(400).json({ success: false, error: 'ID de pedido requerido' });
@@ -456,15 +523,40 @@ app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
     });
 
     logService.info(`Etiqueta generada exitosamente para pedido ${pedidoId}: ${etiqueta.numeroSeguimiento}`);
+    logService.info('🧾 Resultado generación etiqueta', {
+      pedidoId,
+      tracking: etiqueta.numeroSeguimiento,
+      pdfUrl: etiqueta.urlPdf,
+      traceId: etiqueta.traceId || null,
+    });
     
     // Respuesta en formato que React espera
     res.json({ 
       success: true, 
       pedidoId,
       tracking: etiqueta.numeroSeguimiento,
-      pdfUrl: etiqueta.urlPdf
+      pdfUrl: etiqueta.urlPdf,
+      traceId: etiqueta.traceId || null,
     });
   } catch (error) {
+    // Distinguir entre errores de validación (datos incorrectos) y errores del sistema
+    if (error.isValidationError) {
+      logService.warning('Error de validación al generar etiqueta', { 
+        error: error.message,
+        field: error.field,
+        value: error.originalValue,
+        pedidoId 
+      });
+      return res.status(400).json({ 
+        success: false, 
+        error: error.message,
+        field: error.field,
+        value: error.originalValue,
+        type: 'validation'
+      });
+    }
+    
+    // Error del sistema (500)
     logService.error('Error al generar etiqueta', { 
       error: error.message,
       stack: error.stack 
@@ -509,6 +601,24 @@ app.post('/api/generar-etiqueta', async (req, res) => {
     logService.info(`Etiqueta generada exitosamente para pedido ${pedidoId}: ${etiqueta.numeroSeguimiento}`);
     res.json({ success: true, data: etiqueta });
   } catch (error) {
+    // Distinguir entre errores de validación (datos incorrectos) y errores del sistema
+    if (error.isValidationError) {
+      logService.warning('Error de validación al generar etiqueta', { 
+        error: error.message,
+        field: error.field,
+        value: error.originalValue,
+        pedidoId: req.body?.pedidoId 
+      });
+      return res.status(400).json({ 
+        success: false, 
+        error: error.message,
+        field: error.field,
+        value: error.originalValue,
+        type: 'validation'
+      });
+    }
+    
+    // Error del sistema (500)
     logService.error('Error al generar etiqueta', { 
       error: error.message,
       stack: error.stack 
@@ -542,8 +652,23 @@ app.post('/api/generar-etiquetas-masivo', async (req, res) => {
         
         resultados.push({ pedidoId, success: true, etiqueta });
       } catch (error) {
-        resultados.push({ pedidoId, success: false, error: error.message });
-        logService.error(`Error en pedido ${pedidoId}`, error);
+        // Incluir más información si es un error de validación
+        const errorInfo = {
+          pedidoId, 
+          success: false, 
+          error: error.message
+        };
+        
+        if (error.isValidationError) {
+          errorInfo.errorType = 'validation';
+          errorInfo.field = error.field;
+          errorInfo.value = error.originalValue;
+          logService.warning(`Error de validación en pedido ${pedidoId}`, { field: error.field, value: error.originalValue });
+        } else {
+          logService.error(`Error en pedido ${pedidoId}`, error);
+        }
+        
+        resultados.push(errorInfo);
       }
     }
     
@@ -552,6 +677,50 @@ app.post('/api/generar-etiquetas-masivo', async (req, res) => {
   } catch (error) {
     logService.error('Error en generación masiva', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Combinar múltiples etiquetas PDF en un único archivo
+app.post('/api/ues/combinar-pdfs', async (req, res) => {
+  try {
+    const { pdfUrls } = req.body || {};
+
+    if (!Array.isArray(pdfUrls) || pdfUrls.length === 0) {
+      return res.status(400).json({ success: false, error: 'pdfUrls debe ser un array con al menos una URL' });
+    }
+
+    const urlsValidas = pdfUrls.filter((url) => typeof url === 'string' && url.trim());
+    if (urlsValidas.length === 0) {
+      return res.status(400).json({ success: false, error: 'No hay URLs de PDF válidas para combinar' });
+    }
+
+    const { PDFDocument } = require('pdf-lib');
+    const mergedPdf = await PDFDocument.create();
+
+    for (const url of urlsValidas) {
+      const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 });
+      const sourcePdf = await PDFDocument.load(response.data);
+      const pageIndices = sourcePdf.getPageIndices();
+      const copiedPages = await mergedPdf.copyPages(sourcePdf, pageIndices);
+      copiedPages.forEach((page) => mergedPdf.addPage(page));
+    }
+
+    const mergedBytes = await mergedPdf.save();
+    const generatedDir = path.join(__dirname, 'public', 'generated');
+    await fs.mkdir(generatedDir, { recursive: true });
+
+    const fileName = `etiquetas-combinadas-${Date.now()}.pdf`;
+    const filePath = path.join(generatedDir, fileName);
+    await fs.writeFile(filePath, Buffer.from(mergedBytes));
+
+    return res.json({
+      success: true,
+      pdfUrl: `/generated/${fileName}`,
+      count: urlsValidas.length,
+    });
+  } catch (error) {
+    logService.error('Error combinando PDFs de etiquetas', error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -583,7 +752,14 @@ async function getNextColReference() {
 app.post('/api/reclamos/:pedidoId/generar-etiqueta', async (req, res) => {
   try {
     const { pedidoId } = req.params;
-    const { notas = '' } = req.body || {};
+    const { notas = '', payloadOverrides = null } = req.body || {};
+
+    logService.info('🔄 Generando etiqueta RCL - Datos recibidos:', {
+      pedidoId,
+      notas,
+      tieneOverrides: !!payloadOverrides,
+      overrides: payloadOverrides
+    });
 
     const pedido = await supabaseService.obtenerPedido(pedidoId);
     if (!pedido) {
@@ -591,15 +767,43 @@ app.post('/api/reclamos/:pedidoId/generar-etiqueta', async (req, res) => {
     }
 
     const referencia = `RCL${pedido.numero_pedido || pedido.id}`;
-    const payloadOverrides = {
-      payloadEnvio: { referencia },
-      guia: { comentario: referencia },
+    const referenciaShopify = String(pedido.numero_pedido || pedido.id);
+    
+    // Combinar overrides del usuario (datos editados) con los defaults del reclamo
+    const defaultOverrides = {
+      payloadEnvio: { referencia: referenciaShopify },
+      guia: { comentario: '' },
       payloadDireccion: {
-        observaciones: [pedido.notas, notas].filter(Boolean).join(' | '),
+        observaciones: notas || '',
       },
     };
 
-    const etiqueta = await uesService.generarEtiqueta(pedido, payloadOverrides);
+    // Si el usuario editó datos, combinar con los defaults
+    const finalOverrides = payloadOverrides ? {
+      payloadDireccion: {
+        ...payloadOverrides.payloadDireccion,
+        // Asegurar que las observaciones incluyen las notas originales + las del reclamo
+        observaciones: payloadOverrides.payloadDireccion?.observaciones || defaultOverrides.payloadDireccion.observaciones
+      },
+      payloadEnvio: {
+        ...payloadOverrides.payloadEnvio,
+        referencia: referenciaShopify
+      },
+      guia: {
+        ...payloadOverrides.guia,
+        comentario: payloadOverrides.guia?.comentario || ''
+      }
+    } : defaultOverrides;
+
+    logService.info('🔄 Overrides finales construidos para RCL:', finalOverrides);
+    logService.info('🧾 RCL observaciones/ref/comentario finales', {
+      pedidoId,
+      observacionesFinal: finalOverrides?.payloadDireccion?.observaciones || '',
+      referenciaFinal: finalOverrides?.payloadEnvio?.referencia || '',
+      comentarioFinal: finalOverrides?.guia?.comentario || '',
+    });
+
+    const etiqueta = await uesService.generarEtiqueta(pedido, finalOverrides);
 
     logService.info(`Etiqueta de reclamo generada para pedido ${pedidoId}: ${referencia}`);
 
@@ -610,8 +814,27 @@ app.post('/api/reclamos/:pedidoId/generar-etiqueta', async (req, res) => {
       referencia,
       tracking: etiqueta.numeroSeguimiento,
       pdfUrl: etiqueta.urlPdf,
+      traceId: etiqueta.traceId || null,
     });
   } catch (error) {
+    // Distinguir entre errores de validación (datos incorrectos) y errores del sistema
+    if (error.isValidationError) {
+      logService.warning('Error de validación al generar etiqueta de reclamo', { 
+        error: error.message,
+        field: error.field,
+        value: error.originalValue,
+        pedidoId: req.params?.pedidoId 
+      });
+      return res.status(400).json({ 
+        success: false, 
+        error: error.message,
+        field: error.field,
+        value: error.originalValue,
+        type: 'validation'
+      });
+    }
+    
+    // Error del sistema (500)
     logService.error('Error al generar etiqueta de reclamo', error);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -670,6 +893,23 @@ app.post('/api/colaboraciones/generar-etiqueta', async (req, res) => {
       pdfUrl: etiqueta.urlPdf,
     });
   } catch (error) {
+    // Distinguir entre errores de validación (datos incorrectos) y errores del sistema
+    if (error.isValidationError) {
+      logService.warning('Error de validación al generar etiqueta de colaboración', { 
+        error: error.message,
+        field: error.field,
+        value: error.originalValue
+      });
+      return res.status(400).json({ 
+        success: false, 
+        error: error.message,
+        field: error.field,
+        value: error.originalValue,
+        type: 'validation'
+      });
+    }
+    
+    // Error del sistema (500)
     logService.error('Error al generar etiqueta de colaboracion', error);
     res.status(500).json({ success: false, error: error.message });
   }
@@ -851,12 +1091,53 @@ app.post('/api/templates/initialize', async (req, res) => {
 });
 
 // Iniciar servidor
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🚀 VELINNE Server corriendo en http://localhost:${PORT}`);
   logService.info(`Servidor iniciado en puerto ${PORT}`);
   
   // Inicializar plantillas por defecto al arrancar el servidor
   supabaseService.inicializarPlantillasDefecto().catch(err => {
     logService.error('Error al inicializar plantillas por defecto', err);
+  });
+
+  // Regenerar caché de UES en background (NO bloquea startup)
+  console.log('🔄 Iniciando regeneración de caché UES en background...');
+  
+  // Ejecutar en background sin await
+  (async () => {
+    try {
+      await uesService.autenticarManual();
+      const contexto = await uesService.obtenerContextoUES();
+      
+      await fs.writeFile(
+        path.join(__dirname, 'ues_getContext.json'),
+        JSON.stringify(contexto, null, 2)
+      );
+      
+      const cantDepts = contexto.departamentos_localidades?.length || 0;
+      console.log(`✅ Caché UES regenerado: ${cantDepts} departamentos`);
+      logService.info('Caché de UES actualizado exitosamente', { departamentos: cantDepts });
+      
+      // Actualizar estado global
+      uesCacheStatus = {
+        ready: true,
+        lastUpdate: new Date().toISOString(),
+        error: null,
+        departamentos: cantDepts
+      };
+    } catch (error) {
+      console.log('⚠️ No se pudo regenerar caché UES:', error.message);
+      logService.warning('No se pudo actualizar caché UES en background', { error: error.message });
+      
+      // Actualizar estado global con error
+      uesCacheStatus = {
+        ready: false,
+        lastUpdate: new Date().toISOString(),
+        error: error.message,
+        departamentos: 0
+      };
+    }
+  })().catch(err => {
+    logService.error('Error no capturado en regeneración de caché UES', err);
   });
 });
