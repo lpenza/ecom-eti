@@ -84,6 +84,25 @@ export async function marcarPedidoNotificado(pedidoId) {
 }
 
 /**
+ * Marcar/desmarcar pedido como pendiente de contacto con cliente
+ */
+export async function actualizarRevisionContacto(pedidoId, { pendiente, motivo = '' } = {}) {
+  return await fetchAPI(`/pedidos/${pedidoId}/revision-contacto`, {
+    method: 'POST',
+    body: JSON.stringify({ pendiente, motivo }),
+  });
+}
+
+/**
+ * Descartar etiqueta generada y devolver el pedido a validacion
+ */
+export async function descartarEtiqueta(pedidoId) {
+  return await fetchAPI(`/descartar-etiqueta/${pedidoId}`, {
+    method: 'POST'
+  });
+}
+
+/**
  * Generar etiqueta para un pedido
  */
 export async function generarEtiqueta(pedidoId, payloadOverrides = null) {

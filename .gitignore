@@ -26,3 +26,5 @@ Thumbs.db
 C:\VELINNE\
 tmp-*.js
 ues_*.json
+public/generated/
+pedido_revision_contacto.json

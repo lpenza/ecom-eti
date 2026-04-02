@@ -161,6 +161,63 @@ export function usePedidos() {
     }
   }, []);
 
+  const actualizarRevisionContacto = useCallback(async (pedidoId, pendiente, motivo = '') => {
+    try {
+      const result = await api.actualizarRevisionContacto(pedidoId, { pendiente, motivo });
+
+      setPedidos(prevPedidos =>
+        prevPedidos.map(p =>
+          p.id === pedidoId
+            ? {
+                ...p,
+                revision_contacto_pendiente: Boolean(result.revision_contacto_pendiente),
+                revision_contacto_motivo: result.revision_contacto_motivo || '',
+                revision_contacto_fecha: result.revision_contacto_fecha || null,
+              }
+            : p
+        )
+      );
+
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('❌ Error actualizando revisión de contacto:', error);
+      return { success: false, error: error.message };
+    }
+  }, []);
+
+  const descartarEtiqueta = useCallback(async (pedidoId) => {
+    console.log(`↩️ Descartando etiqueta para pedido ${pedidoId}...`);
+    setLoading(true);
+    setLoadingText('Descartando etiqueta...');
+
+    try {
+      const result = await api.descartarEtiqueta(pedidoId);
+
+      setPedidos(prevPedidos =>
+        prevPedidos.map(p =>
+          p.id === pedidoId
+            ? {
+                ...p,
+                estado: 'pendiente',
+                etiqueta_generada: false,
+                numero_seguimiento_ues: null,
+                link_etiqueta_drive: null,
+              }
+            : p
+        )
+      );
+
+      setSelectedPedidos(prev => prev.filter(id => id !== pedidoId));
+
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('❌ Error descartando etiqueta:', error);
+      return { success: false, error: error.message };
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   // Generar etiqueta individual
   const generarEtiqueta = useCallback(async (pedidoId, payloadOverrides = null) => {
     console.log(`📦 Generando etiqueta para pedido ${pedidoId}...`);
@@ -318,6 +375,8 @@ export function usePedidos() {
     ejecutarFulfillmentShopify,
     notificarTrackingPedido,
     marcarPedidoNotificado,
+    actualizarRevisionContacto,
+    descartarEtiqueta,
     generarEtiqueta,
     generarEtiquetaReclamo,
     generarEtiquetaColaboracion,

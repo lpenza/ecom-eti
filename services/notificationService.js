@@ -36,7 +36,8 @@ function renderTemplate(templateContent, pedido) {
 function generarLinkWhatsApp(pedido, templateContent) {
   try {
     // Limpiar y normalizar teléfono
-    const numeroLimpio = String(pedido?.telefono || '').replace(/\D/g, '');
+    const telefonoBase = pedido?.telefono || pedido?.cliente_telefono || '';
+    const numeroLimpio = String(telefonoBase).replace(/\D/g, '');
     if (!numeroLimpio) {
       throw new Error('Pedido sin teléfono válido');
     }

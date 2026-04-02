@@ -117,6 +117,26 @@ class UESService {
     return response.data;
   }
 
+  normalizarTextoEtiqueta(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  construirComentarioEtiqueta(referencia, observaciones) {
+    const referenciaCorta = this.normalizarTextoEtiqueta(referencia);
+    const observacionesLimpias = this.normalizarTextoEtiqueta(observaciones);
+    const comentarioBase = referenciaCorta;
+
+    if (!observacionesLimpias) {
+      return comentarioBase;
+    }
+
+    if (!comentarioBase) {
+      return observacionesLimpias;
+    }
+
+    return `${comentarioBase} | ${observacionesLimpias}`;
+  }
+
   construirPayloadEnvio(pedido, direccionId) {
     const referencia = String(pedido.numero_pedido || '');
 
@@ -286,13 +306,14 @@ class UESService {
 
       // Reglas finales de negocio para UES (workaround):
       // - referencia: siempre número de pedido Shopify
-      // - comentario guía: incluir número de pedido + observaciones
+      // - comentario guía: incluir número de pedido + observaciones cortas
       //   porque UES puede sobrescribir guia.referencia con guia.comentario.
       const referenciaShopify = String(pedido?.numero_pedido || '').trim();
       const observacionesFinales = String(payloadDireccion?.observaciones || '').trim();
-      const comentarioCompuesto = observacionesFinales
-        ? `REF PEDIDO: ${referenciaShopify} | OBS: ${observacionesFinales}`
-        : `REF PEDIDO: ${referenciaShopify}`;
+      const comentarioCompuesto = this.construirComentarioEtiqueta(
+        referenciaShopify,
+        observacionesFinales
+      );
       payloadEnvio.referencia = referenciaShopify;
 
       payloadEnvio.destino = direccionId;

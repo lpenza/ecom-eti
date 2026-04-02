@@ -35,6 +35,23 @@ let uesCacheStatus = {
   departamentos: 0
 };
 
+const CONTACT_REVIEW_FILE = path.join(__dirname, 'pedido_revision_contacto.json');
+
+async function leerRevisionContacto() {
+  try {
+    const raw = await fs.readFile(CONTACT_REVIEW_FILE, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+async function guardarRevisionContacto(data) {
+  await fs.writeFile(CONTACT_REVIEW_FILE, JSON.stringify(data || {}, null, 2), 'utf-8');
+}
+
 // Rutas
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
@@ -44,20 +61,82 @@ app.get('/', (req, res) => {
 app.get('/api/pedidos', async (req, res) => {
   try {
     console.log('📥 GET /api/pedidos - Obteniendo pedidos...');
-    const pedidos = await supabaseService.obtenerPedidosActivos();
+    const [pedidos, revisionesContacto] = await Promise.all([
+      supabaseService.obtenerPedidosActivos(),
+      leerRevisionContacto(),
+    ]);
     
     console.log(`📊 Pedidos obtenidos: ${pedidos ? pedidos.length : 0}`);
     
     // Asegurar que siempre devolvemos un array
     const pedidosArray = Array.isArray(pedidos) ? pedidos : [];
+    const pedidosConRevision = pedidosArray.map((pedido) => {
+      const revision = revisionesContacto?.[pedido.id] || null;
+      return {
+        ...pedido,
+        revision_contacto_pendiente: Boolean(revision),
+        revision_contacto_motivo: revision?.motivo || '',
+        revision_contacto_fecha: revision?.fecha || null,
+      };
+    });
     
-    console.log(`✅ Enviando ${pedidosArray.length} pedidos al cliente`);
-    res.json(pedidosArray);
+    console.log(`✅ Enviando ${pedidosConRevision.length} pedidos al cliente`);
+    res.json(pedidosConRevision);
   } catch (error) {
     console.error('❌ Error en /api/pedidos:', error.message);
     logService.error('Error al obtener pedidos', error);
     // En caso de error, devolver array vacío en lugar de objeto
     res.status(500).json([]);
+  }
+});
+
+app.post('/api/pedidos/:pedidoId/revision-contacto', async (req, res) => {
+  try {
+    const { pedidoId } = req.params;
+    const { pendiente, motivo } = req.body || {};
+
+    if (typeof pendiente !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'Campo pendiente inválido' });
+    }
+
+    const pedido = await supabaseService.obtenerPedido(pedidoId);
+    if (!pedido) {
+      return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    }
+
+    const revisiones = await leerRevisionContacto();
+
+    if (pendiente) {
+      const motivoLimpio = String(motivo || '').trim();
+      if (!motivoLimpio) {
+        return res.status(400).json({ success: false, error: 'Debe indicar un motivo para revisión de contacto' });
+      }
+
+      revisiones[pedidoId] = {
+        motivo: motivoLimpio,
+        fecha: new Date().toISOString(),
+      };
+    } else {
+      delete revisiones[pedidoId];
+    }
+
+    await guardarRevisionContacto(revisiones);
+
+    logService.info(`Revisión de contacto actualizada para pedido ${pedidoId}`, {
+      pendiente,
+      motivo: pendiente ? String(motivo || '').trim() : null,
+    });
+
+    return res.json({
+      success: true,
+      pedidoId,
+      revision_contacto_pendiente: pendiente,
+      revision_contacto_motivo: pendiente ? String(motivo || '').trim() : '',
+      revision_contacto_fecha: pendiente ? revisiones[pedidoId]?.fecha || null : null,
+    });
+  } catch (error) {
+    logService.error('Error actualizando revisión de contacto', error);
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -279,13 +358,15 @@ async function handleFulfillmentShopify(req, res) {
 
     // Identificar pedidos sin email para notificar por WhatsApp
     const pedidosSinEmail = resultados
-      .filter(r => r.success && r.pedido && !r.pedido.email)
+      .filter(r => r.success && r.pedido && !(r.pedido.cliente_email || r.pedido.email))
       .map(r => ({
         id: r.pedido.id,
         numero_pedido: r.pedido.numero_pedido,
         cliente_nombre: r.pedido.cliente_nombre,
-        telefono: r.pedido.telefono,
-        tracking: r.pedido.numero_seguimiento_ues
+        cliente_telefono: r.pedido.cliente_telefono || r.pedido.telefono || '',
+        tracking: r.pedido.numero_seguimiento_ues,
+        numero_seguimiento_ues: r.pedido.numero_seguimiento_ues,
+        cliente_email: r.pedido.cliente_email || r.pedido.email || ''
       }));
 
     logService.info(`Fulfillment Shopify ejecutado: ${successCount} OK, ${failCount} error. ${pedidosSinEmail.length} sin email requieren WhatsApp`);
@@ -314,12 +395,16 @@ app.post('/api/fullfilment-shopify', handleFulfillmentShopify);
 app.post('/api/generar-link-whatsapp', async (req, res) => {
   try {
     const { pedido, trackingTemplate } = req.body;
+    const telefono = pedido?.cliente_telefono || pedido?.telefono || '';
     
-    if (!pedido || !pedido.telefono) {
+    if (!pedido || !telefono) {
       return res.status(400).json({ error: 'Datos de pedido incompletos o sin teléfono' });
     }
 
-    const resultado = generarLinkWhatsApp(pedido, trackingTemplate);
+    const resultado = generarLinkWhatsApp({
+      ...pedido,
+      telefono,
+    }, trackingTemplate);
     
     if (resultado.success) {
       res.json({ success: true, url: resultado.url, phone: resultado.phone });
@@ -329,6 +414,47 @@ app.post('/api/generar-link-whatsapp', async (req, res) => {
   } catch (error) {
     logService.error('Error al generar link de WhatsApp', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Descartar etiqueta generada para volver a validacion manual
+app.post('/api/descartar-etiqueta/:pedidoId', async (req, res) => {
+  try {
+    const { pedidoId } = req.params;
+
+    const pedido = await supabaseService.obtenerPedido(pedidoId);
+    if (!pedido) {
+      return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    }
+
+    if (!pedido.etiqueta_generada) {
+      return res.status(400).json({ success: false, error: 'El pedido no tiene una etiqueta generada para descartar' });
+    }
+
+    if (pedido.notificacion_enviada_at || String(pedido.estado || '').toLowerCase() === 'enviado') {
+      return res.status(400).json({ success: false, error: 'No se puede descartar una etiqueta de un pedido ya notificado o enviado' });
+    }
+
+    const actualizado = await supabaseService.actualizarPedido(pedidoId, {
+      estado: 'pendiente',
+      etiqueta_generada: false,
+      numero_seguimiento_ues: null,
+      link_etiqueta_drive: null,
+    });
+
+    logService.info(`Etiqueta descartada para pedido ${pedidoId}`, {
+      numero_pedido: pedido.numero_pedido,
+      tracking_anterior: pedido.numero_seguimiento_ues || null,
+    });
+
+    res.json({
+      success: true,
+      pedido: actualizado,
+      message: `Pedido #${pedido.numero_pedido || pedidoId} devuelto a validacion`,
+    });
+  } catch (error) {
+    logService.error('Error al descartar etiqueta', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
