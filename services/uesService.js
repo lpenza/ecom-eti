@@ -118,11 +118,13 @@ class UESService {
   }
 
   construirPayloadEnvio(pedido, direccionId) {
+    const referencia = String(pedido.numero_pedido || '');
+
     return {
       service: 'guardarEnvio',
       cliente_id: String(process.env.UES_CLIENTE_ID),
       servicio_destino: 'direccion',
-      referencia: String(pedido.numero_pedido || ''),
+      referencia,
       remitente: String(process.env.UES_REMITENTE_ID),
       destino: direccionId,
       nombre_recibe: pedido.cliente_nombre || '',
@@ -133,7 +135,8 @@ class UESService {
       direccion_remitente_id: String(process.env.UES_DIRECCION_REMITENTE_ID),
       guias: [
         {
-          comentario: String(pedido.numero_pedido || ''),
+          comentario: '',
+          referencia,
           peso: '',
           ci: '',
           valor_declarado: '',
@@ -142,12 +145,26 @@ class UESService {
     };
   }
 
-  async construirPayloadsUes(pedido, direccionIdEnvio = null) {
+  async construirPayloadsUes(pedido, direccionIdEnvio = null, skipLocalidadValidation = false) {
     const direccionParseada = parseAddress(pedido.direccion_envio || '');
-    const localidadUes = await supabaseService.buscarLocalidadUes(pedido.localidad, pedido.departamento);
-    const observacionesDireccion = [direccionParseada.observaciones, pedido.notas]
-      .filter(Boolean)
-      .join(' | ');
+    
+    // Solo buscar localidad si no se indica saltarse la validación
+    // (útil cuando vienen overrides del usuario con departamento/localidad ya definidos)
+    let localidadUes;
+    if (skipLocalidadValidation) {
+      // Valores por defecto que serán sobrescritos por overrides
+      localidadUes = {
+        ues_id: '0',
+        departamento_id: 0,
+        nombre: 'Será sobrescrito por override'
+      };
+      logService.info('Saltando validación de localidad (vendrá de overrides del usuario)');
+    } else {
+      localidadUes = await supabaseService.buscarLocalidadUes(pedido.localidad, pedido.departamento);
+    }
+    
+    // Observaciones solo desde el parser de dirección (no usar pedido.notas)
+    const observacionesDireccion = direccionParseada.observaciones || '';
 
     const payloadDireccion = {
       service: 'guardarDireccion',
@@ -181,26 +198,82 @@ class UESService {
   // Generar etiqueta de envío
   async generarEtiqueta(pedido, payloadOverrides = null) {
     try {
+      const traceId = `ETQ-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
       // Si está en modo de prueba, genera una etiqueta simulada
       if (this.testMode) {
         logService.info('Generando etiqueta en MODO DE PRUEBA');
         return await this.generarEtiquetaPrueba(pedido);
       }
 
-      logService.info(`Generando etiqueta para pedido ${pedido.id} - Orden #${pedido.numero_pedido}`);
+      logService.info(`Generando etiqueta para pedido ${pedido.id} - Orden #${pedido.numero_pedido} [${traceId}]`);
 
-      const payloadsPreparados = await this.construirPayloadsUes(pedido);
+      // Si vienen overrides con departamento y localidad, saltarse la validación original
+      const tieneLocalidadOverride = payloadOverrides?.payloadDireccion?.departamento_id && 
+                                      payloadOverrides?.payloadDireccion?.localidad_id;
+      
+      const payloadsPreparados = await this.construirPayloadsUes(pedido, null, tieneLocalidadOverride);
       logService.info('Dirección parseada:', payloadsPreparados.direccionParseada);
-      logService.info('Localidad UES resuelta:', payloadsPreparados.localidadUes);
+      if (!tieneLocalidadOverride) {
+        logService.info('Localidad UES resuelta:', payloadsPreparados.localidadUes);
+      }
+      logService.info(`🧭 [${traceId}] Observaciones origen parser:`, {
+        pedidoId: pedido.id,
+        numeroPedido: pedido.numero_pedido,
+        direccionEnvioOriginal: pedido.direccion_envio,
+        observacionesParser: payloadsPreparados?.payloadDireccion?.observaciones || '',
+        observacionesOverrideEntrada: payloadOverrides?.payloadDireccion?.observaciones || '',
+        referenciaOverrideEntrada: payloadOverrides?.payloadEnvio?.referencia || '',
+        comentarioGuiaOverrideEntrada: payloadOverrides?.guia?.comentario || '',
+      });
 
-      const payloadDireccion = {
-        ...payloadsPreparados.payloadDireccion,
-        ...(payloadOverrides?.payloadDireccion || {}),
+      // Merge inteligente: solo sobrescribir valores que no estén vacíos del override
+      const mergePayload = (base, override) => {
+        if (!override) return base;
+        const merged = { ...base };
+        for (const key in override) {
+          const value = override[key];
+          
+          // Campos que siempre deben sobrescribirse incluso si están vacíos
+          const alwaysOverride = ['observaciones', 'comentario'];
+          
+          if (alwaysOverride.includes(key)) {
+            merged[key] = value;
+          } else if (value !== undefined && value !== null && value !== '') {
+            // Sobrescribir solo si hay un valor válido
+            merged[key] = value;
+          }
+          // Si el valor es vacío y no está en alwaysOverride, mantener el valor base
+        }
+        return merged;
       };
 
-      logService.info('Payload guardarDireccion:', payloadDireccion);
+      const payloadDireccion = mergePayload(
+        payloadsPreparados.payloadDireccion,
+        payloadOverrides?.payloadDireccion
+      );
+
+      const obsFinal = String(payloadDireccion?.observaciones || '').trim();
+      const obsPatternSospechoso = /^\/\d+\s*-?\s*$/i.test(obsFinal);
+
+      logService.info('📦 Payload base (antes de merge):', payloadsPreparados.payloadDireccion);
+      logService.info('✏️  Overrides recibidos:', payloadOverrides?.payloadDireccion);
+      logService.info('🔀 Payload final (después de merge):', payloadDireccion);
+      logService.info(`📌 [${traceId}] Observaciones final antes de guardarDireccion:`, {
+        observacionesFinal: obsFinal,
+        esSospechoso: obsPatternSospechoso,
+      });
+      if (obsPatternSospechoso) {
+        logService.warning(`⚠️ [${traceId}] Observaciones con patrón sospechoso detectado`, {
+          pedidoId: pedido.id,
+          numeroPedido: pedido.numero_pedido,
+          observacionesFinal: obsFinal,
+          payloadDireccion,
+        });
+      }
+      
       const direccionResp = await this.dispatcherPost(payloadDireccion);
-      logService.info('Respuesta guardarDireccion:', direccionResp);
+      logService.info(`Respuesta guardarDireccion [${traceId}]:`, direccionResp);
 
       if (direccionResp?.code === 'ERROR' || !direccionResp?.id) {
         throw new Error(direccionResp?.msg || direccionResp?.returned_message || 'No se pudo crear direccion en UES');
@@ -208,24 +281,47 @@ class UESService {
 
       const direccionId = Number(direccionResp.id);
 
-      const payloadEnvio = {
-        ...this.construirPayloadEnvio(pedido, direccionId),
-        ...(payloadOverrides?.payloadEnvio || {}),
-      };
+      const basePayloadEnvio = this.construirPayloadEnvio(pedido, direccionId);
+      const payloadEnvio = mergePayload(basePayloadEnvio, payloadOverrides?.payloadEnvio);
+
+      // Reglas finales de negocio para UES (workaround):
+      // - referencia: siempre número de pedido Shopify
+      // - comentario guía: incluir número de pedido + observaciones
+      //   porque UES puede sobrescribir guia.referencia con guia.comentario.
+      const referenciaShopify = String(pedido?.numero_pedido || '').trim();
+      const observacionesFinales = String(payloadDireccion?.observaciones || '').trim();
+      const comentarioCompuesto = observacionesFinales
+        ? `REF PEDIDO: ${referenciaShopify} | OBS: ${observacionesFinales}`
+        : `REF PEDIDO: ${referenciaShopify}`;
+      payloadEnvio.referencia = referenciaShopify;
 
       payloadEnvio.destino = direccionId;
       payloadEnvio.direccion_destinatario_id = direccionId;
 
       if (Array.isArray(payloadEnvio.guias) && payloadEnvio.guias.length > 0) {
-        payloadEnvio.guias[0] = {
-          ...payloadEnvio.guias[0],
-          ...(payloadOverrides?.guia || {}),
-        };
+        payloadEnvio.guias[0] = mergePayload(
+          payloadEnvio.guias[0],
+          payloadOverrides?.guia
+        );
+
+        payloadEnvio.guias[0].referencia = referenciaShopify;
+        payloadEnvio.guias[0].comentario = comentarioCompuesto;
       }
 
-      logService.info('Payload guardarEnvio:', payloadEnvio);
+      logService.info(`🧭 [${traceId}] Mapeo final referencia/comentario`, {
+        referenciaFinal: payloadEnvio.referencia,
+        guiaReferenciaFinal: payloadEnvio?.guias?.[0]?.referencia || '',
+        comentarioFinal: payloadEnvio?.guias?.[0]?.comentario || '',
+        observacionesDireccionFinal: observacionesFinales,
+      });
+
+      logService.info(`📦 Payload guardarEnvio [${traceId}]:`, payloadEnvio);
+      if (payloadOverrides) {
+        logService.info(`Overrides aplicados (envío) [${traceId}]:`, payloadOverrides.payloadEnvio);
+      }
+      
       const envioResp = await this.dispatcherPost(payloadEnvio);
-      logService.info('Respuesta guardarEnvio:', envioResp);
+      logService.info(`Respuesta guardarEnvio [${traceId}]:`, envioResp);
 
       if (envioResp?.code === 'ERROR') {
         throw new Error(envioResp?.msg || envioResp?.returned_message || 'Error desconocido en guardarEnvio');
@@ -245,7 +341,7 @@ class UESService {
         action: 'getEtiqueta',
         numero: numeroSeguimiento,
       });
-      logService.info('Respuesta getGuia/getEtiqueta:', etiquetaResp);
+      logService.info(`Respuesta getGuia/getEtiqueta [${traceId}]:`, etiquetaResp);
 
       const urlPdf = etiquetaResp?.url || null;
 
@@ -254,6 +350,7 @@ class UESService {
         numeroSeguimiento,
         urlPdf,
         codigoBarras: null,
+        traceId,
       };
     } catch (error) {
       // Si falla por token expirado, exigir nuevo login manual.
@@ -462,6 +559,30 @@ class UESService {
       throw new Error(`Error cancelando envío: ${error.message}`);
     }
   }
+
+  // Obtener contexto completo de UES (departamentos y localidades)
+  // Este método consulta directamente a UES para obtener el catálogo actualizado
+  async obtenerContextoUES() {
+    try {
+      logService.info('Obteniendo contexto actualizado desde UES API...');
+      
+      const response = await this.dispatcherPost({ service: 'getContext' });
+      
+      if (response.code === 'ERROR') {
+        throw new Error(response.returned_message || 'Error obteniendo contexto de UES');
+      }
+
+      // Retornar el contexto completo (no solo departamentos_localidades)
+      logService.info(`Contexto UES obtenido: ${response.departamentos_localidades?.length || 0} departamentos`);
+      
+      return response; // Retorna el objeto completo
+    } catch (error) {
+      logService.error('Error obteniendo contexto de UES', error);
+      throw new Error(`No se pudo obtener el catálogo de UES: ${error.message}`);
+    }
+  }
+
+  // Regenerar caché de contexto UES (guardar en archivo)
 }
 
 module.exports = new UESService();

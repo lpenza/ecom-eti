@@ -112,6 +112,13 @@ function parseAddress(fullAddress) {
   address = preCleanAddress(address, observations);
   address = protectDateStreetNames(address);
 
+  // Extraer texto entre paréntesis a observaciones (PRIMERO, antes de cualquier otro patrón)
+  const parenthesisMatches = [...address.matchAll(/\(([^)]+)\)/g)];
+  for (const pm of parenthesisMatches) {
+    addObservation(observations, pm[1].trim());
+    address = address.replace(pm[0], ' ').replace(/\s+/g, ' ').trim();
+  }
+
   // Formato: Calle 123/45 45
   let m = address.match(/\s+(\d{2,5})\s*\/\s*(\d{2,5})\s+\2\s*$/i);
   if (m) {
@@ -159,9 +166,9 @@ function parseAddress(fullAddress) {
     }
   }
 
-  // Oficina / Piso / Apto / Vivienda / Manzana+Solar
+  // Oficina / Piso / Apto / Vivienda / Manzana+Solar (patrones conservadores)
   if (!result.apartamento) {
-    m = address.match(/\b(?:oficina\s*([A-Z0-9\-]+)|of\.?\s*(\d+[A-Z]?))\b/i);
+    m = address.match(/\b(?:oficina\s*([A-Z0-9\-]{2,})|of\.?\s*(\d+[A-Z]?))\b/i);
     if (m) {
       result.apartamento = `Oficina ${getFirstNonEmpty(m, [1, 2]).toUpperCase()}`;
       address = address.replace(m[0], ' ').replace(/\s+/g, ' ').trim();
@@ -169,15 +176,31 @@ function parseAddress(fullAddress) {
   }
 
   if (!result.apartamento) {
-    m = address.match(/\b(?:piso\s*([A-Z0-9\-]+)|p\.?\s*(\d+[A-Z]?))\b/i);
+    // Piso: requiere al menos 2 caracteres O un número claro (no una sola letra)
+    m = address.match(/\b(?:piso\s*(\d+[A-Z]?|[A-Z0-9]{2,})|p\.?\s*(\d+))\b/i);
     if (m) {
       result.apartamento = `Piso ${getFirstNonEmpty(m, [1, 2]).toUpperCase()}`;
       address = address.replace(m[0], ' ').replace(/\s+/g, ' ').trim();
     }
   }
 
+  // Patrón específico: "Calle 1234 apto 56" o "Calle 1234 apartamento 56"
+  if (!result.apartamento && !result.numeroPuerta) {
+    m = address.match(/^(.+?)\s+(\d{3,5})\s+(?:apto\.?|apartamento|apt\.?|ap\.?)\s+([A-Z0-9\-]{1,})\b/i);
+    if (m) {
+      const left = cleanText(m[1]);
+      const door = m[2];
+      const apt = String(m[3]).toUpperCase();
+      
+      result.numeroPuerta = door;
+      result.apartamento = apt;
+      address = left;
+    }
+  }
+
   if (!result.apartamento) {
-    m = address.match(/\b(?:apartamento\s*([A-Z0-9\-]+)|apto\.?\s*([A-Z0-9\-]+)|apt\.?\s*([A-Z0-9\-]+)|ap\.?\s*(\d+[A-Z]?))\b/i);
+    // Apartamento: requiere al menos 2 caracteres O formato número+letra
+    m = address.match(/\b(?:apartamento\s*([A-Z0-9\-]{2,})|apto\.?\s*([A-Z0-9\-]{2,}|[0-9]+[A-Z]?)|apt\.?\s*([A-Z0-9\-]{2,})|ap\.?\s*(\d+[A-Z]?))\b/i);
     if (m) {
       result.apartamento = getFirstNonEmpty(m, [1, 2, 3, 4]).toUpperCase();
       address = address.replace(m[0], ' ').replace(/\s+/g, ' ').trim();
@@ -192,12 +215,18 @@ function parseAddress(fullAddress) {
     }
   }
 
-  if (!result.apartamento) {
-    m = address.match(/\b(?:manzana|mz\.?)\s*([A-Z0-9\-]+)\s+(?:solar|sol\.?)\s*([A-Z0-9\-]+)\b/i);
-    if (m) {
-      result.apartamento = `Manzana ${String(m[1]).toUpperCase()} Solar ${String(m[2]).toUpperCase()}`;
-      address = address.replace(m[0], ' ').replace(/\s+/g, ' ').trim();
-    }
+  // Manzana + Solar: detectar y mover a observaciones (formato largo)
+  m = address.match(/\b(?:manzana|mz\.?)\s*([A-Z0-9\-]+)\s+(?:solar|sol\.?)\s*([A-Z0-9\-]+)\b/i);
+  if (m) {
+    addObservation(observations, `Manzana ${String(m[1]).toUpperCase()} Solar ${String(m[2]).toUpperCase()}`);
+    address = address.replace(m[0], ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  // Manzana + Solar formato corto: "M 123 S 45" (solo si M y S están seguidas de números)
+  m = address.match(/\bM\s+(\d+[A-Z0-9]*)\s+S\s+(\d+[A-Z0-9]*)\b/i);
+  if (m) {
+    addObservation(observations, `Manzana ${String(m[1]).toUpperCase()} Solar ${String(m[2]).toUpperCase()}`);
+    address = address.replace(m[0], ' ').replace(/\s+/g, ' ').trim();
   }
 
   // Calle 1234 12A + resto
@@ -258,7 +287,7 @@ function parseAddress(fullAddress) {
     break;
   }
 
-  // Esquina
+  // Esquina (solo "esq" y "esquina" - patrones establecidos)
   m = address.match(/\b(?:esq\.?|esquina)\s+([^,\d]+?)(?=\s+\d|\s*$|,)/i);
   if (m) {
     result.esquina = restoreDateTokens(cleanText(m[1]));
@@ -270,6 +299,7 @@ function parseAddress(fullAddress) {
     { regex: /\bbarrio\s+([^,\d]+?)(?=\s+\d|\s*$|,)/i, prefix: 'Barrio ' },
     { regex: /\bcomplejo\s+([^,\d]+?)(?=\s+\d|\s*$|,)/i, prefix: 'Complejo ' },
     { regex: /\bedificio\s+([^,\d]+?)(?=\s+\d|\s*$|,)/i, prefix: 'Edificio ' },
+    { regex: /\blocal\s+([^,]+?)(?=\s*$|,)/i, prefix: 'Local ' },
     { regex: /\bcasa\s+de\s+([^,]+?)(?=\s*$|,)/i, prefix: 'Casa de ' },
     { regex: /\bcooperativa\s+(.+?)(?=\s+(?:vivienda|viv\.?|unidad|uni\.?|esq\.?|esquina)\b|$|,)/i, prefix: 'Cooperativa ' },
   ];
@@ -300,11 +330,11 @@ function parseAddress(fullAddress) {
     }
   }
 
-  if (!result.numeroPuerta) {
-    m = address.match(/\bkm\.?\s*(\d+(?:[.,]\d+)?)\b/i);
-    if (m) {
-      result.numeroPuerta = `Km ${String(m[1]).replace(',', '.')}`;
-    }
+  // Kilómetro: detectar y mover a observaciones (no es número de puerta)
+  m = address.match(/\bk(?:m|ilómetro)\.?\s*(\d+(?:[.,]\d+)?)\b/i);
+  if (m) {
+    addObservation(observations, `Km ${String(m[1]).replace(',', '.')}`);
+    address = address.replace(m[0], ' ').replace(/\s+/g, ' ').trim();
   }
 
   if (!result.numeroPuerta && !result.apartamento) {
@@ -340,7 +370,7 @@ function parseAddress(fullAddress) {
     }
   }
 
-  // Limpieza final
+  // Limpieza final y extracción de calle
   address = (address || '')
     .replace(/\s+/g, ' ')
     .replace(/\s*\/\s*/g, ' ')
@@ -349,7 +379,9 @@ function parseAddress(fullAddress) {
     .replace(/\s+/g, ' ')
     .trim();
 
+  // Lo que queda es la calle (ya se extrajeron apartamentos, paréntesis, esquinas, etc.)
   result.calle = restoreDateTokens(address);
+  
   if (result.esquina) {
     result.esquina = restoreDateTokens(result.esquina);
   }

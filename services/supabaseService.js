@@ -4,6 +4,17 @@ const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
+// Clase de error personalizada para errores de validación
+class ValidationError extends Error {
+  constructor(message, field = null, originalValue = null) {
+    super(message);
+    this.name = 'ValidationError';
+    this.field = field;
+    this.originalValue = originalValue;
+    this.isValidationError = true;
+  }
+}
+
 // Polyfill para Node.js 16
 if (!globalThis.fetch) {
   globalThis.fetch = fetch;
@@ -148,20 +159,22 @@ class SupabaseService {
         .sort((a, b) => Number(a.id) - Number(b.id));
     }
 
-    const { data, error } = await supabase
-      .from('localidades_ues')
-      .select('departamento_id')
-      .not('departamento_id', 'is', null)
-      .order('departamento_id', { ascending: true });
-
-    if (error) throw error;
-
-    const uniqueIds = [...new Set((data || []).map((r) => String(r.departamento_id)))];
-
-    return uniqueIds.map((id) => ({
-      id,
-      nombre: `Departamento ${id}`,
-    }));
+    // Fallback: consultar directamente a UES en lugar de Supabase
+    try {
+      const uesService = require('./uesService');
+      const uesContext = await uesService.obtenerContextoUES();
+      const depLocalidades = uesContext.departamentos_localidades || [];
+      
+      return depLocalidades
+        .map((dep) => ({
+          id: String(dep.departamento_id),
+          nombre: dep.departamento_nombre || `Departamento ${dep.departamento_id}`,
+        }))
+        .sort((a, b) => Number(a.id) - Number(b.id));
+    } catch (error) {
+      console.error('⚠️ No se pudo obtener catálogo de UES, fallback vacío:', error.message);
+      return [];
+    }
   }
 
   async obtenerLocalidadesUes(departamentoId = null) {
@@ -184,30 +197,41 @@ class SupabaseService {
       return filtered.sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || '')));
     }
 
-    let query = supabase
-      .from('localidades_ues')
-      .select('ues_id, nombre, departamento_id')
-      .not('ues_id', 'is', null)
-      .order('nombre', { ascending: true });
+    // Fallback: consultar directamente a UES en lugar de Supabase
+    try {
+      const uesService = require('./uesService');
+      const uesContext = await uesService.obtenerContextoUES();
+      const depLocalidades = uesContext.departamentos_localidades || [];
+      
+      const flattened = depLocalidades.flatMap((dep) => {
+        const localidades = Array.isArray(dep.localidades) ? dep.localidades : [];
+        return localidades.map((loc) => ({
+          id: String(loc.localidad_id),
+          nombre: loc.localidad_nombre,
+          departamento_id: String(dep.departamento_id),
+          departamento_nombre: dep.departamento_nombre || `Departamento ${dep.departamento_id}`,
+        }));
+      });
 
-    if (departamentoId) {
-      query = query.eq('departamento_id', departamentoId);
+      const filtered = departamentoId
+        ? flattened.filter((loc) => String(loc.departamento_id) === String(departamentoId))
+        : flattened;
+
+      return filtered.sort((a, b) => String(a.nombre || '').localeCompare(String(b.nombre || '')));
+    } catch (error) {
+      console.error('⚠️ No se pudo obtener localidades de UES, fallback vacío:', error.message);
+      return [];
     }
-
-    const { data, error } = await query;
-    if (error) throw error;
-
-    return (data || []).map((row) => ({
-      id: String(row.ues_id),
-      nombre: row.nombre,
-      departamento_id: String(row.departamento_id),
-    }));
   }
 
   // Buscar localidad UES por nombre para obtener IDs requeridos por dispatcher.
   async buscarLocalidadUes(localidad, departamento) {
     if (!localidad) {
-      throw new Error('Localidad no informada en el pedido');
+      throw new ValidationError(
+        'Localidad no informada en el pedido. Por favor, completa la localidad.',
+        'localidad',
+        null
+      );
     }
 
     const normalizedLocalidad = String(localidad).trim();
@@ -338,7 +362,11 @@ class SupabaseService {
         return fuzzy;
       }
 
-      throw new Error(`No se encontró localidad UES para: ${normalizedLocalidad}${departamento ? ` (${departamento})` : ''}`);
+      throw new ValidationError(
+        `No se encontró localidad UES para: ${normalizedLocalidad}${departamento ? ` (${departamento})` : ''}. Por favor, verifica que la localidad y departamento sean correctos.`,
+        'localidad',
+        { localidad: normalizedLocalidad, departamento }
+      );
     }
 
     return data[0];
