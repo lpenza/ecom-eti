@@ -243,8 +243,16 @@ body {
   background: linear-gradient(180deg, #fffaf4 0%, #fff2dc 100%);
 }
 
+.stat-card-contact {
+  background: linear-gradient(180deg, #fff8ea 0%, #ffe7b8 100%);
+}
+
 .stat-card-success {
   background: linear-gradient(180deg, #f4fbf6 0%, #e7f7ec 100%);
+}
+
+.stat-card-danger {
+  background: linear-gradient(180deg, #fff4f6 0%, #fde8ea 100%);
 }
 
 .stat-value {
@@ -257,6 +265,26 @@ body {
 .stat-label {
   font-size: 0.9rem;
   color: var(--brand-text-soft);
+}
+
+.header-alert {
+  margin-top: 0.95rem;
+  border-radius: var(--radius-md);
+  padding: 0.8rem 1rem;
+  font-size: 0.92rem;
+  border: 1px solid transparent;
+}
+
+.header-alert-warning {
+  background: var(--warning-bg);
+  border-color: #efd39c;
+  color: var(--warning-text);
+}
+
+.header-alert-danger {
+  background: var(--danger-bg);
+  border-color: #efbcc7;
+  color: var(--danger-text);
 }
 
 /* Toolbar */
@@ -1822,6 +1850,30 @@ body {
   font-size: 0.85em;
 }
 
+.pedido-actions-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+
+.pedido-manual-review-label {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--danger-text);
+}
+
+.btn-outline-danger {
+  background: transparent;
+  color: var(--danger-text);
+  border: 1px solid #e5a9b7;
+}
+
+.btn-outline-danger:hover {
+  background: var(--danger-bg);
+  border-color: #d97f97;
+}
 .pedido-notified-label {
   color: var(--success-text);
   margin-right: 0.5rem;
@@ -2074,6 +2126,12 @@ body {
   border-color: #fdba74;
 }
 
+.preview-sidebar-summary-pill.contact {
+  background: #fff7ed;
+  color: #9a3412;
+  border-color: #fdba74;
+}
+
 .preview-sidebar-summary-pill.error {
   background: #fee2e2;
   color: #991b1b;
@@ -2162,6 +2220,12 @@ body {
 }
 
 .preview-sidebar-item-status.warn {
+  background: #fff7ed;
+  color: #9a3412;
+  border: 1px solid #fdba74;
+}
+
+.preview-sidebar-item-status.contact {
   background: #fff7ed;
   color: #9a3412;
   border: 1px solid #fdba74;
@@ -2332,6 +2396,24 @@ body {
 .preview-section-processed {
   border-left-color: #0f766e;
   background: #ecfeff;
+}
+
+.preview-section-contact-review {
+  border-left-color: #f59e0b;
+  background: #fff7ed;
+}
+
+.preview-contact-actions {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.preview-contact-state {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #9a3412;
 }
 
 .preview-loading {

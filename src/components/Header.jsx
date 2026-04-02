@@ -40,6 +40,14 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
           <div className="stat-label">Por Validar</div>
         </button>
         <button
+          className={`stat-card stat-card-contact ${activeFilter === 'pendientesContacto' ? 'stat-card-active' : ''}`}
+          onClick={() => onFilterChange?.('pendientesContacto')}
+          type="button"
+        >
+          <div className="stat-value">{stats.pendientesContacto || 0}</div>
+          <div className="stat-label">Pendientes Contacto</div>
+        </button>
+        <button
           className={`stat-card stat-card-neutral ${activeFilter === 'etiquetasGeneradas' ? 'stat-card-active' : ''}`}
           onClick={() => onFilterChange?.('etiquetasGeneradas')}
           type="button"
@@ -56,6 +64,14 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
           <div className="stat-label">Pendientes Envio Tracking</div>
         </button>
         <button
+          className={`stat-card stat-card-danger ${activeFilter === 'revisionManual' ? 'stat-card-active' : ''}`}
+          onClick={() => onFilterChange?.('revisionManual')}
+          type="button"
+        >
+          <div className="stat-value">{stats.revisionManual || 0}</div>
+          <div className="stat-label">Revision Manual</div>
+        </button>
+        <button
           className={`stat-card stat-card-neutral ${activeFilter === 'enviados' ? 'stat-card-active' : ''}`}
           onClick={() => onFilterChange?.('enviados')}
           type="button"
@@ -64,6 +80,13 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
           <div className="stat-label">✔️ Notificados</div>
         </button>
       </div>
+      {stats.trackingAlert && (
+        <div className={`header-alert ${stats.trackingBreakdown?.descuadre ? 'header-alert-danger' : 'header-alert-warning'}`}>
+          <strong>Atencion tracking:</strong>{' '}
+          Etiquetas generadas: {stats.trackingBreakdown?.total || 0} | Automatico: {stats.trackingBreakdown?.automatico || 0} | WhatsApp: {stats.trackingBreakdown?.whatsapp || 0} | Revision manual: {stats.trackingBreakdown?.revisionManual || 0}
+          {stats.trackingBreakdown?.descuadre && ' | Hay un descuadre en la clasificacion, revisar logica de canales.'}
+        </div>
+      )}
     </header>
   );
 }

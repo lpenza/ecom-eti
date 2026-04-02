@@ -5,7 +5,7 @@ import {
   obtenerPayloadPreviewUES,
 } from '../../services/api';
 
-function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex = 0, onReviewedChange, onClose, onConfirm, isReclamoMode = false }) {
+function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex = 0, onReviewedChange, onClose, onConfirm, isReclamoMode = false, onUpdateRevisionContacto }) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [departamentos, setDepartamentos] = useState([]);
   const [localidadesByDep, setLocalidadesByDep] = useState({});
@@ -121,7 +121,9 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
         return {
           ...prev,
           [pedidoId]: {
-            checked: selectedPedidoIds.includes(pedidoId),
+            checked: selectedPedidoIds.includes(pedidoId) && !Boolean(pedidoData?.revision_contacto_pendiente),
+            revision_contacto_pendiente: Boolean(pedidoData?.revision_contacto_pendiente),
+            revision_contacto_motivo: pedidoData?.revision_contacto_motivo || '',
             payloadDireccion: {
               calle: preview?.payloadDireccion?.calle || '',
               nro_puerta: preview?.payloadDireccion?.nro_puerta || '',
@@ -181,8 +183,10 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
         return {
           ...prev,
           [pedidoId]: {
-            checked: selectedPedidoIds.includes(pedidoId),
+            checked: selectedPedidoIds.includes(pedidoId) && !Boolean(pedidoData?.revision_contacto_pendiente),
             bypassValidation: false,
+            revision_contacto_pendiente: Boolean(pedidoData?.revision_contacto_pendiente),
+            revision_contacto_motivo: pedidoData?.revision_contacto_motivo || '',
             payloadDireccion: {
               calle: direccionParseada?.calle || pedidoData.calle || pedidoData.direccion_envio || '',
               nro_puerta: direccionParseada?.numeroPuerta || pedidoData.numero_puerta || '',
@@ -401,6 +405,11 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     const items = pedidos.map((pedido) => {
       const form = formsByPedidoId[pedido.id];
       const validation = getFormValidation(form);
+      const pendienteContacto = Boolean(form?.revision_contacto_pendiente);
+      const blockers = [...validation.blockers];
+      if (pendienteContacto) {
+        blockers.push('Pendiente de contacto con cliente');
+      }
       const payloadOverrides = form ? {
         payloadDireccion: form.payloadDireccion || {},
         payloadEnvio: form.payloadEnvio || {},
@@ -409,9 +418,9 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
 
       return {
         pedidoId: pedido.id,
-        checked: !!form?.checked,
+        checked: !!form?.checked && !pendienteContacto,
         bypassValidation: !!form?.bypassValidation,
-        blockers: validation.blockers,
+        blockers,
         payloadOverrides: payloadOverrides,
       };
     });
@@ -476,7 +485,9 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
   const getPedidoSidebarStatus = (pedidoId) => {
     const checked = isPedidoChecked(pedidoId);
     const loaded = isPedidoLoaded(pedidoId);
-    const itemValidation = getFormValidation(formsByPedidoId[pedidoId]);
+    const form = formsByPedidoId[pedidoId];
+    const itemValidation = getFormValidation(form);
+    if (form?.revision_contacto_pendiente) return { label: 'Contacto', tone: 'contact' };
 
     if (checked) return { label: 'Revisado', tone: 'ok' };
     if (!loaded) return { label: 'Cargando', tone: 'loading' };
@@ -491,6 +502,7 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
       pending: 0,
       warn: 0,
       error: 0,
+      contact: 0,
       loading: 0,
     };
 
@@ -504,6 +516,11 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
 
   const handleMarkOkAndNext = () => {
     if (!currentPedido || !canMarkCurrent) return;
+
+    if (formsByPedidoId[currentPedido.id]?.revision_contacto_pendiente) {
+      setValidationError('Este pedido está marcado como pendiente de contacto y no se puede marcar como revisado hasta resolverlo.');
+      return;
+    }
 
     if (!formsByPedidoId[currentPedido.id]?.checked) {
       setFormsByPedidoId((prev) => ({
@@ -522,6 +539,43 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     if (currentIndex < pedidos.length - 1) {
       setCurrentIndex((i) => i + 1);
     }
+  };
+
+  const handleGuardarRevisionContacto = async (pendiente) => {
+    if (!currentPedido) return;
+
+    const motivo = String(formsByPedidoId[currentPedido.id]?.revision_contacto_motivo || '').trim();
+    if (pendiente && !motivo) {
+      setValidationError('Debes escribir un motivo interno antes de marcar pendiente de contacto.');
+      return;
+    }
+
+    if (typeof onUpdateRevisionContacto !== 'function') {
+      setValidationError('No se pudo actualizar la revisión de contacto.');
+      return;
+    }
+
+    const resultado = await onUpdateRevisionContacto(currentPedido.id, pendiente, motivo);
+    if (!resultado?.success) {
+      setValidationError(resultado?.error || 'No se pudo actualizar la revisión de contacto.');
+      return;
+    }
+
+    setFormsByPedidoId((prev) => ({
+      ...prev,
+      [currentPedido.id]: {
+        ...prev[currentPedido.id],
+        revision_contacto_pendiente: pendiente,
+        revision_contacto_motivo: pendiente ? motivo : '',
+        checked: pendiente ? false : prev[currentPedido.id]?.checked,
+      },
+    }));
+
+    if (pendiente && typeof onReviewedChange === 'function') {
+      onReviewedChange(currentPedido.id, false);
+    }
+
+    setValidationError('');
   };
 
   return (
@@ -576,6 +630,9 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                 <span className="preview-sidebar-summary-pill ok">Revisados: {sidebarSummary.ok}</span>
                 <span className="preview-sidebar-summary-pill pending">Pendientes: {sidebarSummary.pending}</span>
                 <span className="preview-sidebar-summary-pill error">Errores: {sidebarSummary.error}</span>
+                {sidebarSummary.contact > 0 && (
+                  <span className="preview-sidebar-summary-pill contact">Contacto: {sidebarSummary.contact}</span>
+                )}
                 {sidebarSummary.warn > 0 && (
                   <span className="preview-sidebar-summary-pill warn">Advertencias: {sidebarSummary.warn}</span>
                 )}
@@ -636,6 +693,41 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
               {currentValidation.warnings.map((msg) => <span key={`w-${msg}`} className="tag-warn">{msg}</span>)}
             </div>
           )}
+
+          <div className="preview-section preview-section-contact-review">
+            <h4>📞 Nota Interna de Contacto</h4>
+            <div className="preview-field preview-field-column">
+              <strong>Motivo interno:</strong>
+              <textarea
+                rows={3}
+                value={currentForm?.revision_contacto_motivo || ''}
+                onChange={(e) => {
+                  if (!currentPedido) return;
+                  const value = e.target.value;
+                  setFormsByPedidoId((prev) => ({
+                    ...prev,
+                    [currentPedido.id]: {
+                      ...prev[currentPedido.id],
+                      revision_contacto_motivo: value,
+                    },
+                  }));
+                }}
+                placeholder="Ej: confirmar nro de puerta, apto o referencias de entrega"
+              />
+              <span className="preview-hint">Esta nota es interna y se muestra en la tabla para seguimiento rápido.</span>
+            </div>
+            <div className="preview-contact-actions">
+              <button className="btn btn-warning btn-sm" onClick={() => handleGuardarRevisionContacto(true)}>
+                ⚠️ Marcar Pendiente Contacto
+              </button>
+              <button className="btn btn-success btn-sm" onClick={() => handleGuardarRevisionContacto(false)}>
+                ✅ Contacto Resuelto
+              </button>
+              {currentForm?.revision_contacto_pendiente && (
+                <span className="preview-contact-state">Bloqueado para generar hasta resolver contacto</span>
+              )}
+            </div>
+          </div>
 
           {/* Destinatario */}
           <div className="preview-section">

@@ -10,6 +10,7 @@ import FollowUpPanel from './components/FollowUpPanel';
 import TemplateManagerPanel from './components/TemplateManagerPanel';
 import { usePedidos } from './hooks/usePedidos';
 import { 
+  generarLinkWhatsApp,
   obtenerPedidosFinalizados,
   obtenerPlantillas,
   crearPlantilla,
@@ -33,6 +34,8 @@ function App() {
     ejecutarFulfillmentShopify,
     notificarTrackingPedido,
     marcarPedidoNotificado,
+    actualizarRevisionContacto,
+    descartarEtiqueta,
     generarEtiqueta,
     generarEtiquetaReclamo,
     generarEtiquetaColaboracion,
@@ -82,6 +85,8 @@ function App() {
 
   // Pedidos que aún no tienen etiqueta generada (necesitan validación)
   const pedidosPendientes = pedidos.filter((p) => !p.etiqueta_generada && !estadoEsCerrado(p.estado));
+  const pedidosPendientesContacto = pedidosPendientes.filter((p) => Boolean(p.revision_contacto_pendiente));
+  const pedidosPendientesValidables = pedidosPendientes.filter((p) => !Boolean(p.revision_contacto_pendiente));
   
   // Pedidos con etiqueta pero no notificados (incluye los de WhatsApp sin email que están esperando notificación manual)
   const pedidosConEtiqueta = pedidos.filter((p) => p.etiqueta_generada && !Boolean(p.notificacion_enviada_at) && !estadoEsCerrado(p.estado));
@@ -91,11 +96,22 @@ function App() {
 
   // Helper para determinar si tiene email
   const tieneEmail = (p) => Boolean(String(p.cliente_email || '').trim());
+  const tienePhone = (p) => String(p.cliente_telefono || '').replace(/\D/g, '').length >= 8;
+
+  const getCanalTrackingBase = (p) => {
+    if (tieneEmail(p)) return 'email';
+    if (tienePhone(p)) return 'whatsapp';
+    return 'noChannel';
+  };
+
+  const pedidosTrackingAutomatico = pedidosConEtiqueta.filter((p) => getCanalTrackingBase(p) === 'email');
+  const pedidosTrackingWhatsApp = pedidosConEtiqueta.filter((p) => getCanalTrackingBase(p) === 'whatsapp');
+  const pedidosRevisionManual = pedidosConEtiqueta.filter((p) => getCanalTrackingBase(p) === 'noChannel');
+  const trackingClasificadoTotal = pedidosTrackingAutomatico.length + pedidosTrackingWhatsApp.length + pedidosRevisionManual.length;
+  const hayDescuadreTracking = trackingClasificadoTotal !== pedidosConEtiqueta.length;
   
   // Pendientes de envio: tienen etiqueta y tracking, NO han sido notificados, Y tienen email (Shopify solo puede notificar por email)
-  const pedidosListosFulfillment = pedidos.filter(
-    (p) => p.etiqueta_generada && p.numero_seguimiento_ues && !Boolean(p.notificacion_enviada_at) && !estadoEsCerrado(p.estado) && tieneEmail(p)
-  );
+  const pedidosListosFulfillment = pedidosTrackingAutomatico;
   const pedidosListosFulfillmentSeleccionados = pedidosListosFulfillment.filter((p) =>
     selectedPedidos.includes(p.id)
   );
@@ -105,9 +121,6 @@ function App() {
   const seleccionadosEnPreview = Array.isArray(fulfillmentPreviewIds)
     ? fulfillmentPreviewIds.filter((id) => selectedPedidos.includes(id))
     : [];
-
-  // Desglose de canales de notificacion para el preview (antes de confirmar)
-  const tienePhone = (p) => String(p.cliente_telefono || '').replace(/\D/g, '').length >= 8;
 
   // Determinar canal en base a prioridad configurada
   const getCanalNotificacion = (p) => {
@@ -148,17 +161,30 @@ function App() {
   })();
 
   const headerStats = {
-    porValidar: pedidosPendientes.length,
+    porValidar: pedidosPendientesValidables.length,
+    pendientesContacto: pedidosPendientesContacto.length,
     etiquetasGeneradas: pedidosConEtiqueta.length,
     pendientesFulfillment: pedidosListosFulfillment.length,
+    whatsappTracking: pedidosTrackingWhatsApp.length,
+    revisionManual: pedidosRevisionManual.length,
     enviados: pedidosEnviados.length,
+    trackingAlert: hayDescuadreTracking || pedidosRevisionManual.length > 0,
+    trackingBreakdown: {
+      total: pedidosConEtiqueta.length,
+      automatico: pedidosListosFulfillment.length,
+      whatsapp: pedidosTrackingWhatsApp.length,
+      revisionManual: pedidosRevisionManual.length,
+      descuadre: hayDescuadreTracking,
+    },
   };
 
   const pedidosFiltradosPorCard = (() => {
+    if (tableFilter === 'pendientesContacto') return pedidosPendientesContacto;
     if (tableFilter === 'etiquetasGeneradas') return pedidosConEtiqueta;
     if (tableFilter === 'pendientesFulfillment') return pedidosListosFulfillment;
+    if (tableFilter === 'revisionManual') return pedidosRevisionManual;
     if (tableFilter === 'enviados') return pedidosEnviados;
-    return pedidosPendientes;
+    return pedidosPendientesValidables;
   })();
 
   const pedidosFinalizadosParaReclamo = [...pedidosFinalizados].sort((a, b) => {
@@ -531,12 +557,9 @@ function App() {
     }
 
     try {
-       setLoading(true);
-      setLoadingMessage('Creando fulfillments en Shopify...');
-
       // Crear fulfillments en Shopify (sin notificar automáticamente)
       const pedidoIds = enPreview ? seleccionadosEnPreview : null;
-      const resultado = await api.ejecutarFulfillmentShopify(pedidoIds);
+      const resultado = await ejecutarFulfillmentShopify(pedidoIds);
       
       setFulfillmentPreviewIds(null);
       
@@ -559,11 +582,9 @@ function App() {
       const pedidosSinEmail = resultado.pedidosSinEmail || [];
 
       if (pedidosSinEmail.length > 0) {
-        setLoadingMessage(`Abriendo ${pedidosSinEmail.length} tabs de WhatsApp para pedidos sin email...`);
-        
         // Generar links en paralelo
         const promesas = pedidosSinEmail.map(pedido => 
-          api.generarLinkWhatsApp(pedido, activeTemplate?.content)
+          generarLinkWhatsApp(pedido, activeTemplate?.content)
         );
 
         const resultadosLinks = await Promise.all(promesas);
@@ -585,8 +606,6 @@ function App() {
     } catch (error) {
       console.error('Error en fulfillment:', error);
       mostrarToast('Error al procesar fulfillment', 'error');
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -599,13 +618,13 @@ function App() {
   // Handler para reenvio manual de notificacion de tracking
   const handleReenviarNotificacion = async (pedidoId) => {
     const pedido = pedidos.find(p => p.id === pedidoId);
-    if (!pedido || !pedido.telefono) {
+    if (!pedido || !pedido.cliente_telefono) {
       mostrarToast('Pedido sin teléfono válido', 'error');
       return;
     }
 
     const activeTemplate = templates.find((t) => t.id === activeTrackingTemplateId);
-    const resultado = await api.generarLinkWhatsApp(pedido, activeTemplate?.content);
+    const resultado = await generarLinkWhatsApp(pedido, activeTemplate?.content);
     
     if (!resultado.success) {
       mostrarToast(resultado.error || 'Error al generar link de WhatsApp', 'error');
@@ -615,6 +634,27 @@ function App() {
     // Abrir WhatsApp Web con el link generado
     window.open(resultado.url, '_blank');
     mostrarToast('WhatsApp abierto con el mensaje', 'success');
+  };
+
+  const handleDescartarEtiqueta = async (pedidoId) => {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    const numeroPedido = pedido?.numero_pedido || pedidoId;
+
+    const confirmado = window.confirm(`Descartar la etiqueta del pedido #${numeroPedido} y devolverlo a validacion?`);
+    if (!confirmado) {
+      return;
+    }
+
+    const resultado = await descartarEtiqueta(pedidoId);
+    if (!resultado.success) {
+      mostrarToast(resultado.error || 'No se pudo descartar la etiqueta', 'error');
+      return;
+    }
+
+    mostrarToast(resultado.message || 'Etiqueta descartada. El pedido volvio a validacion.', 'success');
+    if (tableFilter !== 'porValidar') {
+      setTableFilter('porValidar');
+    }
   };
 
   // Handler para login UES
@@ -645,15 +685,95 @@ function App() {
 
   // Handler para validación masiva previa a generar
   const handleValidarSeleccionados = async () => {
-    if (pedidosPendientes.length === 0) {
-      mostrarToast('⚠️ No hay pedidos pendientes para validar', 'warning');
+    const enPendientesContacto = tableFilter === 'pendientesContacto';
+
+    if (enPendientesContacto) {
+      if (pedidosPendientesContacto.length === 0) {
+        mostrarToast('⚠️ No hay pedidos en pendientes de contacto para revisar', 'warning');
+        return;
+      }
+
+      limpiarSeleccion();
+      setPreviewPedidos(pedidosPendientesContacto);
+      setPreviewInitialIndex(0);
+      setShowDatosModal(true);
+      mostrarToast('ℹ️ Revisando pedidos pendientes de contacto en modal', 'info');
       return;
     }
 
+    if (pedidosPendientesValidables.length === 0) {
+      if (pedidosPendientesContacto.length > 0) {
+        limpiarSeleccion();
+        setPreviewPedidos(pedidosPendientesContacto);
+        setPreviewInitialIndex(0);
+        setShowDatosModal(true);
+        mostrarToast('⚠️ No hay pedidos listos para validar. Te abrí los pendientes de contacto para que los puedas resolver.', 'warning');
+      } else {
+        mostrarToast('⚠️ No hay pedidos pendientes para validar', 'warning');
+      }
+      return;
+    }
+
+    if (pedidosPendientesContacto.length > 0) {
+      mostrarToast(`⚠️ ${pedidosPendientesContacto.length} pedido(s) bloqueados por contacto quedaron fuera de la validación`, 'warning');
+    }
+
     limpiarSeleccion();
-    setPreviewPedidos(pedidosPendientes);
+    setPreviewPedidos(pedidosPendientesValidables);
     setPreviewInitialIndex(0);
     setShowDatosModal(true);
+  };
+
+  const handleToggleRevisionContacto = async (pedidoId) => {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) return;
+
+    const yaPendiente = Boolean(pedido.revision_contacto_pendiente);
+    if (yaPendiente) {
+      const confirmado = window.confirm('¿Marcar como resuelto y habilitar validación de este pedido?');
+      if (!confirmado) return;
+
+      const resultado = await actualizarRevisionContacto(pedidoId, false, '');
+      if (!resultado.success) {
+        mostrarToast(resultado.error || 'No se pudo actualizar el estado de revisión', 'error');
+        return;
+      }
+      mostrarToast('✅ Pedido habilitado para validación', 'success');
+      return;
+    }
+
+    const motivo = window.prompt('Motivo de contacto pendiente (se guardará para revisión manual):', pedido.revision_contacto_motivo || '');
+    if (motivo === null) return;
+
+    const resultado = await actualizarRevisionContacto(pedidoId, true, motivo);
+    if (!resultado.success) {
+      mostrarToast(resultado.error || 'No se pudo marcar el pedido para revisión', 'error');
+      return;
+    }
+    mostrarToast('⚠️ Pedido marcado para contacto con cliente', 'info');
+    if (tableFilter === 'porValidar') {
+      setTableFilter('pendientesContacto');
+    }
+  };
+
+  const handleUpdateRevisionContactoDesdeModal = async (pedidoId, pendiente, motivo) => {
+    const resultado = await actualizarRevisionContacto(pedidoId, pendiente, motivo || '');
+    if (!resultado.success) {
+      return resultado;
+    }
+
+    setPreviewPedidos((prev) => prev.map((p) => (
+      p.id === pedidoId
+        ? {
+            ...p,
+            revision_contacto_pendiente: Boolean(resultado.revision_contacto_pendiente),
+            revision_contacto_motivo: resultado.revision_contacto_motivo || '',
+            revision_contacto_fecha: resultado.revision_contacto_fecha || null,
+          }
+        : p
+    )));
+
+    return resultado;
   };
 
   const handleGenerarReclamo = async () => {
@@ -848,9 +968,10 @@ function App() {
               onToggleSelectAll={toggleSelectAll}
               onReenviarNotificacion={handleReenviarNotificacion}
               onMarcarNotificado={marcarPedidoNotificado}
+              onDescartarEtiqueta={handleDescartarEtiqueta}
               fulfillmentPreview={fulfillmentPreviewIds !== null}
               channelPriority={channelPriority}
-              showNotifyColumn={tableFilter !== 'porValidar'}
+              showNotifyColumn={tableFilter !== 'porValidar' && tableFilter !== 'pendientesContacto'}
               showTrackingColumn={tableFilter !== 'porValidar'}
               activeTrackingTemplate={templates.find((t) => t.id === activeTrackingTemplateId)}
             />
@@ -1043,6 +1164,7 @@ function App() {
           selectedPedidoIds={previewMode === 'reclamo' ? [reclamoPedidoId] : selectedPedidos}
           initialIndex={previewInitialIndex}
           onReviewedChange={setPedidoSeleccionado}
+          onUpdateRevisionContacto={handleUpdateRevisionContactoDesdeModal}
           onClose={() => {
             setShowDatosModal(false);
             setPreviewMode('normal');

@@ -7,6 +7,7 @@ function PedidosTable({
   onToggleSelectAll,
   onReenviarNotificacion,
   onMarcarNotificado,
+  onDescartarEtiqueta,
   fulfillmentPreview,
   channelPriority = 'email',
   showNotifyColumn = true,
@@ -50,7 +51,7 @@ function PedidosTable({
           <tbody>
             {pedidosOrdenados.length === 0 ? (
               <tr>
-                <td colSpan={showNotifyColumn && showTrackingColumn ? "7" : showNotifyColumn || showTrackingColumn ? "6" : "5"} className="table-empty-state">
+                <td colSpan={5 + (showTrackingColumn ? 1 : 0) + (showNotifyColumn ? 1 : 0)} className="table-empty-state">
                   No hay pedidos para mostrar
                 </td>
               </tr>
@@ -63,6 +64,8 @@ function PedidosTable({
                   onToggleSelect={() => onToggleSelect(pedido.id)}
                   onReenviarNotificacion={onReenviarNotificacion}
                   onMarcarNotificado={onMarcarNotificado}
+                  onDescartarEtiqueta={onDescartarEtiqueta}
+                  fulfillmentPreview={fulfillmentPreview}
                   channelPriority={channelPriority}
                   showNotifyColumn={showNotifyColumn}
                   showTrackingColumn={showTrackingColumn}
@@ -77,18 +80,21 @@ function PedidosTable({
   );
 }
 
-function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion, onMarcarNotificado, channelPriority = 'email', showNotifyColumn = true, showTrackingColumn = true, activeTrackingTemplate }) {
+function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion, onMarcarNotificado, onDescartarEtiqueta, fulfillmentPreview = false, channelPriority = 'email', showNotifyColumn = true, showTrackingColumn = true, activeTrackingTemplate }) {
   const estadoClass = pedido.estado === 'procesado' ? 'badge-success' : 'badge-warning';
+  const tieneRevisionContacto = Boolean(pedido.revision_contacto_pendiente);
   const estadoText = pedido.estado === 'procesado' ? 'Procesado' : 
                      pedido.estado === 'etiqueta_generada' ? 'Etiqueta Generada' : 
                      pedido.estado === 'enviado' ? 'Enviado' :
                      'Pendiente';
 
   const fueNotificado = Boolean(pedido.notificacion_enviada_at);
+  const puedeDescartarEtiqueta = Boolean(pedido.etiqueta_generada) && !fueNotificado;
 
   // Detectar si es pedido de WhatsApp en base a la prioridad configurada
   const tieneEmail = Boolean(String(pedido?.cliente_email || '').trim());
   const tienePhone = Boolean(String(pedido?.cliente_telefono || '').trim());
+  const sinCanal = !tieneEmail && !tienePhone;
   
   let esWhatsApp = false;
   if (channelPriority === 'whatsapp') {
@@ -168,30 +174,45 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
       <td>{pedido.cliente_nombre || 'Sin nombre'}</td>
       <td>{pedido.direccion_envio || 'Sin dirección'}</td>
       <td>
-        <span className={`badge ${estadoClass}`}>{estadoText}</span>
+        <span className={`badge ${tieneRevisionContacto ? 'badge-danger' : estadoClass}`}>{tieneRevisionContacto ? 'Pendiente Contacto' : estadoText}</span>
       </td>
       {showTrackingColumn && <td>{pedido.numero_seguimiento_ues || '-'}</td>}
       {showNotifyColumn && (
         <td>
-          {fueNotificado && (
-            <span className="pedido-notified-label">
-              Notificado ✓
-            </span>
-          )}
-          {esWhatsApp ? (
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={handleNotificar}
-              disabled={!pedido.numero_seguimiento_ues}
-              title={!pedido.numero_seguimiento_ues ? 'Sin tracking para notificar' : 'Abrir WhatsApp con mensaje de tracking'}
-            >
-              💬 Notificar
-            </button>
-          ) : (
-            <span className="pedido-email-label">
-              📧 Shopify notifica
-            </span>
-          )}
+          <div className="pedido-actions-cell">
+            {fueNotificado && (
+              <span className="pedido-notified-label">
+                Notificado ✓
+              </span>
+            )}
+            {!fueNotificado && sinCanal ? (
+              <span className="pedido-manual-review-label">
+                ⚠️ Revision manual
+              </span>
+            ) : esWhatsApp ? (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleNotificar}
+                disabled={!pedido.numero_seguimiento_ues}
+                title={!pedido.numero_seguimiento_ues ? 'Sin tracking para notificar' : 'Abrir WhatsApp con mensaje de tracking'}
+              >
+                💬 Notificar
+              </button>
+            ) : (
+              <span className="pedido-email-label">
+                📧 Shopify notifica
+              </span>
+            )}
+            {puedeDescartarEtiqueta && !fulfillmentPreview && (
+              <button
+                className="btn btn-outline-danger btn-sm"
+                onClick={() => onDescartarEtiqueta?.(pedido.id)}
+                title="Descartar esta etiqueta y volver a validacion"
+              >
+                ↩️ Descartar
+              </button>
+            )}
+          </div>
         </td>
       )}
     </tr>
