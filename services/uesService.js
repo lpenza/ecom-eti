@@ -305,16 +305,18 @@ class UESService {
       const payloadEnvio = mergePayload(basePayloadEnvio, payloadOverrides?.payloadEnvio);
 
       // Reglas finales de negocio para UES (workaround):
-      // - referencia: siempre número de pedido Shopify
-      // - comentario guía: incluir número de pedido + observaciones cortas
+      // - referencia: usar override si existe (ej: RCLxxxx), si no número de pedido
+      // - comentario guía: incluir referencia final + observaciones cortas
       //   porque UES puede sobrescribir guia.referencia con guia.comentario.
-      const referenciaShopify = String(pedido?.numero_pedido || '').trim();
+      const referenciaFinal = String(
+        payloadOverrides?.payloadEnvio?.referencia || pedido?.numero_pedido || ''
+      ).trim();
       const observacionesFinales = String(payloadDireccion?.observaciones || '').trim();
       const comentarioCompuesto = this.construirComentarioEtiqueta(
-        referenciaShopify,
+        referenciaFinal,
         observacionesFinales
       );
-      payloadEnvio.referencia = referenciaShopify;
+      payloadEnvio.referencia = referenciaFinal;
 
       payloadEnvio.destino = direccionId;
       payloadEnvio.direccion_destinatario_id = direccionId;
@@ -325,7 +327,7 @@ class UESService {
           payloadOverrides?.guia
         );
 
-        payloadEnvio.guias[0].referencia = referenciaShopify;
+        payloadEnvio.guias[0].referencia = referenciaFinal;
         payloadEnvio.guias[0].comentario = comentarioCompuesto;
       }
 
@@ -357,12 +359,24 @@ class UESService {
       }
 
       // 4) Obtener etiqueta usando el mismo llamado del .NET.
-      const etiquetaResp = await this.dispatcherPost({
-        service: 'getGuia',
-        action: 'getEtiqueta',
-        numero: numeroSeguimiento,
-      });
-      logService.info(`Respuesta getGuia/getEtiqueta [${traceId}]:`, etiquetaResp);
+      // UES puede demorar unos segundos en propagar la guía recién creada —
+      // esperamos antes de pedir el PDF, con hasta 3 reintentos.
+      const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const MAX_PDF_INTENTOS = 3;
+      const PDF_ESPERA_MS = 2000;
+      let etiquetaResp = null;
+      for (let intento = 1; intento <= MAX_PDF_INTENTOS; intento++) {
+        logService.info(`[${traceId}] Esperando ${PDF_ESPERA_MS}ms antes de pedir PDF (intento ${intento}/${MAX_PDF_INTENTOS})...`);
+        await delay(PDF_ESPERA_MS);
+        etiquetaResp = await this.dispatcherPost({
+          service: 'getGuia',
+          action: 'getEtiqueta',
+          numero: numeroSeguimiento,
+        });
+        logService.info(`Respuesta getGuia/getEtiqueta intento ${intento} [${traceId}]:`, etiquetaResp);
+        if (etiquetaResp?.url) break;
+        logService.warning(`[${traceId}] PDF no disponible en intento ${intento}${intento < MAX_PDF_INTENTOS ? ', reintentando...' : ', máximo de intentos alcanzado'}`);
+      }
 
       const urlPdf = etiquetaResp?.url || null;
 
