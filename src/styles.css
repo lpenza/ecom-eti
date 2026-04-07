@@ -1850,6 +1850,25 @@ body {
   font-size: 0.85em;
 }
 
+.section-action-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #f0f4ff;
+  border-left: 3px solid #6366f1;
+  border-radius: 4px;
+  margin: 0 0 8px 0;
+  font-size: 0.9em;
+  color: #374151;
+}
+
+.section-action-bar .active-template-selector {
+  background: #ffffff;
+  color: #374151;
+}
+
 .pedido-actions-cell {
   display: flex;
   flex-wrap: wrap;

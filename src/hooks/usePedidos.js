@@ -185,6 +185,45 @@ export function usePedidos() {
     }
   }, []);
 
+  const marcarRevisionContactoContactado = useCallback(async (pedidoId) => {
+    try {
+      const result = await api.marcarRevisionContactoContactado(pedidoId);
+
+      setPedidos(prevPedidos =>
+        prevPedidos.map(p =>
+          p.id === pedidoId
+            ? {
+                ...p,
+                revision_contacto_ultimo_contacto_at: result.revision_contacto_ultimo_contacto_at || new Date().toISOString(),
+              }
+            : p
+        )
+      );
+
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('❌ Error registrando contacto de revisión:', error);
+      return { success: false, error: error.message };
+    }
+  }, []);
+
+  const enviarEmailMasivoPendientesContacto = useCallback(async ({ pedidoIds = null, subjectTemplate = '', htmlTemplate = '', onlyWithoutPhone = true } = {}) => {
+    try {
+      const result = await api.enviarEmailMasivoPendientesContacto({
+        pedidoIds,
+        subjectTemplate,
+        htmlTemplate,
+        onlyWithoutPhone,
+      });
+
+      await cargarPedidos();
+      return { success: true, ...result };
+    } catch (error) {
+      console.error('❌ Error enviando email masivo de pendientes de contacto:', error);
+      return { success: false, error: error.message };
+    }
+  }, [cargarPedidos]);
+
   const descartarEtiqueta = useCallback(async (pedidoId) => {
     console.log(`↩️ Descartando etiqueta para pedido ${pedidoId}...`);
     setLoading(true);
@@ -242,7 +281,12 @@ export function usePedidos() {
         )
       );
       
-      return { success: true, pdfUrl: result.pdfUrl, tracking: result.tracking };
+      return {
+        success: true,
+        pdfUrl: result.pdfUrl,
+        tracking: result.tracking,
+        warning: result.warning || null,
+      };
     } catch (error) {
       console.error('❌ Error generando etiqueta:', error);
       return { success: false, error: error.message };
@@ -376,6 +420,8 @@ export function usePedidos() {
     notificarTrackingPedido,
     marcarPedidoNotificado,
     actualizarRevisionContacto,
+    marcarRevisionContactoContactado,
+    enviarEmailMasivoPendientesContacto,
     descartarEtiqueta,
     generarEtiqueta,
     generarEtiquetaReclamo,

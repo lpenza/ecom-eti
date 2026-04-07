@@ -16,9 +16,24 @@ async function fetchAPI(url, options = {}) {
     });
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({ message: 'Error desconocido' }));
-      const error = new Error(errorData.message || `HTTP ${response.status}`);
-      error.response = errorData; // Incluir datos completos del error
+      // Intentar extraer error de JSON y, si falla, usar texto crudo
+      let errorData = null;
+      let fallbackText = '';
+
+      try {
+        errorData = await response.json();
+      } catch {
+        fallbackText = await response.text().catch(() => '');
+      }
+
+      const message =
+        errorData?.message ||
+        errorData?.error ||
+        fallbackText ||
+        `HTTP ${response.status}`;
+
+      const error = new Error(message);
+      error.response = errorData || { raw: fallbackText }; // Incluir datos completos del error
       error.status = response.status;
       throw error;
     }
@@ -90,6 +105,25 @@ export async function actualizarRevisionContacto(pedidoId, { pendiente, motivo =
   return await fetchAPI(`/pedidos/${pedidoId}/revision-contacto`, {
     method: 'POST',
     body: JSON.stringify({ pendiente, motivo }),
+  });
+}
+
+/**
+ * Registrar que ya se contactó un pedido en pendientes de contacto
+ */
+export async function marcarRevisionContactoContactado(pedidoId) {
+  return await fetchAPI(`/pedidos/${pedidoId}/revision-contacto/contactado`, {
+    method: 'POST',
+  });
+}
+
+/**
+ * Enviar email masivo a pedidos pendientes de contacto
+ */
+export async function enviarEmailMasivoPendientesContacto({ pedidoIds = null, subjectTemplate = '', htmlTemplate = '', onlyWithoutPhone = true } = {}) {
+  return await fetchAPI('/pedidos/revision-contacto/email-masivo', {
+    method: 'POST',
+    body: JSON.stringify({ pedidoIds, subjectTemplate, htmlTemplate, onlyWithoutPhone }),
   });
 }
 

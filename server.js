@@ -25,6 +25,7 @@ const supabaseService = require('./services/supabaseService');
 const uesService = require('./services/uesService');
 const shopifyService = require('./services/shopifyService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
+const emailService = require('./services/emailService');
 const logService = require('./services/logService');
 
 // Estado global para cache UES
@@ -77,6 +78,8 @@ app.get('/api/pedidos', async (req, res) => {
         revision_contacto_pendiente: Boolean(revision),
         revision_contacto_motivo: revision?.motivo || '',
         revision_contacto_fecha: revision?.fecha || null,
+        revision_contacto_ultimo_contacto_at: revision?.ultimo_contacto_at || null,
+        revision_contacto_ultimo_contacto_canal: revision?.ultimo_contacto_canal || null,
       };
     });
     
@@ -115,6 +118,8 @@ app.post('/api/pedidos/:pedidoId/revision-contacto', async (req, res) => {
       revisiones[pedidoId] = {
         motivo: motivoLimpio,
         fecha: new Date().toISOString(),
+        ultimo_contacto_at: revisiones[pedidoId]?.ultimo_contacto_at || null,
+        ultimo_contacto_canal: revisiones[pedidoId]?.ultimo_contacto_canal || null,
       };
     } else {
       delete revisiones[pedidoId];
@@ -133,9 +138,159 @@ app.post('/api/pedidos/:pedidoId/revision-contacto', async (req, res) => {
       revision_contacto_pendiente: pendiente,
       revision_contacto_motivo: pendiente ? String(motivo || '').trim() : '',
       revision_contacto_fecha: pendiente ? revisiones[pedidoId]?.fecha || null : null,
+      revision_contacto_ultimo_contacto_at: pendiente ? revisiones[pedidoId]?.ultimo_contacto_at || null : null,
+      revision_contacto_ultimo_contacto_canal: pendiente ? revisiones[pedidoId]?.ultimo_contacto_canal || null : null,
     });
   } catch (error) {
     logService.error('Error actualizando revisión de contacto', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/pedidos/:pedidoId/revision-contacto/contactado', async (req, res) => {
+  try {
+    const { pedidoId } = req.params;
+
+    const pedido = await supabaseService.obtenerPedido(pedidoId);
+    if (!pedido) {
+      return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    }
+
+    const revisiones = await leerRevisionContacto();
+    const actual = revisiones[pedidoId];
+    if (!actual) {
+      return res.status(400).json({ success: false, error: 'El pedido no está marcado como pendiente de contacto' });
+    }
+
+    const ahora = new Date().toISOString();
+    revisiones[pedidoId] = {
+      ...actual,
+      ultimo_contacto_at: ahora,
+      ultimo_contacto_canal: 'whatsapp',
+    };
+
+    await guardarRevisionContacto(revisiones);
+
+    logService.info(`Contacto registrado para pedido ${pedidoId}`, {
+      ultimo_contacto_at: ahora,
+    });
+
+    return res.json({
+      success: true,
+      pedidoId,
+      revision_contacto_ultimo_contacto_at: ahora,
+      revision_contacto_ultimo_contacto_canal: 'whatsapp',
+    });
+  } catch (error) {
+    logService.error('Error registrando contacto de revisión', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/pedidos/revision-contacto/email-masivo', async (req, res) => {
+  try {
+    const {
+      pedidoIds = null,
+      subjectTemplate = 'Seguimiento de tu pedido #{{numero_pedido}}',
+      htmlTemplate = '',
+      onlyWithoutPhone = true,
+    } = req.body || {};
+
+    const [pedidosActivos, revisiones] = await Promise.all([
+      supabaseService.obtenerPedidosActivos(),
+      leerRevisionContacto(),
+    ]);
+
+    const idsFiltrados = Array.isArray(pedidoIds) && pedidoIds.length > 0
+      ? new Set(pedidoIds.map((id) => String(id)))
+      : null;
+
+    const candidatos = (Array.isArray(pedidosActivos) ? pedidosActivos : []).filter((pedido) => {
+      const revision = revisiones?.[pedido.id];
+      if (!revision) return false;
+      if (idsFiltrados && !idsFiltrados.has(String(pedido.id))) return false;
+
+      const email = String(pedido.cliente_email || '').trim();
+      if (!email) return false;
+
+      if (onlyWithoutPhone) {
+        const phoneDigits = String(pedido.cliente_telefono || '').replace(/\D/g, '');
+        return phoneDigits.length < 8;
+      }
+
+      return true;
+    });
+
+    if (candidatos.length === 0) {
+      return res.json({
+        success: true,
+        count: 0,
+        sent: 0,
+        failed: 0,
+        data: [],
+        message: 'No hay pedidos pendientes de contacto con email para enviar',
+      });
+    }
+
+    const resultados = [];
+
+    for (const pedido of candidatos) {
+      try {
+        const revision = revisiones[pedido.id] || {};
+        const { subject, html } = emailService.renderMail({
+          pedido,
+          subjectTemplate,
+          htmlTemplate,
+          motivoContacto: revision?.motivo || '',
+        });
+
+        const envio = await emailService.enviarCorreo({
+          to: String(pedido.cliente_email || '').trim(),
+          subject,
+          html,
+        });
+
+        const ahora = new Date().toISOString();
+        revisiones[pedido.id] = {
+          ...revision,
+          ultimo_contacto_at: ahora,
+          ultimo_contacto_canal: 'email',
+        };
+
+        resultados.push({
+          pedidoId: pedido.id,
+          email: pedido.cliente_email,
+          success: true,
+          messageId: envio.messageId,
+        });
+      } catch (error) {
+        resultados.push({
+          pedidoId: pedido.id,
+          email: pedido.cliente_email,
+          success: false,
+          error: error.message,
+        });
+      }
+    }
+
+    await guardarRevisionContacto(revisiones);
+
+    const sent = resultados.filter((r) => r.success).length;
+    const failed = resultados.length - sent;
+
+    logService.info(`Email masivo pendientes contacto: ${sent} enviados, ${failed} errores`, {
+      count: resultados.length,
+    });
+
+    return res.json({
+      success: true,
+      count: resultados.length,
+      sent,
+      failed,
+      data: resultados,
+    });
+  } catch (error) {
+    logService.error('Error enviando email masivo de pendientes de contacto', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -648,6 +803,10 @@ app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
       etiqueta_impresa: false
     });
 
+    const pdfMissingWarning = !etiqueta.urlPdf
+      ? 'UES generó la etiqueta pero no devolvió el PDF en este momento'
+      : null;
+
     logService.info(`Etiqueta generada exitosamente para pedido ${pedidoId}: ${etiqueta.numeroSeguimiento}`);
     logService.info('🧾 Resultado generación etiqueta', {
       pedidoId,
@@ -655,6 +814,13 @@ app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
       pdfUrl: etiqueta.urlPdf,
       traceId: etiqueta.traceId || null,
     });
+    if (pdfMissingWarning) {
+      logService.warning('Etiqueta generada sin PDF disponible', {
+        pedidoId,
+        tracking: etiqueta.numeroSeguimiento,
+        traceId: etiqueta.traceId || null,
+      });
+    }
     
     // Respuesta en formato que React espera
     res.json({ 
@@ -662,6 +828,7 @@ app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
       pedidoId,
       tracking: etiqueta.numeroSeguimiento,
       pdfUrl: etiqueta.urlPdf,
+      warning: pdfMissingWarning,
       traceId: etiqueta.traceId || null,
     });
   } catch (error) {
@@ -893,11 +1060,10 @@ app.post('/api/reclamos/:pedidoId/generar-etiqueta', async (req, res) => {
     }
 
     const referencia = `RCL${pedido.numero_pedido || pedido.id}`;
-    const referenciaShopify = String(pedido.numero_pedido || pedido.id);
     
     // Combinar overrides del usuario (datos editados) con los defaults del reclamo
     const defaultOverrides = {
-      payloadEnvio: { referencia: referenciaShopify },
+      payloadEnvio: { referencia },
       guia: { comentario: '' },
       payloadDireccion: {
         observaciones: notas || '',
@@ -913,7 +1079,7 @@ app.post('/api/reclamos/:pedidoId/generar-etiqueta', async (req, res) => {
       },
       payloadEnvio: {
         ...payloadOverrides.payloadEnvio,
-        referencia: referenciaShopify
+        referencia
       },
       guia: {
         ...payloadOverrides.guia,

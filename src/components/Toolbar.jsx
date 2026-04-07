@@ -83,7 +83,7 @@ function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillme
           {/* Indicador de plantilla activa */}
           {activeTrackingTemplate && templates && templates.length > 0 && (
             <div className="active-template-selector">
-              <label>📋 Plantilla:</label>
+              <label>📋 Plantilla tracking:</label>
               <select 
                 value={activeTrackingTemplate.id} 
                 onChange={(e) => onTrackingTemplateChange?.(e.target.value)}
@@ -97,6 +97,7 @@ function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillme
               </select>
             </div>
           )}
+
         </>
       )}
     </div>

@@ -2,8 +2,11 @@ import React, { useMemo, useState, useEffect, useRef } from 'react';
 
 function TemplateManagerPanel({
   templates = [],
+  htmlTemplates = [],
   activeTemplateId,
+  activeHtmlTemplateId,
   onActiveTemplateChange,
+  onActiveHtmlTemplateChange,
   onCreateTemplate,
   onUpdateTemplate,
   onDeleteTemplate,
@@ -11,27 +14,59 @@ function TemplateManagerPanel({
   onBackToFollowUp,
   mostrarToast,
 }) {
+  const [templateMode, setTemplateMode] = useState('whatsapp'); // whatsapp | html
+  const [showPreview, setShowPreview] = useState(false);
   const [newName, setNewName] = useState('');
   const [newBody, setNewBody] = useState('');
-  
+
   // Estado local para edición sin causar re-renders
   const [localName, setLocalName] = useState('');
   const [localBody, setLocalBody] = useState('');
   const nameTimeoutRef = useRef(null);
   const bodyTimeoutRef = useRef(null);
 
+  const sampleData = {
+    cliente_nombre: 'María García',
+    cliente_email: 'maria@ejemplo.com',
+    numero_pedido: '#12345',
+    direccion_envio: 'Av. Corrientes 1234, Piso 2',
+    localidad: 'Buenos Aires',
+    departamento: 'CABA',
+    tracking: 'ARG123456789',
+    tracking_url: 'https://www.correoargentino.com.ar/seguimiento',
+    dias_transcurridos: '5',
+    fecha_objetivo: '10/04/2026',
+    motivo_contacto: 'datos de envío incompletos',
+  };
+
+  const previewHtml = useMemo(() => {
+    if (!localBody) return '<p style="color:#999;font-family:sans-serif">Escribí el HTML en el editor para ver la vista previa.</p>';
+    return Object.entries(sampleData).reduce(
+      (html, [key, val]) => html.replaceAll(`{{${key}}}`, val),
+      localBody
+    );
+  }, [localBody]);
+  
   const templateVars = [
     '{{cliente_nombre}}',
+    '{{cliente_email}}',
     '{{numero_pedido}}',
+    '{{direccion_envio}}',
+    '{{localidad}}',
+    '{{departamento}}',
     '{{tracking}}',
     '{{tracking_url}}',
     '{{dias_transcurridos}}',
     '{{fecha_objetivo}}',
+    '{{motivo_contacto}}',
   ];
 
+  const currentTemplates = templateMode === 'html' ? htmlTemplates : templates;
+  const currentActiveId = templateMode === 'html' ? activeHtmlTemplateId : activeTemplateId;
+
   const activeTemplate = useMemo(
-    () => templates.find((tpl) => tpl.id === activeTemplateId) || templates[0] || null,
-    [templates, activeTemplateId]
+    () => currentTemplates.find((tpl) => tpl.id === currentActiveId) || currentTemplates[0] || null,
+    [currentTemplates, currentActiveId]
   );
 
   // Sincronizar estado local cuando cambia la plantilla activa
@@ -62,7 +97,7 @@ function TemplateManagerPanel({
     }
 
     try {
-      await onCreateTemplate({ name, content });
+      await onCreateTemplate({ name, content, kind: templateMode });
       setNewName('');
       setNewBody('');
     } catch (error) {
@@ -72,7 +107,7 @@ function TemplateManagerPanel({
 
   const handleDelete = async () => {
     if (!activeTemplate) return;
-    if (templates.length <= 1) {
+    if (currentTemplates.length <= 1) {
       mostrarToast?.('Debe existir al menos una plantilla', 'warning');
       return;
     }
@@ -108,7 +143,7 @@ function TemplateManagerPanel({
     // Guardar en DB después de 500ms de inactividad
     nameTimeoutRef.current = setTimeout(async () => {
       try {
-        await onUpdateTemplate(activeTemplate.id, { name: newName });
+        await onUpdateTemplate(activeTemplate.id, { name: newName }, templateMode);
       } catch (error) {
         console.error('Error actualizando nombre:', error);
       }
@@ -129,7 +164,7 @@ function TemplateManagerPanel({
     // Guardar en DB después de 500ms de inactividad
     bodyTimeoutRef.current = setTimeout(async () => {
       try {
-        await onUpdateTemplate(activeTemplate.id, { content: newBody });
+        await onUpdateTemplate(activeTemplate.id, { content: newBody }, templateMode);
       } catch (error) {
         console.error('Error actualizando contenido:', error);
       }
@@ -142,7 +177,7 @@ function TemplateManagerPanel({
         <div className="template-manager-header">
           <div>
             <h3>Plantillas de Mensajes</h3>
-            <p>Gestiona las plantillas para Follow-Up y Notificaciones de Tracking.</p>
+            <p>Gestiona plantillas de WhatsApp y plantillas HTML completas para email masivo.</p>
           </div>
           <div className="template-manager-top-actions">
             <button type="button" className="btn btn-secondary" onClick={onBackToFollowUp}>
@@ -151,10 +186,27 @@ function TemplateManagerPanel({
           </div>
         </div>
 
+        <div className="template-manager-top-actions" style={{ marginBottom: '12px' }}>
+          <button
+            type="button"
+            className={`btn ${templateMode === 'whatsapp' ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setTemplateMode('whatsapp')}
+          >
+            💬 Plantillas WhatsApp
+          </button>
+          <button
+            type="button"
+            className={`btn ${templateMode === 'html' ? 'btn-primary' : 'btn-secondary'}`}
+            onClick={() => setTemplateMode('html')}
+          >
+            ✉️ Plantillas HTML Email
+          </button>
+        </div>
+
         <div className="template-manager-grid">
           <section className="template-manager-card template-manager-card-main">
             <div className="template-manager-card-head">
-              <h4>Plantilla activa</h4>
+              <h4>{templateMode === 'html' ? 'Plantilla HTML activa' : 'Plantilla WhatsApp activa'}</h4>
               <div style={{ display: 'flex', gap: '8px' }}>
                 {activeTemplate && (
                   <>
@@ -174,9 +226,15 @@ function TemplateManagerPanel({
               id="tpl-manager-active"
               className="module-input"
               value={activeTemplate?.id || ''}
-              onChange={(e) => onActiveTemplateChange?.(e.target.value)}
+              onChange={(e) => {
+                if (templateMode === 'html') {
+                  onActiveHtmlTemplateChange?.(e.target.value);
+                  return;
+                }
+                onActiveTemplateChange?.(e.target.value);
+              }}
             >
-              {templates.map((tpl) => (
+              {currentTemplates.map((tpl) => (
                 <option key={tpl.id} value={tpl.id}>{tpl.name}</option>
               ))}
             </select>
@@ -192,16 +250,45 @@ function TemplateManagerPanel({
                 />
 
                 <div className="template-manager-subhead">
-                  <label className="module-label" htmlFor="tpl-manager-body">Mensaje</label>
-                  <span className="template-manager-counter">{(localBody || '').length} caracteres</span>
+                  <label className="module-label" htmlFor="tpl-manager-body">
+                    {templateMode === 'html' ? 'HTML completo' : 'Mensaje'}
+                  </label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span className="template-manager-counter">{(localBody || '').length} caracteres</span>
+                    {templateMode === 'html' && (
+                      <button
+                        type="button"
+                        className={`btn btn-sm ${showPreview ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => setShowPreview((v) => !v)}
+                        title={showPreview ? 'Volver al editor' : 'Ver vista previa con datos de ejemplo'}
+                      >
+                        {showPreview ? '✏️ Editar' : '👁 Vista previa'}
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <textarea
-                  id="tpl-manager-body"
-                  className="module-input"
-                  rows={12}
-                  value={localBody}
-                  onChange={(e) => handleBodyChange(e.target.value)}
-                />
+                {templateMode === 'html' && showPreview ? (
+                  <iframe
+                    title="Vista previa HTML"
+                    sandbox=""
+                    srcDoc={previewHtml}
+                    style={{
+                      width: '100%',
+                      height: '480px',
+                      border: '1px solid #d1d5db',
+                      borderRadius: '6px',
+                      background: '#fff',
+                    }}
+                  />
+                ) : (
+                  <textarea
+                    id="tpl-manager-body"
+                    className="module-input"
+                    rows={templateMode === 'html' ? 18 : 12}
+                    value={localBody}
+                    onChange={(e) => handleBodyChange(e.target.value)}
+                  />
+                )}
               </>
             )}
           </section>
@@ -222,8 +309,10 @@ function TemplateManagerPanel({
               <textarea
                 id="tpl-manager-new-body"
                 className="module-input"
-                rows={8}
-                placeholder="Usa variables como {{cliente_nombre}}, {{numero_pedido}}, etc."
+                rows={templateMode === 'html' ? 10 : 8}
+                placeholder={templateMode === 'html'
+                  ? 'Pegá HTML completo con estilos inline o bloques <style> y variables {{...}}'
+                  : 'Usa variables como {{cliente_nombre}}, {{numero_pedido}}, etc.'}
                 value={newBody}
                 onChange={(e) => setNewBody(e.target.value)}
               />

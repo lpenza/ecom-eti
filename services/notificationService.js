@@ -12,6 +12,29 @@ function buildTrackingUrl(trackingNumber) {
   return trackingNumber ? `https://ues.com.uy/rastreo_paquete.html` : '';
 }
 
+function formatDate(isoDate) {
+  if (!isoDate) return '';
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('es-UY');
+}
+
+function calcularDiasTranscurridos(pedido) {
+  if (pedido?.followup_days_elapsed != null) {
+    return String(pedido.followup_days_elapsed);
+  }
+
+  const createdAt = pedido?.created_at;
+  if (!createdAt) return '';
+
+  const inicio = new Date(createdAt);
+  if (Number.isNaN(inicio.getTime())) return '';
+
+  const diffMs = Date.now() - inicio.getTime();
+  const dias = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60 * 24)));
+  return String(dias);
+}
+
 function renderTemplate(templateContent, pedido) {
   const trackingNumber = pedido?.numero_seguimiento_ues || pedido?.tracking || '';
   const trackingUrl = buildTrackingUrl(trackingNumber);
@@ -25,12 +48,19 @@ function renderTemplate(templateContent, pedido) {
 
   const orderNumber = pedido?.numero_pedido || pedido?.id;
   const primerNombre = formatPrimerNombre(pedido?.cliente_nombre);
-  
-  return String(templateContent)
-    .replace(/\{\{cliente_nombre\}\}/g, primerNombre)
-    .replace(/\{\{numero_pedido\}\}/g, orderNumber || '')
-    .replace(/\{\{tracking\}\}/g, trackingNumber || '')
-    .replace(/\{\{tracking_url\}\}/g, trackingUrl || '');
+
+  const vars = {
+    cliente_nombre: primerNombre,
+    numero_pedido: orderNumber || '',
+    tracking: trackingNumber || '',
+    tracking_url: trackingUrl || '',
+    dias_transcurridos: calcularDiasTranscurridos(pedido),
+    fecha_objetivo: formatDate(pedido?.followup_target_date),
+  };
+
+  return String(templateContent).replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (_, key) => {
+    return vars[key] ?? '';
+  });
 }
 
 function generarLinkWhatsApp(pedido, templateContent) {

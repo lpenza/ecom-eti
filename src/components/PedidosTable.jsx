@@ -6,13 +6,16 @@ function PedidosTable({
   onToggleSelect, 
   onToggleSelectAll,
   onReenviarNotificacion,
+  onContactarPendiente,
   onMarcarNotificado,
   onDescartarEtiqueta,
   fulfillmentPreview,
   channelPriority = 'email',
   showNotifyColumn = true,
   showTrackingColumn = true,
-  activeTrackingTemplate
+  activeTrackingTemplate,
+  activeContactTemplate,
+  modoPendienteContacto = false,
 }) {
   const allSelected = pedidos.length > 0 && selectedPedidos.length === pedidos.length;
 
@@ -63,6 +66,7 @@ function PedidosTable({
                   isSelected={selectedPedidos.includes(pedido.id)}
                   onToggleSelect={() => onToggleSelect(pedido.id)}
                   onReenviarNotificacion={onReenviarNotificacion}
+                  onContactarPendiente={onContactarPendiente}
                   onMarcarNotificado={onMarcarNotificado}
                   onDescartarEtiqueta={onDescartarEtiqueta}
                   fulfillmentPreview={fulfillmentPreview}
@@ -70,6 +74,8 @@ function PedidosTable({
                   showNotifyColumn={showNotifyColumn}
                   showTrackingColumn={showTrackingColumn}
                   activeTrackingTemplate={activeTrackingTemplate}
+                  activeContactTemplate={activeContactTemplate}
+                  modoPendienteContacto={modoPendienteContacto}
                 />
               ))
             )}
@@ -80,7 +86,7 @@ function PedidosTable({
   );
 }
 
-function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion, onMarcarNotificado, onDescartarEtiqueta, fulfillmentPreview = false, channelPriority = 'email', showNotifyColumn = true, showTrackingColumn = true, activeTrackingTemplate }) {
+function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion, onContactarPendiente, onMarcarNotificado, onDescartarEtiqueta, fulfillmentPreview = false, channelPriority = 'email', showNotifyColumn = true, showTrackingColumn = true, activeTrackingTemplate, activeContactTemplate, modoPendienteContacto = false }) {
   const estadoClass = pedido.estado === 'procesado' ? 'badge-success' : 'badge-warning';
   const tieneRevisionContacto = Boolean(pedido.revision_contacto_pendiente);
   const estadoText = pedido.estado === 'procesado' ? 'Procesado' : 
@@ -90,6 +96,7 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
 
   const fueNotificado = Boolean(pedido.notificacion_enviada_at);
   const puedeDescartarEtiqueta = Boolean(pedido.etiqueta_generada) && !fueNotificado;
+  const ultimoContactoAt = pedido.revision_contacto_ultimo_contacto_at || null;
 
   // Detectar si es pedido de WhatsApp en base a la prioridad configurada
   const tieneEmail = Boolean(String(pedido?.cliente_email || '').trim());
@@ -156,6 +163,22 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
     }
   };
 
+  const handleContactoRapido = () => {
+    onContactarPendiente?.(pedido.id);
+  };
+
+  const formatUltimoContacto = (iso) => {
+    if (!iso) return '';
+    const fecha = new Date(iso);
+    if (Number.isNaN(fecha.getTime())) return '';
+    return fecha.toLocaleString('es-UY', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
   return (
     <tr className={fueNotificado ? 'pedidos-row-notified' : ''}>
       <td>
@@ -189,6 +212,27 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
               <span className="pedido-manual-review-label">
                 ⚠️ Revision manual
               </span>
+            ) : modoPendienteContacto ? (
+              <>
+                {tienePhone ? (
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleContactoRapido}
+                    title={`Abrir WhatsApp con plantilla: ${activeContactTemplate?.name || 'Mensaje por defecto'}`}
+                  >
+                    💬 Contactar
+                  </button>
+                ) : (
+                  <span className="pedido-email-label" title="Se enviará por email masivo">
+                    ✉️ Email
+                  </span>
+                )}
+                {ultimoContactoAt && (
+                  <span className="pedido-notified-label" title={`Ultimo contacto: ${formatUltimoContacto(ultimoContactoAt)}`}>
+                    ✅ Contactado {formatUltimoContacto(ultimoContactoAt)}
+                  </span>
+                )}
+              </>
             ) : esWhatsApp ? (
               <button
                 className="btn btn-secondary btn-sm"

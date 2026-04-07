@@ -5,7 +5,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
+    "dev": "nodemon --ignore ues_getContext.json --ignore ues_session_info.json --ignore pedido_revision_contacto.json server.js",
     "client": "vite",
     "build": "vite build",
     "preview": "vite preview"
@@ -19,6 +19,7 @@
     "express": "^4.18.2",
     "form-data": "^4.0.0",
     "node-fetch": "^2.7.0",
+    "nodemailer": "^6.10.1",
     "pdf-lib": "^1.17.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"

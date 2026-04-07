@@ -22,6 +22,33 @@ import {
   obtenerEstadoCacheUES
 } from './services/api';
 
+const HTML_TEMPLATE_PREFIX = '[HTML] ';
+
+function normalizeTemplateRecord(record) {
+  const rawName = String(record?.name || '');
+  const isHtml = rawName.startsWith(HTML_TEMPLATE_PREFIX);
+
+  return {
+    id: String(record.id),
+    name: isHtml ? rawName.slice(HTML_TEMPLATE_PREFIX.length) : rawName,
+    content: record.content,
+    isActive: record.is_active,
+    kind: isHtml ? 'html' : 'whatsapp',
+  };
+}
+
+function toStoredTemplateName(name, kind = 'whatsapp') {
+  const clean = String(name || '').trim();
+  if (kind === 'html') {
+    if (clean.startsWith(HTML_TEMPLATE_PREFIX)) return clean;
+    return `${HTML_TEMPLATE_PREFIX}${clean}`;
+  }
+
+  return clean.startsWith(HTML_TEMPLATE_PREFIX)
+    ? clean.slice(HTML_TEMPLATE_PREFIX.length)
+    : clean;
+}
+
 function App() {
   const {
     pedidos,
@@ -35,6 +62,8 @@ function App() {
     notificarTrackingPedido,
     marcarPedidoNotificado,
     actualizarRevisionContacto,
+    marcarRevisionContactoContactado,
+    enviarEmailMasivoPendientesContacto,
     descartarEtiqueta,
     generarEtiqueta,
     generarEtiquetaReclamo,
@@ -67,6 +96,7 @@ function App() {
   const [templates, setTemplates] = useState([]);
   const [activeTemplateId, setActiveTemplateId] = useState('');
   const [activeTrackingTemplateId, setActiveTrackingTemplateId] = useState('');
+  const [activeHtmlTemplateId, setActiveHtmlTemplateId] = useState('');
   const [colForm, setColForm] = useState({
     cliente_nombre: '',
     cliente_email: '',
@@ -87,6 +117,11 @@ function App() {
   const pedidosPendientes = pedidos.filter((p) => !p.etiqueta_generada && !estadoEsCerrado(p.estado));
   const pedidosPendientesContacto = pedidosPendientes.filter((p) => Boolean(p.revision_contacto_pendiente));
   const pedidosPendientesValidables = pedidosPendientes.filter((p) => !Boolean(p.revision_contacto_pendiente));
+  const pedidosPendientesContactoSinCelConEmail = pedidosPendientesContacto.filter((p) => {
+    const email = String(p.cliente_email || '').trim();
+    const phoneDigits = String(p.cliente_telefono || '').replace(/\D/g, '');
+    return Boolean(email) && phoneDigits.length < 8;
+  });
   
   // Pedidos con etiqueta pero no notificados (incluye los de WhatsApp sin email que están esperando notificación manual)
   const pedidosConEtiqueta = pedidos.filter((p) => p.etiqueta_generada && !Boolean(p.notificacion_enviada_at) && !estadoEsCerrado(p.estado));
@@ -212,6 +247,9 @@ function App() {
 
   const pedidoReclamoSeleccionado = pedidosFinalizadosParaReclamo.find((p) => p.id === reclamoPedidoId) || null;
 
+  const templatesWhatsapp = templates.filter((t) => t.kind !== 'html');
+  const templatesHtml = templates.filter((t) => t.kind === 'html');
+
   // Cargar pedidos al montar el componente
   useEffect(() => {
     console.log('🚀 App React montada - cargando pedidos...');
@@ -258,35 +296,37 @@ function App() {
       .then((plantillas) => {
         if (cancelled) return;
         
-        // Mapear de formato DB a formato frontend
-        const plantillasMapeadas = plantillas.map((p) => ({
-          id: String(p.id),
-          name: p.name,
-          content: p.content,
-          isActive: p.is_active
-        }));
+        // Mapear de formato DB a formato frontend (con tipo)
+        const plantillasMapeadas = plantillas.map(normalizeTemplateRecord);
+        const plantillasWpp = plantillasMapeadas.filter((p) => p.kind !== 'html');
+        const plantillasHtmlCargadas = plantillasMapeadas.filter((p) => p.kind === 'html');
         
         setTemplates(plantillasMapeadas);
         
-        // Establecer plantilla activa para follow-up
-        const activa = plantillasMapeadas.find((p) => p.isActive);
+        // Establecer plantilla activa para follow-up (solo WhatsApp)
+        const activa = plantillasWpp.find((p) => p.isActive);
         if (activa) {
           setActiveTemplateId(activa.id);
-        } else if (plantillasMapeadas.length > 0) {
-          setActiveTemplateId(plantillasMapeadas[0].id);
+        } else if (plantillasWpp.length > 0) {
+          setActiveTemplateId(plantillasWpp[0].id);
         }
         
-        // Establecer plantilla activa para tracking (buscar por nombre)
-        const trackingTemplate = plantillasMapeadas.find((p) => 
+        // Establecer plantilla activa para tracking (buscar por nombre, solo WhatsApp)
+        const trackingTemplate = plantillasWpp.find((p) => 
           p.name.toLowerCase().includes('envío') || 
           p.name.toLowerCase().includes('tracking') ||
           p.name.toLowerCase().includes('notificación')
         );
         if (trackingTemplate) {
           setActiveTrackingTemplateId(trackingTemplate.id);
-        } else if (plantillasMapeadas.length > 0) {
+        } else if (plantillasWpp.length > 0) {
           // Si no hay plantilla de tracking, usar la primera
-          setActiveTrackingTemplateId(plantillasMapeadas[0].id);
+          setActiveTrackingTemplateId(plantillasWpp[0].id);
+        }
+
+        // Plantilla HTML activa para emails masivos
+        if (plantillasHtmlCargadas.length > 0) {
+          setActiveHtmlTemplateId((prev) => prev || plantillasHtmlCargadas[0].id);
         }
       })
       .catch((error) => {
@@ -300,12 +340,24 @@ function App() {
     };
   }, []);
 
-  // Sincronizar activeTemplateId si se elimina la plantilla activa
+  // Sincronizar activeTemplateId (whatsapp/follow-up)
   useEffect(() => {
-    if (!templates.some((tpl) => tpl.id === activeTemplateId)) {
-      setActiveTemplateId(templates[0]?.id || '');
+    if (!templatesWhatsapp.some((tpl) => tpl.id === activeTemplateId)) {
+      setActiveTemplateId(templatesWhatsapp[0]?.id || '');
     }
-  }, [templates, activeTemplateId]);
+  }, [templatesWhatsapp, activeTemplateId]);
+
+  useEffect(() => {
+    if (!templatesWhatsapp.some((tpl) => tpl.id === activeTrackingTemplateId)) {
+      setActiveTrackingTemplateId(templatesWhatsapp[0]?.id || '');
+    }
+  }, [templatesWhatsapp, activeTrackingTemplateId]);
+
+  useEffect(() => {
+    if (!templatesHtml.some((tpl) => tpl.id === activeHtmlTemplateId)) {
+      setActiveHtmlTemplateId(templatesHtml[0]?.id || '');
+    }
+  }, [templatesHtml, activeHtmlTemplateId]);
 
   useEffect(() => {
     const shouldLoadFinalizados = activeView === 'especiales' && etiquetaMode === 'reclamos' && !pedidosFinalizadosLoaded;
@@ -352,6 +404,14 @@ function App() {
       if (resultado.success && resultado.pdfUrl) {
         setPdfUrl(resultado.pdfUrl);
         setShowPDFModal(true);
+        if (resultado.warning) {
+          mostrarToast(`⚠️ ${resultado.warning}. Tracking: ${resultado.tracking}`, 'warning');
+        }
+      } else if (resultado.success) {
+        mostrarToast(
+          resultado.warning || `✅ Etiqueta generada correctamente. Tracking: ${resultado.tracking}`,
+          resultado.warning ? 'warning' : 'success'
+        );
       } else {
         mostrarToast(resultado.error || 'Error al generar etiqueta', 'error');
       }
@@ -361,6 +421,7 @@ function App() {
     let exitosos = 0;
     let fallidos = 0;
     const pdfUrlsExitosas = [];
+    let exitososSinPdf = 0;
     const totalMarcados = items.length;
 
     for (const item of items) {
@@ -369,6 +430,8 @@ function App() {
         exitosos += 1;
         if (resultado.pdfUrl) {
           pdfUrlsExitosas.push(resultado.pdfUrl);
+        } else {
+          exitososSinPdf += 1;
         }
       } else {
         fallidos += 1;
@@ -395,9 +458,14 @@ function App() {
     limpiarSeleccion();
 
     if (fallidos === 0) {
-      mostrarToast(`✅ ${exitosos}/${totalMarcados} etiquetas generadas correctamente`, 'success');
+      if (exitososSinPdf > 0) {
+        mostrarToast(`⚠️ ${exitosos}/${totalMarcados} etiquetas generadas. ${exitososSinPdf} sin PDF para previsualizar.`, 'warning');
+      } else {
+        mostrarToast(`✅ ${exitosos}/${totalMarcados} etiquetas generadas correctamente`, 'success');
+      }
     } else {
-      mostrarToast(`⚠️ ${exitosos}/${totalMarcados} exitosas y ${fallidos} con error`, 'warning');
+      const sinPdfTexto = exitososSinPdf > 0 ? `, ${exitososSinPdf} sin PDF` : '';
+      mostrarToast(`⚠️ ${exitosos}/${totalMarcados} exitosas${sinPdfTexto} y ${fallidos} con error`, 'warning');
     }
   };
 
@@ -414,19 +482,20 @@ function App() {
     try {
       const plantillas = await obtenerPlantillas();
       console.log('📝 Plantillas recibidas desde API:', plantillas);
-      const plantillasMapeadas = plantillas.map((p) => ({
-        id: String(p.id),
-        name: p.name,
-        content: p.content,
-        isActive: p.is_active
-      }));
+      const plantillasMapeadas = plantillas.map(normalizeTemplateRecord);
+      const plantillasWpp = plantillasMapeadas.filter((p) => p.kind !== 'html');
+      const plantillasHtmlCargadas = plantillasMapeadas.filter((p) => p.kind === 'html');
       console.log('📝 Plantillas mapeadas:', plantillasMapeadas);
       setTemplates(plantillasMapeadas);
       
       // Actualizar plantilla activa si es necesaria
-      const activa = plantillasMapeadas.find((p) => p.isActive);
+      const activa = plantillasWpp.find((p) => p.isActive);
       if (activa) {
         setActiveTemplateId(activa.id);
+      }
+
+      if (plantillasHtmlCargadas.length > 0 && !plantillasHtmlCargadas.some((p) => p.id === activeHtmlTemplateId)) {
+        setActiveHtmlTemplateId(plantillasHtmlCargadas[0].id);
       }
     } catch (error) {
       console.error('Error al recargar plantillas:', error);
@@ -437,8 +506,9 @@ function App() {
   // Crear nueva plantilla
   const handleCrearPlantilla = async (plantilla) => {
     try {
+      const kind = plantilla.kind === 'html' ? 'html' : 'whatsapp';
       await crearPlantilla({
-        name: plantilla.name,
+        name: toStoredTemplateName(plantilla.name, kind),
         content: plantilla.content,
         is_active: false
       });
@@ -452,10 +522,12 @@ function App() {
   };
 
   // Actualizar plantilla existente
-  const handleActualizarPlantilla = async (id, cambios) => {
+  const handleActualizarPlantilla = async (id, cambios, forcedKind = null) => {
     try {
+      const actual = templates.find((t) => String(t.id) === String(id));
+      const kind = forcedKind || actual?.kind || 'whatsapp';
       const cambiosAPI = {};
-      if (cambios.name !== undefined) cambiosAPI.name = cambios.name;
+      if (cambios.name !== undefined) cambiosAPI.name = toStoredTemplateName(cambios.name, kind);
       if (cambios.content !== undefined) cambiosAPI.content = cambios.content;
       if (cambios.isActive !== undefined) cambiosAPI.is_active = cambios.isActive;
       
@@ -465,7 +537,7 @@ function App() {
       setTemplates(prevTemplates => 
         prevTemplates.map(t => 
           t.id === id 
-            ? { ...t, ...cambios } 
+            ? { ...t, ...cambios, kind } 
             : t
         )
       );
@@ -504,8 +576,9 @@ function App() {
   // Duplicar plantilla
   const handleDuplicarPlantilla = async (plantilla) => {
     try {
+      const kind = plantilla.kind === 'html' ? 'html' : 'whatsapp';
       await crearPlantilla({
-        name: `${plantilla.name} (copia)`,
+        name: toStoredTemplateName(`${plantilla.name} (copia)`, kind),
         content: plantilla.content,
         is_active: false
       });
@@ -575,7 +648,7 @@ function App() {
       }
 
       // Obtener la plantilla activa de tracking
-      const activeTemplate = templates.find(t => t.id === activeTrackingTemplateId);
+      const activeTemplate = templatesWhatsapp.find(t => t.id === activeTrackingTemplateId);
       
       // Solo generar links de WhatsApp para pedidos SIN email
       // (los que tienen email ya fueron notificados por Shopify automáticamente)
@@ -623,7 +696,7 @@ function App() {
       return;
     }
 
-    const activeTemplate = templates.find((t) => t.id === activeTrackingTemplateId);
+    const activeTemplate = templatesWhatsapp.find((t) => t.id === activeTrackingTemplateId);
     const resultado = await generarLinkWhatsApp(pedido, activeTemplate?.content);
     
     if (!resultado.success) {
@@ -634,6 +707,75 @@ function App() {
     // Abrir WhatsApp Web con el link generado
     window.open(resultado.url, '_blank');
     mostrarToast('WhatsApp abierto con el mensaje', 'success');
+  };
+
+  // Handler para contacto rapido de pedidos en "Pendientes de Contacto"
+  const handleContactarPendienteRapido = async (pedidoId) => {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) {
+      mostrarToast('No se encontro el pedido seleccionado', 'error');
+      return;
+    }
+
+    const activeTemplate = templatesWhatsapp.find((t) => t.id === activeTrackingTemplateId);
+    const resultado = await generarLinkWhatsApp(pedido, activeTemplate?.content);
+
+    if (!resultado.success) {
+      mostrarToast(resultado.error || 'Error al generar link de WhatsApp', 'error');
+      return;
+    }
+
+    window.open(resultado.url, '_blank');
+    const registro = await marcarRevisionContactoContactado(pedidoId);
+    if (!registro.success) {
+      mostrarToast(registro.error || 'No se pudo registrar el contacto', 'warning');
+      return;
+    }
+    mostrarToast(`WhatsApp abierto con plantilla: ${activeTemplate?.name || 'Mensaje por defecto'}`, 'success');
+  };
+
+  const handleEnviarEmailPendientesContacto = async () => {
+    if (tableFilter !== 'pendientesContacto') {
+      mostrarToast('Esta acción está disponible en Pendientes de Contacto', 'warning');
+      return;
+    }
+
+    const candidatos = pedidosPendientesContactoSinCelConEmail;
+    if (candidatos.length === 0) {
+      mostrarToast('No hay pendientes de contacto sin celular y con email', 'warning');
+      return;
+    }
+
+    const activeTemplate = templatesHtml.find((t) => t.id === activeHtmlTemplateId);
+    if (!activeTemplate) {
+      mostrarToast('Selecciona o crea una plantilla HTML en la sección Plantillas', 'warning');
+      return;
+    }
+    const subjectDefault = 'Seguimiento de tu pedido #{{numero_pedido}}';
+    const subjectTemplate = window.prompt(
+      'Asunto del email (podés usar {{numero_pedido}} y {{cliente_nombre}}):',
+      subjectDefault
+    );
+
+    if (subjectTemplate === null) return;
+
+    const resultado = await enviarEmailMasivoPendientesContacto({
+      pedidoIds: candidatos.map((p) => p.id),
+      subjectTemplate: String(subjectTemplate || '').trim() || subjectDefault,
+      htmlTemplate: activeTemplate?.content || '',
+      onlyWithoutPhone: true,
+    });
+
+    if (!resultado.success) {
+      mostrarToast(resultado.error || 'Error enviando email masivo', 'error');
+      return;
+    }
+
+    if ((resultado.failed || 0) > 0) {
+      mostrarToast(`✉️ Emails: ${resultado.sent}/${resultado.count} enviados (${resultado.failed} con error)`, 'warning');
+    } else {
+      mostrarToast(`✉️ ${resultado.sent} email(s) enviados`, 'success');
+    }
   };
 
   const handleDescartarEtiqueta = async (pedidoId) => {
@@ -945,10 +1087,66 @@ function App() {
             onChannelPriorityChange={setChannelPriority}
             pendingCount={pedidosPendientes.length}
             uesAuthenticated={uesAuthenticated}
-            activeTrackingTemplate={templates.find(t => t.id === activeTrackingTemplateId)}
-            templates={templates}
+            activeTrackingTemplate={templatesWhatsapp.find(t => t.id === activeTrackingTemplateId)}
+            templates={templatesWhatsapp}
             onTrackingTemplateChange={setActiveTrackingTemplateId}
           />
+
+          {/* Barra de accion email masivo (solo en pendientes contacto) */}
+          {tableFilter === 'pendientesContacto' && (
+            <div className="section-action-bar">
+              {pedidosPendientesContacto.some((p) => tienePhone(p)) && templatesWhatsapp.length > 0 && (
+                <div className="active-template-selector">
+                  <label htmlFor="pending-contact-whatsapp-template">💬 Plantilla WhatsApp:</label>
+                  <select
+                    id="pending-contact-whatsapp-template"
+                    value={activeTrackingTemplateId}
+                    onChange={(e) => setActiveTrackingTemplateId(e.target.value)}
+                    className="template-selector"
+                  >
+                    {templatesWhatsapp.map((template) => (
+                      <option key={template.id} value={template.id}>
+                        {template.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {pedidosPendientesContactoSinCelConEmail.length > 0 && (
+                <>
+                  {templatesHtml.length > 0 ? (
+                    <div className="active-template-selector">
+                      <label htmlFor="pending-contact-email-template">✉️ Plantilla email:</label>
+                      <select
+                        id="pending-contact-email-template"
+                        value={activeHtmlTemplateId}
+                        onChange={(e) => setActiveHtmlTemplateId(e.target.value)}
+                        className="template-selector"
+                      >
+                        {templatesHtml.map((template) => (
+                          <option key={template.id} value={template.id}>
+                            {template.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <span>✉️ {pedidosPendientesContactoSinCelConEmail.length} pendiente(s) sin tel con email, sin plantilla HTML seleccionable</span>
+                  )}
+
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleEnviarEmailPendientesContacto}
+                    disabled={templatesHtml.length === 0}
+                    title={templatesHtml.length === 0 ? 'Creá una plantilla HTML en Plantillas antes de enviar' : 'Enviar email masivo con la plantilla HTML seleccionada'}
+                  >
+                    Enviar email masivo ({pedidosPendientesContactoSinCelConEmail.length})
+                  </button>
+                </>
+              )}
+            </div>
+          )}
 
           {/* Tabla de pedidos */}
           <div className="main-content">
@@ -967,13 +1165,16 @@ function App() {
               onToggleSelect={toggleSelectPedido}
               onToggleSelectAll={toggleSelectAll}
               onReenviarNotificacion={handleReenviarNotificacion}
+              onContactarPendiente={handleContactarPendienteRapido}
               onMarcarNotificado={marcarPedidoNotificado}
               onDescartarEtiqueta={handleDescartarEtiqueta}
               fulfillmentPreview={fulfillmentPreviewIds !== null}
               channelPriority={channelPriority}
-              showNotifyColumn={tableFilter !== 'porValidar' && tableFilter !== 'pendientesContacto'}
+              showNotifyColumn={tableFilter !== 'porValidar'}
               showTrackingColumn={tableFilter !== 'porValidar'}
-              activeTrackingTemplate={templates.find((t) => t.id === activeTrackingTemplateId)}
+              activeTrackingTemplate={templatesWhatsapp.find((t) => t.id === activeTrackingTemplateId)}
+              activeContactTemplate={templatesWhatsapp.find((t) => t.id === activeTrackingTemplateId)}
+              modoPendienteContacto={tableFilter === 'pendientesContacto'}
             />
           </div>
         </>
@@ -1135,7 +1336,7 @@ function App() {
       {activeView === 'followup' && (
         <FollowUpPanel
           mostrarToast={mostrarToast}
-          templates={templates}
+          templates={templatesWhatsapp}
           activeTemplateId={activeTemplateId}
           setActiveTemplateId={setActiveTemplateId}
           onUpdateTemplate={handleActualizarPlantilla}
@@ -1145,9 +1346,12 @@ function App() {
 
       {activeView === 'plantillas' && (
         <TemplateManagerPanel
-          templates={templates}
+          templates={templatesWhatsapp}
+          htmlTemplates={templatesHtml}
           activeTemplateId={activeTemplateId}
+          activeHtmlTemplateId={activeHtmlTemplateId}
           onActiveTemplateChange={setActiveTemplateId}
+          onActiveHtmlTemplateChange={setActiveHtmlTemplateId}
           onCreateTemplate={handleCrearPlantilla}
           onUpdateTemplate={handleActualizarPlantilla}
           onDeleteTemplate={handleEliminarPlantilla}
