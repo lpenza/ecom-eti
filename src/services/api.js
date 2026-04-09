@@ -237,6 +237,11 @@ export async function obtenerCatalogoLocalidadesUES(departamentoId) {
   return await fetchAPI(`/ues/catalog/localidades${query}`, { method: 'GET' });
 }
 
+export async function obtenerPuntosRetiroUES(localidadId) {
+  const query = localidadId ? `?localidad_id=${encodeURIComponent(localidadId)}` : '';
+  return await fetchAPI(`/ues/catalog/puntos-retiro${query}`, { method: 'GET' });
+}
+
 export async function combinarPdfsEtiquetas(pdfUrls = []) {
   return await fetchAPI('/ues/combinar-pdfs', {
     method: 'POST',

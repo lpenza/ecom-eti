@@ -137,21 +137,19 @@ class UESService {
     return `${comentarioBase} | ${observacionesLimpias}`;
   }
 
-  construirPayloadEnvio(pedido, direccionId) {
+  construirPayloadEnvio(pedido, direccionId, servicioDestino = 'direccion', puntoRetiroId = null) {
     const referencia = String(pedido.numero_pedido || '');
 
-    return {
+    const payload = {
       service: 'guardarEnvio',
       cliente_id: String(process.env.UES_CLIENTE_ID),
-      servicio_destino: 'direccion',
+      servicio_destino: servicioDestino,
       referencia,
       remitente: String(process.env.UES_REMITENTE_ID),
-      destino: direccionId,
       nombre_recibe: pedido.cliente_nombre || '',
       telefono_recibe: pedido.cliente_telefono || process.env.UES_TELEFONO_DEFAULT || '',
       email_recibe: pedido.cliente_email || process.env.UES_EMAIL_DEFAULT || '',
       servicio_id: String(process.env.UES_SERVICIO_ID),
-      direccion_destinatario_id: direccionId,
       direccion_remitente_id: String(process.env.UES_DIRECCION_REMITENTE_ID),
       guias: [
         {
@@ -163,6 +161,47 @@ class UESService {
         },
       ],
     };
+
+    // Si es envío a domicilio, usar dirección; si es pickup, usar punto_retiro_id
+    if (servicioDestino === 'punto_retiro' && puntoRetiroId) {
+      payload.destino = puntoRetiroId;
+      payload.punto_retiro_id = puntoRetiroId;
+    } else {
+      payload.destino = direccionId;
+      payload.direccion_destinatario_id = direccionId;
+    }
+
+    return payload;
+  }
+
+  async obtenerPuntosRetiro(localidadId) {
+    try {
+      if (!localidadId) {
+        throw new Error('localidadId es requerido para obtener puntos de retiro');
+      }
+
+      logService.info(`Obteniendo puntos de retiro para localidad ${localidadId}`);
+
+      const response = await this.dispatcherPost({
+        service: 'obtenerPuntosRetiro',
+        localidad_id: String(localidadId),
+      });
+
+      if (response?.code === 'ERROR') {
+        logService.warning(`Error obteniendo puntos de retiro: ${response.returned_message}`);
+        return [];
+      }
+
+      const puntosRetiro = Array.isArray(response?.data) ? response.data : 
+                          Array.isArray(response?.puntos_retiro) ? response.puntos_retiro :
+                          [];
+
+      logService.info(`Puntos de retiro obtenidos: ${puntosRetiro.length}`);
+      return puntosRetiro;
+    } catch (error) {
+      logService.error('Error al obtener puntos de retiro de UES', error);
+      return [];
+    }
   }
 
   async construirPayloadsUes(pedido, direccionIdEnvio = null, skipLocalidadValidation = false) {
@@ -228,18 +267,25 @@ class UESService {
 
       logService.info(`Generando etiqueta para pedido ${pedido.id} - Orden #${pedido.numero_pedido} [${traceId}]`);
 
+      // Detectar si es envío a pickup o a domicilio
+      const tipoEntrega = String(payloadOverrides?.tipoEntrega || 'domicilio').toLowerCase();
+      const esPickup = tipoEntrega === 'pickup';
+
+      logService.info(`[${traceId}] Tipo de entrega: ${tipoEntrega} (pickup: ${esPickup})`);
+
       // Si vienen overrides con departamento y localidad, saltarse la validación original
       const tieneLocalidadOverride = payloadOverrides?.payloadDireccion?.departamento_id && 
                                       payloadOverrides?.payloadDireccion?.localidad_id;
       
-      const payloadsPreparados = await this.construirPayloadsUes(pedido, null, tieneLocalidadOverride);
+      const payloadsPreparados = await this.construirPayloadsUes(pedido, null, tieneLocalidadOverride || esPickup);
       logService.info('Dirección parseada:', payloadsPreparados.direccionParseada);
-      if (!tieneLocalidadOverride) {
+      if (!tieneLocalidadOverride && !esPickup) {
         logService.info('Localidad UES resuelta:', payloadsPreparados.localidadUes);
       }
       logService.info(`🧭 [${traceId}] Observaciones origen parser:`, {
         pedidoId: pedido.id,
         numeroPedido: pedido.numero_pedido,
+        tipoEntrega: tipoEntrega,
         direccionEnvioOriginal: pedido.direccion_envio,
         observacionesParser: payloadsPreparados?.payloadDireccion?.observaciones || '',
         observacionesOverrideEntrada: payloadOverrides?.payloadDireccion?.observaciones || '',
@@ -268,40 +314,59 @@ class UESService {
         return merged;
       };
 
-      const payloadDireccion = mergePayload(
-        payloadsPreparados.payloadDireccion,
-        payloadOverrides?.payloadDireccion
-      );
+      let direccionId = null;
+      let puntoRetiroId = null;
 
-      const obsFinal = String(payloadDireccion?.observaciones || '').trim();
-      const obsPatternSospechoso = /^\/\d+\s*-?\s*$/i.test(obsFinal);
+      // PASO 1: Guardar dirección SOLO si es envío a domicilio (no es pickup)
+      if (!esPickup) {
+        const payloadDireccion = mergePayload(
+          payloadsPreparados.payloadDireccion,
+          payloadOverrides?.payloadDireccion
+        );
 
-      logService.info('📦 Payload base (antes de merge):', payloadsPreparados.payloadDireccion);
-      logService.info('✏️  Overrides recibidos:', payloadOverrides?.payloadDireccion);
-      logService.info('🔀 Payload final (después de merge):', payloadDireccion);
-      logService.info(`📌 [${traceId}] Observaciones final antes de guardarDireccion:`, {
-        observacionesFinal: obsFinal,
-        esSospechoso: obsPatternSospechoso,
-      });
-      if (obsPatternSospechoso) {
-        logService.warning(`⚠️ [${traceId}] Observaciones con patrón sospechoso detectado`, {
-          pedidoId: pedido.id,
-          numeroPedido: pedido.numero_pedido,
+        const obsFinal = String(payloadDireccion?.observaciones || '').trim();
+        const obsPatternSospechoso = /^\/\d+\s*-?\s*$/i.test(obsFinal);
+
+        logService.info('📦 Payload base (antes de merge):', payloadsPreparados.payloadDireccion);
+        logService.info('✏️  Overrides recibidos:', payloadOverrides?.payloadDireccion);
+        logService.info('🔀 Payload final (después de merge):', payloadDireccion);
+        logService.info(`📌 [${traceId}] Observaciones final antes de guardarDireccion:`, {
           observacionesFinal: obsFinal,
-          payloadDireccion,
+          esSospechoso: obsPatternSospechoso,
         });
+        if (obsPatternSospechoso) {
+          logService.warning(`⚠️ [${traceId}] Observaciones con patrón sospechoso detectado`, {
+            pedidoId: pedido.id,
+            numeroPedido: pedido.numero_pedido,
+            observacionesFinal: obsFinal,
+            payloadDireccion,
+          });
+        }
+        
+        const direccionResp = await this.dispatcherPost(payloadDireccion);
+        logService.info(`Respuesta guardarDireccion [${traceId}]:`, direccionResp);
+
+        if (direccionResp?.code === 'ERROR' || !direccionResp?.id) {
+          throw new Error(direccionResp?.msg || direccionResp?.returned_message || 'No se pudo crear direccion en UES');
+        }
+
+        direccionId = Number(direccionResp.id);
+      } else {
+        // Si es pickup, usar el ID del punto de retiro
+        puntoRetiroId = payloadOverrides?.puntoRetiroId;
+        if (!puntoRetiroId) {
+          throw new Error('Pickup seleccionado pero no se proporcionó puntoRetiroId');
+        }
+        logService.info(`[${traceId}] Enviando a pickup: puntoRetiroId=${puntoRetiroId}`);
       }
-      
-      const direccionResp = await this.dispatcherPost(payloadDireccion);
-      logService.info(`Respuesta guardarDireccion [${traceId}]:`, direccionResp);
 
-      if (direccionResp?.code === 'ERROR' || !direccionResp?.id) {
-        throw new Error(direccionResp?.msg || direccionResp?.returned_message || 'No se pudo crear direccion en UES');
-      }
-
-      const direccionId = Number(direccionResp.id);
-
-      const basePayloadEnvio = this.construirPayloadEnvio(pedido, direccionId);
+      // PASO 2: Guardar envío
+      const basePayloadEnvio = this.construirPayloadEnvio(
+        pedido, 
+        direccionId, 
+        esPickup ? 'punto_retiro' : 'direccion',
+        puntoRetiroId
+      );
       const payloadEnvio = mergePayload(basePayloadEnvio, payloadOverrides?.payloadEnvio);
 
       // Reglas finales de negocio para UES (workaround):
@@ -311,15 +376,20 @@ class UESService {
       const referenciaFinal = String(
         payloadOverrides?.payloadEnvio?.referencia || pedido?.numero_pedido || ''
       ).trim();
-      const observacionesFinales = String(payloadDireccion?.observaciones || '').trim();
+      const observacionesFinales = esPickup ? '' : String(payloadsPreparados.payloadDireccion?.observaciones || '').trim();
       const comentarioCompuesto = this.construirComentarioEtiqueta(
         referenciaFinal,
         observacionesFinales
       );
       payloadEnvio.referencia = referenciaFinal;
 
-      payloadEnvio.destino = direccionId;
-      payloadEnvio.direccion_destinatario_id = direccionId;
+      if (!esPickup) {
+        payloadEnvio.destino = direccionId;
+        payloadEnvio.direccion_destinatario_id = direccionId;
+      } else {
+        payloadEnvio.destino = puntoRetiroId;
+        payloadEnvio.punto_retiro_id = puntoRetiroId;
+      }
 
       if (Array.isArray(payloadEnvio.guias) && payloadEnvio.guias.length > 0) {
         payloadEnvio.guias[0] = mergePayload(
@@ -336,6 +406,7 @@ class UESService {
         guiaReferenciaFinal: payloadEnvio?.guias?.[0]?.referencia || '',
         comentarioFinal: payloadEnvio?.guias?.[0]?.comentario || '',
         observacionesDireccionFinal: observacionesFinales,
+        tipoEntrega: tipoEntrega,
       });
 
       logService.info(`📦 Payload guardarEnvio [${traceId}]:`, payloadEnvio);
@@ -358,7 +429,7 @@ class UESService {
         throw new Error('guardarEnvio OK pero sin numero de seguimiento en guias');
       }
 
-      // 4) Obtener etiqueta usando el mismo llamado del .NET.
+      // PASO 3: Obtener etiqueta usando el mismo llamado del .NET.
       // UES puede demorar unos segundos en propagar la guía recién creada —
       // esperamos antes de pedir el PDF, con hasta 3 reintentos.
       const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

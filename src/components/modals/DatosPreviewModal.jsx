@@ -3,12 +3,14 @@ import {
   obtenerCatalogoDepartamentosUES,
   obtenerCatalogoLocalidadesUES,
   obtenerPayloadPreviewUES,
+  obtenerPuntosRetiroUES,
 } from '../../services/api';
 
 function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex = 0, onReviewedChange, onClose, onConfirm, isReclamoMode = false, onUpdateRevisionContacto }) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [departamentos, setDepartamentos] = useState([]);
   const [localidadesByDep, setLocalidadesByDep] = useState({});
+  const [puntosRetiroByLocalidad, setPuntosRetiroByLocalidad] = useState({});
   const [previewByPedidoId, setPreviewByPedidoId] = useState({});
   const [formsByPedidoId, setFormsByPedidoId] = useState({});
   const [validationError, setValidationError] = useState('');
@@ -37,16 +39,24 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     const blockers = [];
     const warnings = [];
 
-    if (!String(form.payloadDireccion?.calle || '').trim()) blockers.push('Falta calle');
-    
-    const nroPuerta = String(form.payloadDireccion?.nro_puerta || '').trim();
-    // Tratar "s/n" como si estuviera vacío - es solo una sugerencia
-    if (!nroPuerta || nroPuerta.toLowerCase() === 's/n') {
-      blockers.push('Falta número de puerta');
+    const tipoEntrega = form.tipoEntrega || 'domicilio';
+
+    // Si es envío a domicilio, requiere dirección completa
+    if (tipoEntrega === 'domicilio') {
+      if (!String(form.payloadDireccion?.calle || '').trim()) blockers.push('Falta calle');
+      
+      const nroPuerta = String(form.payloadDireccion?.nro_puerta || '').trim();
+      if (!nroPuerta || nroPuerta.toLowerCase() === 's/n') {
+        blockers.push('Falta número de puerta');
+      }
+      
+      if (!String(form.payloadDireccion?.departamento_id || '').trim()) blockers.push('Falta departamento');
+      if (!String(form.payloadDireccion?.localidad_id || '').trim()) blockers.push('Falta localidad');
+    } else if (tipoEntrega === 'pickup') {
+      // Si es pickup, solo requiere punto de retiro
+      if (!form.puntoRetiroId) blockers.push('Falta seleccionar punto de retiro');
     }
-    
-    if (!String(form.payloadDireccion?.departamento_id || '').trim()) blockers.push('Falta departamento');
-    if (!String(form.payloadDireccion?.localidad_id || '').trim()) blockers.push('Falta localidad');
+
     if (!String(form.payloadEnvio?.nombre_recibe || '').trim()) blockers.push('Falta nombre destinatario');
     if (!String(form.payloadEnvio?.telefono_recibe || '').trim()) blockers.push('Falta teléfono destinatario');
 
@@ -87,6 +97,21 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     }
   };
 
+  const loadPuntosRetiro = async (localidadId) => {
+    const locId = String(localidadId || '');
+    if (!locId || puntosRetiroByLocalidad[locId]) return;
+
+    try {
+      const response = await obtenerPuntosRetiroUES(locId);
+      setPuntosRetiroByLocalidad((prev) => ({
+        ...prev,
+        [locId]: Array.isArray(response.data) ? response.data : [],
+      }));
+    } catch (error) {
+      setPuntosRetiroByLocalidad((prev) => ({ ...prev, [locId]: [] }));
+    }
+  };
+
   const ensurePreviewLoaded = async (pedidoId, pedidoData) => {
     if (previewByPedidoId[pedidoId]?.data || previewByPedidoId[pedidoId]?.loading) return;
 
@@ -124,6 +149,8 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
             checked: selectedPedidoIds.includes(pedidoId) && !Boolean(pedidoData?.revision_contacto_pendiente),
             revision_contacto_pendiente: Boolean(pedidoData?.revision_contacto_pendiente),
             revision_contacto_motivo: pedidoData?.revision_contacto_motivo || '',
+            tipoEntrega: 'domicilio',
+            puntoRetiroId: null,
             payloadDireccion: {
               calle: preview?.payloadDireccion?.calle || '',
               nro_puerta: preview?.payloadDireccion?.nro_puerta || '',

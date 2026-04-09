@@ -408,6 +408,22 @@ app.get('/api/ues/catalog/localidades', async (req, res) => {
   }
 });
 
+// Obtener puntos de retiro UES para una localidad
+app.get('/api/ues/catalog/puntos-retiro', async (req, res) => {
+  try {
+    const localidadId = req.query.localidad_id || null;
+    if (!localidadId) {
+      return res.status(400).json({ success: false, error: 'localidad_id requerido' });
+    }
+
+    const puntosRetiro = await uesService.obtenerPuntosRetiro(localidadId);
+    res.json({ success: true, data: puntosRetiro });
+  } catch (error) {
+    logService.error('Error obteniendo puntos de retiro UES', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Regenerar caché de contexto UES (manual)
 app.post('/api/ues/regenerar-cache', async (req, res) => {
   try {
