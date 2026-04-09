@@ -411,12 +411,7 @@ app.get('/api/ues/catalog/localidades', async (req, res) => {
 // Obtener puntos de retiro UES para una localidad
 app.get('/api/ues/catalog/puntos-retiro', async (req, res) => {
   try {
-    const localidadId = req.query.localidad_id || null;
-    if (!localidadId) {
-      return res.status(400).json({ success: false, error: 'localidad_id requerido' });
-    }
-
-    const puntosRetiro = await uesService.obtenerPuntosRetiro(localidadId);
+    const puntosRetiro = await uesService.obtenerPuntosRetiro();
     res.json({ success: true, data: puntosRetiro });
   } catch (error) {
     logService.error('Error obteniendo puntos de retiro UES', error);
@@ -788,8 +783,15 @@ app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
     const { pedidoId } = req.params;
     const { payloadOverrides } = req.body || {};
 
+    const tipoEntrega = String(payloadOverrides?.tipoEntrega || 'domicilio').toLowerCase();
+    const isPickup = tipoEntrega === 'pickup';
+    const puntoRetiroId = isPickup ? String(payloadOverrides?.puntoRetiroId || '').trim() : null;
+    const puntoRetiroNombre = isPickup ? String(payloadOverrides?.puntoRetiroNombre || '').trim() : null;
+
     logService.info('🧾 /api/generar-etiqueta/:pedidoId request', {
       pedidoId,
+      tipoEntrega,
+      puntoRetiroId,
       observacionesOverride: payloadOverrides?.payloadDireccion?.observaciones || '',
       referenciaOverride: payloadOverrides?.payloadEnvio?.referencia || '',
       comentarioOverride: payloadOverrides?.guia?.comentario || '',
@@ -809,15 +811,37 @@ app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
 
     // Generar etiqueta en UES
     const etiqueta = await uesService.generarEtiqueta(pedido, payloadOverrides || null);
-    
-    // Actualizar pedido en Supabase
-    await supabaseService.actualizarPedido(pedidoId, {
+
+    const updateBase = {
       estado: 'pendiente',
       numero_seguimiento_ues: etiqueta.numeroSeguimiento,
       link_etiqueta_drive: etiqueta.urlPdf,
       etiqueta_generada: true,
-      etiqueta_impresa: false
-    });
+      etiqueta_impresa: false,
+    };
+
+    // Persistir tipo de entrega elegido (domicilio/pickup) y punto de retiro si aplica.
+    const updateExtended = {
+      ...updateBase,
+      tipo_entrega_ues: isPickup ? 'pickup' : 'domicilio',
+      punto_retiro_ues_id: isPickup ? puntoRetiroId : null,
+      punto_retiro_ues_nombre: isPickup ? puntoRetiroNombre : null,
+    };
+
+    try {
+      await supabaseService.actualizarPedido(pedidoId, updateExtended);
+    } catch (updateError) {
+      const msg = String(updateError?.message || '').toLowerCase();
+      const missingColumn = msg.includes('column') && msg.includes('does not exist');
+
+      if (!missingColumn) throw updateError;
+
+      logService.warning('Columnas pickup aún no disponibles en pedidos; guardando sin metadata pickup', {
+        pedidoId,
+        error: updateError.message,
+      });
+      await supabaseService.actualizarPedido(pedidoId, updateBase);
+    }
 
     const pdfMissingWarning = !etiqueta.urlPdf
       ? 'UES generó la etiqueta pero no devolvió el PDF en este momento'
@@ -844,6 +868,8 @@ app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
       pedidoId,
       tracking: etiqueta.numeroSeguimiento,
       pdfUrl: etiqueta.urlPdf,
+      tipoEntrega: isPickup ? 'pickup' : 'domicilio',
+      puntoRetiroId: isPickup ? puntoRetiroId : null,
       warning: pdfMissingWarning,
       traceId: etiqueta.traceId || null,
     });

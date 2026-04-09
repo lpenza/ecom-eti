@@ -27,6 +27,12 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     if (!currentDepartamentoId) return [];
     return localidadesByDep[currentDepartamentoId] || [];
   }, [localidadesByDep, currentDepartamentoId]);
+  const currentLocalidadId = String(currentForm?.payloadDireccion?.localidad_id || '');
+  const puntosRetiroActuales = useMemo(() => {
+    const all = puntosRetiroByLocalidad['_all'] || [];
+    if (!currentDepartamentoId) return all;
+    return all.filter((p) => String(p.departamento_id) === String(currentDepartamentoId));
+  }, [puntosRetiroByLocalidad, currentDepartamentoId]);
 
   const isBatch = pedidos.length > 1;
   const checkedCount = Object.values(formsByPedidoId).filter((f) => f?.checked).length;
@@ -97,18 +103,17 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     }
   };
 
-  const loadPuntosRetiro = async (localidadId) => {
-    const locId = String(localidadId || '');
-    if (!locId || puntosRetiroByLocalidad[locId]) return;
+  const loadPuntosRetiro = async () => {
+    if (puntosRetiroByLocalidad['_all']) return;
 
     try {
-      const response = await obtenerPuntosRetiroUES(locId);
+      const response = await obtenerPuntosRetiroUES();
       setPuntosRetiroByLocalidad((prev) => ({
         ...prev,
-        [locId]: Array.isArray(response.data) ? response.data : [],
+        '_all': Array.isArray(response.data) ? response.data : [],
       }));
     } catch (error) {
-      setPuntosRetiroByLocalidad((prev) => ({ ...prev, [locId]: [] }));
+      setPuntosRetiroByLocalidad((prev) => ({ ...prev, '_all': [] }));
     }
   };
 
@@ -132,6 +137,10 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
       setFormsByPedidoId((prev) => {
         if (prev[pedidoId]) return prev;
 
+        const tipoEntregaInicial = String(pedidoData?.tipo_entrega_ues || '').toLowerCase() === 'pickup'
+          ? 'pickup'
+          : 'domicilio';
+
         const detectedDepartamentoId = String(
           preview?.payloadDireccion?.departamento_id || preview?.localidadUes?.departamento_id || ''
         );
@@ -149,8 +158,9 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
             checked: selectedPedidoIds.includes(pedidoId) && !Boolean(pedidoData?.revision_contacto_pendiente),
             revision_contacto_pendiente: Boolean(pedidoData?.revision_contacto_pendiente),
             revision_contacto_motivo: pedidoData?.revision_contacto_motivo || '',
-            tipoEntrega: 'domicilio',
-            puntoRetiroId: null,
+            tipoEntrega: tipoEntregaInicial,
+            puntoRetiroId: pedidoData?.punto_retiro_ues_id ? String(pedidoData.punto_retiro_ues_id) : null,
+            puntoRetiroNombre: pedidoData?.punto_retiro_ues_nombre || '',
             payloadDireccion: {
               calle: preview?.payloadDireccion?.calle || '',
               nro_puerta: preview?.payloadDireccion?.nro_puerta || '',
@@ -186,6 +196,8 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
       if (depId) {
         await loadLocalidades(depId);
       }
+
+      await loadPuntosRetiro();
     } catch (error) {
       setPreviewByPedidoId((prev) => ({
         ...prev,
@@ -204,6 +216,10 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
 
         if (!pedidoData) return prev;
 
+        const tipoEntregaInicial = String(pedidoData?.tipo_entrega_ues || '').toLowerCase() === 'pickup'
+          ? 'pickup'
+          : 'domicilio';
+
         // Usar dirección parseada del backend si está disponible
         const direccionParseada = error.response?.direccionParseada;
 
@@ -214,6 +230,9 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
             bypassValidation: false,
             revision_contacto_pendiente: Boolean(pedidoData?.revision_contacto_pendiente),
             revision_contacto_motivo: pedidoData?.revision_contacto_motivo || '',
+            tipoEntrega: tipoEntregaInicial,
+            puntoRetiroId: pedidoData?.punto_retiro_ues_id ? String(pedidoData.punto_retiro_ues_id) : null,
+            puntoRetiroNombre: pedidoData?.punto_retiro_ues_nombre || '',
             payloadDireccion: {
               calle: direccionParseada?.calle || pedidoData.calle || pedidoData.direccion_envio || '',
               nro_puerta: direccionParseada?.numeroPuerta || pedidoData.numero_puerta || '',
@@ -255,6 +274,10 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     if (!currentDepartamentoId) return;
     loadLocalidades(currentDepartamentoId);
   }, [currentDepartamentoId]);
+
+  useEffect(() => {
+    loadPuntosRetiro();
+  }, []);
 
   // Autodetectar departamento cuando hay error de preview y los departamentos ya se cargaron
   useEffect(() => {
@@ -408,6 +431,38 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     await loadLocalidades(value);
   };
 
+  const handleTipoEntregaChange = async (value) => {
+    if (!currentPedido) return;
+
+    setFormsByPedidoId((prev) => ({
+      ...prev,
+      [currentPedido.id]: {
+        ...prev[currentPedido.id],
+        tipoEntrega: value,
+        puntoRetiroId: value === 'pickup' ? prev[currentPedido.id]?.puntoRetiroId || null : null,
+        puntoRetiroNombre: value === 'pickup' ? prev[currentPedido.id]?.puntoRetiroNombre || '' : '',
+      },
+    }));
+
+    if (value === 'pickup') {
+      await loadPuntosRetiro();
+    }
+  };
+
+  const handlePuntoRetiroChange = (value) => {
+    if (!currentPedido) return;
+    const point = puntosRetiroActuales.find((p) => String(p.id) === String(value));
+
+    setFormsByPedidoId((prev) => ({
+      ...prev,
+      [currentPedido.id]: {
+        ...prev[currentPedido.id],
+        puntoRetiroId: value || null,
+        puntoRetiroNombre: point?.nombre || point?.descripcion || point?.direccion || '',
+      },
+    }));
+  };
+
   const toggleCurrentChecked = () => {
     if (!currentPedido) return;
     const nextChecked = !formsByPedidoId[currentPedido.id]?.checked;
@@ -438,6 +493,9 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
         blockers.push('Pendiente de contacto con cliente');
       }
       const payloadOverrides = form ? {
+        tipoEntrega: form.tipoEntrega || 'domicilio',
+        puntoRetiroId: form.tipoEntrega === 'pickup' ? form.puntoRetiroId || null : null,
+        puntoRetiroNombre: form.tipoEntrega === 'pickup' ? form.puntoRetiroNombre || '' : '',
         payloadDireccion: form.payloadDireccion || {},
         payloadEnvio: form.payloadEnvio || {},
         guia: form.guia || {},
@@ -824,13 +882,56 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                   <h5>guardarDireccion</h5>
 
                   <div className="preview-field">
+                    <strong>Tipo de entrega:</strong>
+                    <select
+                      value={currentForm.tipoEntrega || 'domicilio'}
+                      onChange={(e) => handleTipoEntregaChange(e.target.value)}
+                    >
+                      <option value="domicilio">A domicilio</option>
+                      <option value="pickup">Pickup UES</option>
+                    </select>
+                  </div>
+
+                  {currentForm.tipoEntrega === 'pickup' && (
+                    <div className="preview-field preview-field-column">
+                      <strong>Punto de retiro:</strong>
+                      <select
+                        value={currentForm.puntoRetiroId || ''}
+                        onChange={(e) => handlePuntoRetiroChange(e.target.value)}
+                      >
+                        <option value="">Seleccionar punto de retiro</option>
+                        {puntosRetiroActuales.map((point) => (
+                          <option key={point.id} value={point.id}>
+                            {point.nombre}{point.direccion ? ` — ${point.direccion}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="preview-hint">
+                        {puntosRetiroActuales.length > 0
+                          ? `${puntosRetiroActuales.length} puntos disponibles en el departamento seleccionado`
+                          : currentDepartamentoId
+                            ? 'Sin puntos de retiro para este departamento'
+                            : 'Seleccioná un departamento para ver los puntos disponibles'}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="preview-field">
                     <strong>Calle:</strong>
-                    <input value={currentForm.payloadDireccion?.calle || ''} onChange={(e) => updateCurrentForm('payloadDireccion', 'calle', e.target.value)} />
+                    <input
+                      value={currentForm.payloadDireccion?.calle || ''}
+                      onChange={(e) => updateCurrentForm('payloadDireccion', 'calle', e.target.value)}
+                      disabled={currentForm.tipoEntrega === 'pickup'}
+                    />
                   </div>
                   <div className="preview-field">
                     <strong>Nro puerta:</strong>
-                    <input value={currentForm.payloadDireccion?.nro_puerta || ''} onChange={(e) => updateCurrentForm('payloadDireccion', 'nro_puerta', e.target.value)} />
-                    {numeroPuertaSugerido && currentForm.payloadDireccion?.nro_puerta?.toLowerCase() === 's/n' && (
+                    <input
+                      value={currentForm.payloadDireccion?.nro_puerta || ''}
+                      onChange={(e) => updateCurrentForm('payloadDireccion', 'nro_puerta', e.target.value)}
+                      disabled={currentForm.tipoEntrega === 'pickup'}
+                    />
+                    {currentForm.tipoEntrega !== 'pickup' && numeroPuertaSugerido && currentForm.payloadDireccion?.nro_puerta?.toLowerCase() === 's/n' && (
                       <span className="preview-ref" style={{color: '#ff9800', fontWeight: 'bold'}}>
                         💡 Sug: s/n (verificar número real)
                       </span>
@@ -838,11 +939,18 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                   </div>
                   <div className="preview-field">
                     <strong>Apartamento:</strong>
-                    <input value={currentForm.payloadDireccion?.numero_apartamento || ''} onChange={(e) => updateCurrentForm('payloadDireccion', 'numero_apartamento', e.target.value)} />
+                    <input
+                      value={currentForm.payloadDireccion?.numero_apartamento || ''}
+                      onChange={(e) => updateCurrentForm('payloadDireccion', 'numero_apartamento', e.target.value)}
+                      disabled={currentForm.tipoEntrega === 'pickup'}
+                    />
                   </div>
                   <div className="preview-field">
                     <strong>Departamento ID:</strong>
-                    <select value={currentForm.payloadDireccion?.departamento_id || ''} onChange={(e) => handleDepartamentoChange(e.target.value)}>
+                    <select
+                      value={currentForm.payloadDireccion?.departamento_id || ''}
+                      onChange={(e) => handleDepartamentoChange(e.target.value)}
+                    >
                       <option value="">Seleccionar departamento</option>
                       {departamentoDetectadoId && !departamentoEnOpciones && (
                         <option value={departamentoDetectadoId}>Detectado ({departamentoDetectadoId})</option>
@@ -855,7 +963,10 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                   </div>
                   <div className="preview-field">
                     <strong>Localidad ID:</strong>
-                    <select value={currentForm.payloadDireccion?.localidad_id || ''} onChange={(e) => updateCurrentForm('payloadDireccion', 'localidad_id', e.target.value)}>
+                    <select
+                      value={currentForm.payloadDireccion?.localidad_id || ''}
+                      onChange={(e) => updateCurrentForm('payloadDireccion', 'localidad_id', e.target.value)}
+                    >
                       <option value="">Seleccionar localidad</option>
                       {localidadDetectadaId && !localidadEnOpciones && (
                         <option value={localidadDetectadaId}>Detectada ({localidadDetectadaId})</option>
@@ -875,7 +986,12 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                   <div className="preview-field preview-field-column preview-observaciones">
                     <strong>Observaciones de direccion:</strong>
                     <span className="preview-hint">Se envia a UES en guardarDireccion.observaciones.</span>
-                    <textarea rows={5} value={currentForm.payloadDireccion?.observaciones || ''} onChange={(e) => updateCurrentForm('payloadDireccion', 'observaciones', e.target.value)} />
+                    <textarea
+                      rows={5}
+                      value={currentForm.payloadDireccion?.observaciones || ''}
+                      onChange={(e) => updateCurrentForm('payloadDireccion', 'observaciones', e.target.value)}
+                      disabled={currentForm.tipoEntrega === 'pickup'}
+                    />
                   </div>
                 </div>
 
@@ -916,7 +1032,11 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
 
                   <div className="preview-field preview-field-column">
                     <strong>Destino:</strong>
-                    <span className="preview-readonly">Se completa automáticamente con el ID retornado por guardarDireccion.</span>
+                    <span className="preview-readonly">
+                      {currentForm.tipoEntrega === 'pickup'
+                        ? 'Se completa automáticamente con el punto de retiro seleccionado.'
+                        : 'Se completa automáticamente con el ID retornado por guardarDireccion.'}
+                    </span>
                   </div>
 
                   <h5>guia[0]</h5>

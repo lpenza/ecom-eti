@@ -2394,6 +2394,21 @@ body {
   min-width: unset;
 }
 
+.preview-field-column input,
+.preview-field-column select {
+  flex: 0 0 auto;
+  width: 100%;
+  height: auto;
+  min-height: unset;
+}
+
+/* Override the flex-basis-as-height bug in column layout */
+.preview-field.preview-field-column select,
+.preview-field.preview-field-column input {
+  flex: none;
+  height: auto;
+}
+
 .preview-observaciones {
   margin-top: 0.25rem;
   padding: 0.6rem;
