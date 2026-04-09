@@ -95,9 +95,21 @@ class UESService {
       timeout: 30000,
       httpsAgent: this.httpsAgent
     });
+
+    let responseData = response.data;
+    if (typeof responseData === 'string') {
+      const trimmed = responseData.trim();
+      if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+        try {
+          responseData = JSON.parse(trimmed);
+        } catch (error) {
+          // Si no parsea, mantener string original para logging.
+        }
+      }
+    }
     
     // Detectar si el JWT expiró
-    if (response.data?.code === 'ERROR' && response.data?.returned_message?.includes('JWT expired')) {
+    if (responseData?.code === 'ERROR' && responseData?.returned_message?.includes('JWT expired')) {
       if (retryCount === 0) {
         logService.info('JWT expirado, intentando re-autenticar automáticamente...');
         try {
@@ -114,7 +126,7 @@ class UESService {
       }
     }
     
-    return response.data;
+    return responseData;
   }
 
   normalizarTextoEtiqueta(value) {
@@ -137,7 +149,98 @@ class UESService {
     return `${comentarioBase} | ${observacionesLimpias}`;
   }
 
-  construirPayloadEnvio(pedido, direccionId, servicioDestino = 'direccion', puntoRetiroId = null) {
+  extraerNumeroSeguimiento(value) {
+    if (!value) return null;
+
+    const directCandidates = [
+      value?.guias?.[0]?.numero,
+      value?.guias?.[0]?.guia,
+      value?.guia?.numero,
+      value?.guia?.guia,
+      value?.numero,
+      value?.numero_seguimiento,
+      value?.tracking,
+      value?.tracking_number,
+      value?.guia_numero,
+      value?.codigo_barras,
+      value?.barcode,
+      value?.data?.guias?.[0]?.numero,
+      value?.data?.guias?.[0]?.guia,
+      value?.data?.guia?.numero,
+      value?.data?.numero,
+      value?.returned_data?.guias?.[0]?.numero,
+      value?.returned_data?.guia?.numero,
+      value?.returned_data?.numero,
+    ];
+
+    for (const candidate of directCandidates) {
+      const normalized = String(candidate || '').trim();
+      if (normalized) return normalized;
+    }
+
+    return null;
+  }
+
+  async resolverNumeroSeguimientoPorEnvio(envioId, traceId) {
+    if (!envioId) return null;
+
+    const payloadCandidates = [
+      { service: 'getGuia', action: 'getByEnvio', envio_id: String(envioId) },
+      { service: 'getGuia', action: 'getByEnvio', id_envio: String(envioId) },
+      { service: 'getGuia', action: 'get', envio_id: String(envioId) },
+      { service: 'getGuia', action: 'list', envio_id: String(envioId) },
+      { service: 'getEnvio', id: String(envioId) },
+      { service: 'getEnvio', envio_id: String(envioId) },
+    ];
+
+    for (const payload of payloadCandidates) {
+      try {
+        const resp = await this.dispatcherPost(payload);
+        const numero = this.extraerNumeroSeguimiento(resp);
+        if (numero) {
+          logService.info(`[${traceId}] Numero de seguimiento resuelto por envio`, {
+            envioId,
+            payload,
+            numero,
+          });
+          return numero;
+        }
+      } catch (error) {
+        // Continuar con el siguiente candidato
+      }
+    }
+
+    return null;
+  }
+
+  async resolverServicioPickupId(departamentoId) {
+    const contextResp = await this.obtenerContextoUES();
+    const servicios = Array.isArray(contextResp?.servicios) ? contextResp.servicios : [];
+    const isMontevideo = String(departamentoId || '') === '1';
+
+    const pickupServices = servicios.filter((service) => {
+      const nombre = String(service?.nombre || '').toLowerCase();
+      const entregaPickup = service?.es_entrega_pickup === true
+        || String(service?.es_entrega_pickup || '') === '1'
+        || String(service?.entrega_pickup || '') === '1'
+        || nombre.includes('pick up')
+        || nombre.includes('pickup')
+        || nombre.includes('xpres');
+
+      return entregaPickup;
+    });
+
+    const preferred = pickupServices.find((service) => {
+      const nombre = String(service?.nombre || '').toLowerCase();
+      const esMontevideo = service?.es_montevideo === true || String(service?.es_montevideo || '') === '1';
+      const esInterior = nombre.includes('interior') || nombre.includes('xpres') || String(service?.es_montevideo || '') === '0';
+      return isMontevideo ? esMontevideo && !nombre.includes('interior') : esInterior;
+    }) || pickupServices[0];
+
+    return preferred?.id ? String(preferred.id) : String(process.env.UES_SERVICIO_ID);
+  }
+
+  construirPayloadEnvio(pedido, direccionId, servicioDestino = 'direccion', puntoRetiroId = null, departamentoPickupId = null, servicioIdOverride = null) {
     const referencia = String(pedido.numero_pedido || '');
 
     const payload = {
@@ -149,7 +252,7 @@ class UESService {
       nombre_recibe: pedido.cliente_nombre || '',
       telefono_recibe: pedido.cliente_telefono || process.env.UES_TELEFONO_DEFAULT || '',
       email_recibe: pedido.cliente_email || process.env.UES_EMAIL_DEFAULT || '',
-      servicio_id: String(process.env.UES_SERVICIO_ID),
+      servicio_id: String(servicioIdOverride || process.env.UES_SERVICIO_ID),
       direccion_remitente_id: String(process.env.UES_DIRECCION_REMITENTE_ID),
       guias: [
         {
@@ -163,9 +266,13 @@ class UESService {
     };
 
     // Si es envío a domicilio, usar dirección; si es pickup, usar punto_retiro_id
-    if (servicioDestino === 'punto_retiro' && puntoRetiroId) {
-      payload.destino = puntoRetiroId;
-      payload.punto_retiro_id = puntoRetiroId;
+    if (servicioDestino === 'pickup' && puntoRetiroId) {
+      const destinoPickup = Number(puntoRetiroId);
+      payload.servicio_destino = 'pu';
+      payload.pu_id = Number.isFinite(destinoPickup) ? destinoPickup : puntoRetiroId;
+      payload.depto_pu = String(departamentoPickupId || '');
+      delete payload.destino;
+      delete payload.direccion_destinatario_id;
     } else {
       payload.destino = direccionId;
       payload.direccion_destinatario_id = direccionId;
@@ -174,30 +281,37 @@ class UESService {
     return payload;
   }
 
-  async obtenerPuntosRetiro(localidadId) {
+  async obtenerPuntosRetiro() {
     try {
-      if (!localidadId) {
-        throw new Error('localidadId es requerido para obtener puntos de retiro');
-      }
+      logService.info('Obteniendo puntos de retiro desde contexto UES');
 
-      logService.info(`Obteniendo puntos de retiro para localidad ${localidadId}`);
+      const contextResp = await this.dispatcherPost({ service: 'getContext' });
+      const agentes = Array.isArray(contextResp?.agentes) ? contextResp.agentes : [];
 
-      const response = await this.dispatcherPost({
-        service: 'obtenerPuntosRetiro',
-        localidad_id: String(localidadId),
+      // tipo_id 2 = "Pick Up", tipo_id 3 = "Xpres!", tipo_id 4 = "Agencia con Pick Up"
+      const pickupAgentes = agentes.filter(
+        (a) => (a.tipo_id === '2' || a.tipo_id === '3' || a.tipo_id === '4') && a.activo === '1'
+      );
+
+      // Deduplicar por direccion_id — mismo punto físico puede aparecer como tipo 2 y tipo 4
+      const seenDireccionIds = new Set();
+      const deduped = pickupAgentes.filter((a) => {
+        if (!a.direccion_id || seenDireccionIds.has(a.direccion_id)) return false;
+        seenDireccionIds.add(a.direccion_id);
+        return true;
       });
 
-      if (response?.code === 'ERROR') {
-        logService.warning(`Error obteniendo puntos de retiro: ${response.returned_message}`);
-        return [];
-      }
+      const result = deduped.map((a) => ({
+        id: String(a.id),
+        nombre: a.nombre || '',
+        direccion: a.direccion_desc || '',
+        localidad_id: a.localidad_id ? String(a.localidad_id) : null,
+        departamento_id: a.departamento_id ? String(a.departamento_id) : null,
+        horario: a.horario_atencion || '',
+      }));
 
-      const puntosRetiro = Array.isArray(response?.data) ? response.data : 
-                          Array.isArray(response?.puntos_retiro) ? response.puntos_retiro :
-                          [];
-
-      logService.info(`Puntos de retiro obtenidos: ${puntosRetiro.length}`);
-      return puntosRetiro;
+      logService.info(`Puntos de retiro obtenidos: ${result.length}`);
+      return result;
     } catch (error) {
       logService.error('Error al obtener puntos de retiro de UES', error);
       return [];
@@ -316,6 +430,8 @@ class UESService {
 
       let direccionId = null;
       let puntoRetiroId = null;
+      let payloadDireccionFinal = payloadsPreparados.payloadDireccion;
+      let servicioPickupId = null;
 
       // PASO 1: Guardar dirección SOLO si es envío a domicilio (no es pickup)
       if (!esPickup) {
@@ -323,6 +439,7 @@ class UESService {
           payloadsPreparados.payloadDireccion,
           payloadOverrides?.payloadDireccion
         );
+        payloadDireccionFinal = payloadDireccion;
 
         const obsFinal = String(payloadDireccion?.observaciones || '').trim();
         const obsPatternSospechoso = /^\/\d+\s*-?\s*$/i.test(obsFinal);
@@ -357,6 +474,12 @@ class UESService {
         if (!puntoRetiroId) {
           throw new Error('Pickup seleccionado pero no se proporcionó puntoRetiroId');
         }
+        const departamentoPickupId = String(
+          payloadOverrides?.payloadDireccion?.departamento_id
+          || payloadsPreparados?.payloadDireccion?.departamento_id
+          || ''
+        );
+        servicioPickupId = await this.resolverServicioPickupId(departamentoPickupId);
         logService.info(`[${traceId}] Enviando a pickup: puntoRetiroId=${puntoRetiroId}`);
       }
 
@@ -364,8 +487,10 @@ class UESService {
       const basePayloadEnvio = this.construirPayloadEnvio(
         pedido, 
         direccionId, 
-        esPickup ? 'punto_retiro' : 'direccion',
-        puntoRetiroId
+        esPickup ? 'pickup' : 'direccion',
+        puntoRetiroId,
+        payloadOverrides?.payloadDireccion?.departamento_id || payloadsPreparados?.payloadDireccion?.departamento_id || null,
+        servicioPickupId
       );
       const payloadEnvio = mergePayload(basePayloadEnvio, payloadOverrides?.payloadEnvio);
 
@@ -376,7 +501,7 @@ class UESService {
       const referenciaFinal = String(
         payloadOverrides?.payloadEnvio?.referencia || pedido?.numero_pedido || ''
       ).trim();
-      const observacionesFinales = esPickup ? '' : String(payloadsPreparados.payloadDireccion?.observaciones || '').trim();
+      const observacionesFinales = esPickup ? '' : String(payloadDireccionFinal?.observaciones || '').trim();
       const comentarioCompuesto = this.construirComentarioEtiqueta(
         referenciaFinal,
         observacionesFinales
@@ -387,8 +512,18 @@ class UESService {
         payloadEnvio.destino = direccionId;
         payloadEnvio.direccion_destinatario_id = direccionId;
       } else {
-        payloadEnvio.destino = puntoRetiroId;
-        payloadEnvio.punto_retiro_id = puntoRetiroId;
+        const destinoPickup = Number(puntoRetiroId);
+        payloadEnvio.servicio_destino = 'pu';
+        payloadEnvio.pu_id = Number.isFinite(destinoPickup) ? destinoPickup : puntoRetiroId;
+        payloadEnvio.depto_pu = String(
+          payloadOverrides?.payloadDireccion?.departamento_id
+          || payloadsPreparados?.payloadDireccion?.departamento_id
+          || ''
+        );
+        payloadEnvio.servicio_id = String(servicioPickupId || payloadEnvio.servicio_id || '');
+        delete payloadEnvio.destino;
+        delete payloadEnvio.punto_retiro_id;
+        delete payloadEnvio.direccion_destinatario_id;
       }
 
       if (Array.isArray(payloadEnvio.guias) && payloadEnvio.guias.length > 0) {
@@ -422,11 +557,15 @@ class UESService {
       }
 
       const envioId = envioResp?.id || null;
-      const guia = Array.isArray(envioResp?.guias) && envioResp.guias.length > 0 ? envioResp.guias[0] : null;
-      const numeroSeguimiento = guia?.numero || null;
+      let numeroSeguimiento = this.extraerNumeroSeguimiento(envioResp);
+
+      if (!numeroSeguimiento && envioId) {
+        numeroSeguimiento = await this.resolverNumeroSeguimientoPorEnvio(envioId, traceId);
+      }
 
       if (!numeroSeguimiento) {
-        throw new Error('guardarEnvio OK pero sin numero de seguimiento en guias');
+        const respKeys = envioResp && typeof envioResp === 'object' ? Object.keys(envioResp) : [];
+        throw new Error(`guardarEnvio OK pero sin numero de seguimiento (keys: ${respKeys.join(',')})`);
       }
 
       // PASO 3: Obtener etiqueta usando el mismo llamado del .NET.
