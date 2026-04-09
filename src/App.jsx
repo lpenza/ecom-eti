@@ -222,6 +222,12 @@ function App() {
     return pedidosPendientesValidables;
   })();
 
+  const pedidosSeleccionadosConEtiquetaDescargable = pedidosFiltradosPorCard.filter((p) => (
+    selectedPedidos.includes(p.id)
+    && Boolean(p.etiqueta_generada)
+    && Boolean(String(p.link_etiqueta_drive || '').trim())
+  ));
+
   const pedidosFinalizadosParaReclamo = [...pedidosFinalizados].sort((a, b) => {
     const numA = parseInt(String(a.numero_pedido || '').replace(/\D/g, ''), 10) || 0;
     const numB = parseInt(String(b.numero_pedido || '').replace(/\D/g, ''), 10) || 0;
@@ -799,6 +805,74 @@ function App() {
     }
   };
 
+  const handleDescargarEtiqueta = (pedidoId) => {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    const etiquetaUrl = String(pedido?.link_etiqueta_drive || '').trim();
+
+    if (!etiquetaUrl) {
+      mostrarToast('Esta etiqueta no tiene PDF disponible para descargar', 'warning');
+      return;
+    }
+
+    const a = document.createElement('a');
+    a.href = etiquetaUrl;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    a.download = `etiqueta-${pedido?.numero_pedido || pedidoId}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const handleDescargarEtiquetasSeleccionadas = async () => {
+    if (selectedPedidos.length === 0) {
+      mostrarToast('Selecciona al menos un pedido para descargar etiquetas', 'warning');
+      return;
+    }
+
+    const pedidosSeleccionados = pedidosFiltradosPorCard.filter((p) => selectedPedidos.includes(p.id));
+    const pedidosSinPdf = pedidosSeleccionados.filter((p) => !String(p.link_etiqueta_drive || '').trim());
+    const pdfUrls = pedidosSeleccionadosConEtiquetaDescargable.map((p) => String(p.link_etiqueta_drive).trim());
+
+    if (pdfUrls.length === 0) {
+      mostrarToast('Los pedidos seleccionados no tienen etiqueta PDF disponible', 'warning');
+      return;
+    }
+
+    if (pdfUrls.length === 1) {
+      const pedido = pedidosSeleccionadosConEtiquetaDescargable[0];
+      handleDescargarEtiqueta(pedido.id);
+      if (pedidosSinPdf.length > 0) {
+        mostrarToast(`Se descargó 1 etiqueta. ${pedidosSinPdf.length} pedido(s) seleccionados no tenían PDF.`, 'warning');
+      }
+      return;
+    }
+
+    try {
+      const combinado = await combinarPdfsEtiquetas(pdfUrls);
+      if (!combinado?.success || !combinado?.pdfUrl) {
+        mostrarToast('No se pudo combinar las etiquetas seleccionadas', 'error');
+        return;
+      }
+
+      const a = document.createElement('a');
+      a.href = combinado.pdfUrl;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.download = `etiquetas-seleccionadas-${new Date().toISOString().slice(0, 10)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      if (pedidosSinPdf.length > 0) {
+        mostrarToast(`Descarga combinada lista (${pdfUrls.length} etiquetas). ${pedidosSinPdf.length} pedido(s) sin PDF.`, 'warning');
+      }
+    } catch (error) {
+      console.error('Error combinando etiquetas seleccionadas:', error);
+      mostrarToast('No se pudieron combinar las etiquetas seleccionadas', 'error');
+    }
+  };
+
   // Handler para login UES
   const handleLoginUES = async () => {
     const resultado = await loginUES();
@@ -1148,6 +1222,24 @@ function App() {
             </div>
           )}
 
+          {tableFilter === 'etiquetasGeneradas' && (
+            <div className="section-action-bar">
+              <span>
+                Seleccionados: {selectedPedidos.length} | Descargables: {pedidosSeleccionadosConEtiquetaDescargable.length}
+              </span>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleDescargarEtiquetasSeleccionadas}
+                disabled={pedidosSeleccionadosConEtiquetaDescargable.length === 0}
+                title={pedidosSeleccionadosConEtiquetaDescargable.length === 0
+                  ? 'Selecciona pedidos con etiqueta PDF disponible'
+                  : 'Descargar juntas las etiquetas seleccionadas'}
+              >
+                📥 Descargar seleccionadas ({pedidosSeleccionadosConEtiquetaDescargable.length})
+              </button>
+            </div>
+          )}
+
           {/* Tabla de pedidos */}
           <div className="main-content">
             <PedidosTable
@@ -1167,6 +1259,7 @@ function App() {
               onReenviarNotificacion={handleReenviarNotificacion}
               onContactarPendiente={handleContactarPendienteRapido}
               onMarcarNotificado={marcarPedidoNotificado}
+              onDescargarEtiqueta={handleDescargarEtiqueta}
               onDescartarEtiqueta={handleDescartarEtiqueta}
               fulfillmentPreview={fulfillmentPreviewIds !== null}
               channelPriority={channelPriority}

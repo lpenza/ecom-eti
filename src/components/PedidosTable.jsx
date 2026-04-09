@@ -8,6 +8,7 @@ function PedidosTable({
   onReenviarNotificacion,
   onContactarPendiente,
   onMarcarNotificado,
+  onDescargarEtiqueta,
   onDescartarEtiqueta,
   fulfillmentPreview,
   channelPriority = 'email',
@@ -68,6 +69,7 @@ function PedidosTable({
                   onReenviarNotificacion={onReenviarNotificacion}
                   onContactarPendiente={onContactarPendiente}
                   onMarcarNotificado={onMarcarNotificado}
+                  onDescargarEtiqueta={onDescargarEtiqueta}
                   onDescartarEtiqueta={onDescartarEtiqueta}
                   fulfillmentPreview={fulfillmentPreview}
                   channelPriority={channelPriority}
@@ -86,7 +88,7 @@ function PedidosTable({
   );
 }
 
-function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion, onContactarPendiente, onMarcarNotificado, onDescartarEtiqueta, fulfillmentPreview = false, channelPriority = 'email', showNotifyColumn = true, showTrackingColumn = true, activeTrackingTemplate, activeContactTemplate, modoPendienteContacto = false }) {
+function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion, onContactarPendiente, onMarcarNotificado, onDescargarEtiqueta, onDescartarEtiqueta, fulfillmentPreview = false, channelPriority = 'email', showNotifyColumn = true, showTrackingColumn = true, activeTrackingTemplate, activeContactTemplate, modoPendienteContacto = false }) {
   const estadoClass = pedido.estado === 'procesado' ? 'badge-success' : 'badge-warning';
   const tieneRevisionContacto = Boolean(pedido.revision_contacto_pendiente);
   const estadoText = pedido.estado === 'procesado' ? 'Procesado' : 
@@ -96,6 +98,7 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
 
   const fueNotificado = Boolean(pedido.notificacion_enviada_at);
   const puedeDescartarEtiqueta = Boolean(pedido.etiqueta_generada) && !fueNotificado;
+  const puedeDescargarEtiqueta = Boolean(String(pedido.link_etiqueta_drive || '').trim());
   const ultimoContactoAt = pedido.revision_contacto_ultimo_contacto_at || null;
 
   // Detectar si es pedido de WhatsApp en base a la prioridad configurada
@@ -246,6 +249,16 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
               <span className="pedido-email-label">
                 📧 Shopify notifica
               </span>
+            )}
+            {puedeDescartarEtiqueta && !fulfillmentPreview && (
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => onDescargarEtiqueta?.(pedido.id)}
+                disabled={!puedeDescargarEtiqueta}
+                title={puedeDescargarEtiqueta ? 'Descargar etiqueta generada' : 'Esta etiqueta no tiene PDF disponible'}
+              >
+                📄 Descargar
+              </button>
             )}
             {puedeDescartarEtiqueta && !fulfillmentPreview && (
               <button
