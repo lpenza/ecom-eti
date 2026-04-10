@@ -205,7 +205,7 @@ export function parseAddress(fullAddress) {
       const aptNum = Number.parseInt((apt.match(/\d+/) || [''])[0], 10);
       const doorNum = Number.parseInt(door, 10);
 
-      if (!Number.isNaN(doorNum) && !Number.isNaN(aptNum) && aptNum < 1000 && aptNum < doorNum) {
+      if (!Number.isNaN(doorNum) && !Number.isNaN(aptNum) && aptNum < doorNum) {
         if (!result.numeroPuerta) result.numeroPuerta = door;
         if (!result.apartamento) result.apartamento = apt;
         address = left;
@@ -222,7 +222,7 @@ export function parseAddress(fullAddress) {
       const aptNum = Number.parseInt((apt.match(/\d+/) || [''])[0], 10);
       const doorNum = Number.parseInt(door, 10);
 
-      if (!Number.isNaN(doorNum) && !Number.isNaN(aptNum) && aptNum < 1000 && aptNum < doorNum) {
+      if (!Number.isNaN(doorNum) && !Number.isNaN(aptNum) && aptNum < doorNum) {
         if (!result.numeroPuerta) result.numeroPuerta = door;
         if (!result.apartamento) result.apartamento = apt;
         address = address.slice(0, m.index).trim();
@@ -239,7 +239,7 @@ export function parseAddress(fullAddress) {
     }
   }
 
-  const towerMatches = [...address.matchAll(/\b(?:torre|bloque|block)\s*([A-Z0-9\-]+)\b/gi)];
+  const towerMatches = [...address.matchAll(/\b(?:torre|bloque|block)\b\s*([A-Z0-9\-]+)\b/gi)];
   for (const mt of towerMatches) {
     const before = address.slice(0, mt.index);
     if (/\b(de|del|la|las|el|los)\s*$/i.test(before)) {

@@ -63,6 +63,14 @@ export async function obtenerPedidosFinalizados() {
 }
 
 /**
+ * Obtener pedidos con total=0 (candidatos para reclamo)
+ */
+export async function obtenerPedidosParaReclamo() {
+  const data = await fetchAPI('/pedidos-para-reclamo');
+  return Array.isArray(data) ? data : [];
+}
+
+/**
  * Sincronizar pedidos desde Shopify
  */
 export async function sincronizarShopify() {
@@ -215,6 +223,18 @@ export async function obtenerPedido(pedidoId) {
 }
 
 /**
+ * Geocodificar dirección del pedido con Google Maps y resolver localidad UES.
+ * @param {string} pedidoId
+ * @param {string|number|null} departamentoId - ID numérico del departamento ya seleccionado en el form
+ */
+export async function geocodificarPedido(pedidoId, departamentoId = null) {
+  return await fetchAPI(`/pedidos/${pedidoId}/geocodificar`, {
+    method: 'POST',
+    body: JSON.stringify({ departamento_id: departamentoId }),
+  });
+}
+
+/**
  * Login en UES
  */
 export async function loginUES() {
@@ -323,5 +343,15 @@ export async function activarPlantilla(id) {
 export async function inicializarPlantillas() {
   const response = await fetchAPI('/templates/initialize', { method: 'POST' });
   return response.data || [];
+}
+
+// ==================== RECLAMOS PENDIENTES ====================
+
+/**
+ * Obtener reclamos pendientes de notificar al cliente
+ */
+export async function obtenerReclamosPendientes() {
+  const data = await fetchAPI('/reclamos-pendientes', { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
 }
 

@@ -9,9 +9,10 @@ import Toast from './components/Toast';
 import FollowUpPanel from './components/FollowUpPanel';
 import TemplateManagerPanel from './components/TemplateManagerPanel';
 import { usePedidos } from './hooks/usePedidos';
-import { 
+import {
   generarLinkWhatsApp,
   obtenerPedidosFinalizados,
+  obtenerPedidosParaReclamo,
   obtenerPlantillas,
   crearPlantilla,
   actualizarPlantilla,
@@ -19,7 +20,8 @@ import {
   activarPlantilla,
   combinarPdfsEtiquetas,
   regenerarCacheUES,
-  obtenerEstadoCacheUES
+  obtenerEstadoCacheUES,
+  obtenerReclamosPendientes,
 } from './services/api';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
@@ -86,6 +88,7 @@ function App() {
   const [tableFilter, setTableFilter] = useState('porValidar');
   const [activeView, setActiveView] = useState('pedidos'); // pedidos | especiales | followup | plantillas
   const [notifChannelFilter, setNotifChannelFilter] = useState(null); // null | 'email' | 'whatsapp' | 'noChannel'
+  const [etiquetasCanalFilter, setEtiquetasCanalFilter] = useState('whatsapp'); // null | 'whatsapp' | 'email'
   const [channelPriority, setChannelPriority] = useState('email'); // 'email' | 'whatsapp'
   const [etiquetaMode, setEtiquetaMode] = useState('reclamos'); // reclamos | colaboraciones
   const [reclamoPedidoId, setReclamoPedidoId] = useState('');
@@ -94,6 +97,8 @@ function App() {
   const [pedidosFinalizados, setPedidosFinalizados] = useState([]);
   const [pedidosFinalizadosLoaded, setPedidosFinalizadosLoaded] = useState(false);
   const [previewMode, setPreviewMode] = useState('normal'); // 'normal' | 'reclamo'
+  const [reclamosPendientes, setReclamosPendientes] = useState([]);
+  const [reclamosPendientesLoading, setReclamosPendientesLoading] = useState(false);
   const [templates, setTemplates] = useState([]);
   const [activeTemplateId, setActiveTemplateId] = useState('');
   const [activeTrackingTemplateId, setActiveTrackingTemplateId] = useState('');
@@ -198,6 +203,7 @@ function App() {
 
   const headerStats = {
     porValidar: pedidosPendientesValidables.length,
+    reclamosPendientes: reclamosPendientes.length,
     pendientesContacto: pedidosPendientesContacto.length,
     etiquetasGeneradas: pedidosConEtiqueta.length,
     pendientesFulfillment: pedidosListosFulfillment.length,
@@ -216,7 +222,11 @@ function App() {
 
   const pedidosFiltradosPorCard = (() => {
     if (tableFilter === 'pendientesContacto') return pedidosPendientesContacto;
-    if (tableFilter === 'etiquetasGeneradas') return pedidosConEtiqueta;
+    if (tableFilter === 'etiquetasGeneradas') {
+      if (etiquetasCanalFilter === 'whatsapp') return pedidosConEtiqueta.filter((p) => getCanalNotificacion(p) === 'whatsapp');
+      if (etiquetasCanalFilter === 'email') return pedidosConEtiqueta.filter((p) => getCanalNotificacion(p) === 'email');
+      return pedidosConEtiqueta;
+    }
     if (tableFilter === 'pendientesFulfillment') return pedidosListosFulfillment;
     if (tableFilter === 'revisionManual') return pedidosRevisionManual;
     if (tableFilter === 'enviados') return pedidosEnviados;
@@ -371,7 +381,7 @@ function App() {
     if (!shouldLoadFinalizados) return;
 
     let cancelled = false;
-    obtenerPedidosFinalizados()
+    obtenerPedidosParaReclamo()
       .then((data) => {
         if (cancelled) return;
         setPedidosFinalizados(Array.isArray(data) ? data : []);
@@ -379,14 +389,34 @@ function App() {
       })
       .catch((error) => {
         if (cancelled) return;
-        console.error('❌ Error cargando pedidos finalizados para reclamos:', error);
-        mostrarToast('No se pudieron cargar los pedidos finalizados para reclamos', 'error');
+        console.error('❌ Error cargando pedidos para reclamos:', error);
+        mostrarToast('No se pudieron cargar los pedidos para reclamos', 'error');
       });
 
     return () => {
       cancelled = true;
     };
   }, [activeView, etiquetaMode, pedidosFinalizadosLoaded]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setReclamosPendientesLoading(true);
+
+    obtenerReclamosPendientes()
+      .then((data) => {
+        if (cancelled) return;
+        setReclamosPendientes(Array.isArray(data) ? data : []);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('❌ Error cargando reclamos pendientes:', error);
+      })
+      .finally(() => {
+        if (!cancelled) setReclamosPendientesLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, []);
 
   // Confirmación desde modal (uno o múltiples pedidos)
   const handleConfirmarGeneracion = async (items) => {
@@ -1169,6 +1199,65 @@ function App() {
     });
   };
 
+  // ==================== HANDLERS RECLAMOS PENDIENTES ====================
+
+  const handleNotificarReclamoWhatsApp = async (reclamo) => {
+    const telefono = String(reclamo.cliente_telefono || '').replace(/\D/g, '');
+    if (!telefono || telefono.length < 8) {
+      mostrarToast('El reclamo no tiene teléfono válido para WhatsApp', 'warning');
+      return;
+    }
+    const primerNombre = String(reclamo.cliente_nombre || 'cliente').trim().split(/\s+/)[0];
+    const tracking = reclamo.numero_seguimiento_ues || '';
+    const referencia = `RCL${reclamo.numero_pedido || reclamo.id}`;
+    const mensaje = encodeURIComponent(
+      `Hola ${primerNombre}! Tu etiqueta de reclamo ${referencia} fue generada.` +
+      (tracking ? `\nNúmero de seguimiento: ${tracking}` : '')
+    );
+    const waNumber = telefono.startsWith('598') ? telefono : `598${telefono}`;
+    window.open(`https://wa.me/${waNumber}?text=${mensaje}`, '_blank');
+
+    try {
+      await marcarPedidoNotificado(reclamo.id);
+      setReclamosPendientes((prev) => prev.filter((r) => r.id !== reclamo.id));
+      mostrarToast(`✅ Reclamo notificado y marcado`, 'success');
+    } catch {
+      mostrarToast('WhatsApp abierto, pero no se pudo marcar como notificado', 'warning');
+    }
+  };
+
+  const handleDescargarPdfReclamo = (reclamo) => {
+    const url = String(reclamo.link_etiqueta_drive || '').trim();
+    if (!url) {
+      mostrarToast('Este reclamo no tiene PDF disponible', 'warning');
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const handleFulfillmentReclamo = async (reclamo) => {
+    if (!reclamo.numero_seguimiento_ues) {
+      mostrarToast('El reclamo no tiene número de seguimiento para hacer fulfillment', 'warning');
+      return;
+    }
+    try {
+      const resultado = await ejecutarFulfillmentShopify([reclamo.id]);
+      if (!resultado.success) {
+        mostrarToast(resultado.error || 'Error en fulfillment del reclamo', 'error');
+        return;
+      }
+      mostrarToast(`✅ Fulfillment de reclamo enviado a Shopify`, 'success');
+    } catch (error) {
+      mostrarToast('Error al ejecutar fulfillment del reclamo', 'error');
+    }
+  };
+
   return (
     <div className="app app-shell">
       <aside className="side-nav">
@@ -1215,10 +1304,10 @@ function App() {
 
       <main className="app-main">
         {activeView === 'pedidos' && (
-          <Header 
-            stats={headerStats} 
-            activeFilter={tableFilter} 
-            onFilterChange={setTableFilter}
+          <Header
+            stats={headerStats}
+            activeFilter={tableFilter}
+            onFilterChange={(f) => { setTableFilter(f); setEtiquetasCanalFilter(f === 'etiquetasGeneradas' ? 'whatsapp' : null); }}
             onActualizar={cargarPedidos}
             onLoginUES={handleLoginUES}
             onRegenerarCache={handleRegenerarCacheUES}
@@ -1324,7 +1413,96 @@ function App() {
             </div>
           )}
 
+          {/* Filtro de canal para etiquetas generadas */}
+          {tableFilter === 'etiquetasGeneradas' && (
+            <div className="notif-preview-chips" style={{ padding: '0 1rem 0.5rem' }}>
+              <button
+                type="button"
+                className={`notif-chip notif-chip-wpp ${etiquetasCanalFilter === 'whatsapp' ? 'notif-chip-active' : ''}`}
+                onClick={() => setEtiquetasCanalFilter(etiquetasCanalFilter === 'whatsapp' ? null : 'whatsapp')}
+              >
+                💬 WhatsApp ({pedidosConEtiqueta.filter((p) => getCanalNotificacion(p) === 'whatsapp').length})
+              </button>
+              <button
+                type="button"
+                className={`notif-chip notif-chip-email ${etiquetasCanalFilter === 'email' ? 'notif-chip-active' : ''}`}
+                onClick={() => setEtiquetasCanalFilter(etiquetasCanalFilter === 'email' ? null : 'email')}
+              >
+                🏪 Shopify automático ({pedidosConEtiqueta.filter((p) => getCanalNotificacion(p) === 'email').length})
+              </button>
+            </div>
+          )}
+
+          {/* Tabla de reclamos pendientes */}
+          {tableFilter === 'reclamosPendientes' && (
+            <div className="main-content">
+              {reclamosPendientesLoading ? (
+                <p className="module-help-text">Cargando reclamos...</p>
+              ) : reclamosPendientes.length === 0 ? (
+                <p className="module-help-text">No hay reclamos pendientes de notificación.</p>
+              ) : (
+                <div className="reclamos-table-wrapper">
+                  <table className="reclamos-table">
+                    <thead>
+                      <tr>
+                        <th>Referencia</th>
+                        <th>Pedido</th>
+                        <th>Cliente</th>
+                        <th>Tracking</th>
+                        <th>Fecha</th>
+                        <th>Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reclamosPendientes.map((reclamo) => (
+                        <tr key={reclamo.id}>
+                          <td><strong>RCL{reclamo.numero_pedido || reclamo.id}</strong></td>
+                          <td>#{reclamo.numero_pedido || reclamo.id}</td>
+                          <td>
+                            <div>{reclamo.cliente_nombre || '—'}</div>
+                            <div className="reclamo-sub">{reclamo.cliente_telefono || reclamo.cliente_email || '—'}</div>
+                          </td>
+                          <td>{reclamo.numero_seguimiento_ues || '—'}</td>
+                          <td>{reclamo.created_at ? new Date(reclamo.created_at).toLocaleDateString('es-UY') : '—'}</td>
+                          <td className="reclamo-actions">
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => handleNotificarReclamoWhatsApp(reclamo)}
+                              title="Notificar por WhatsApp y marcar como notificado"
+                            >
+                              💬 WhatsApp
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => handleDescargarPdfReclamo(reclamo)}
+                              disabled={!reclamo.link_etiqueta_drive}
+                              title="Descargar PDF de la etiqueta"
+                            >
+                              📥 PDF
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-secondary btn-sm"
+                              onClick={() => handleFulfillmentReclamo(reclamo)}
+                              disabled={!reclamo.numero_seguimiento_ues}
+                              title="Ejecutar fulfillment en Shopify"
+                            >
+                              🏪 Shopify
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Tabla de pedidos */}
+          {tableFilter !== 'reclamosPendientes' && (
           <div className="main-content">
             <PedidosTable
               pedidos={fulfillmentPreviewIds !== null
@@ -1354,6 +1532,7 @@ function App() {
               modoPendienteContacto={tableFilter === 'pendientesContacto'}
             />
           </div>
+          )}
         </>
       )}
 

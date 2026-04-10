@@ -224,6 +224,62 @@ class SupabaseService {
     }
   }
 
+  // Buscar localidad UES por nombre + departamento_id (numérico) o nombre de departamento.
+  // Cuando departamentoRef es un número o string numérico, lo usa como ID directamente.
+  async buscarLocalidadUesPorId(localidad, departamentoRef) {
+    const esId = departamentoRef != null && !isNaN(String(departamentoRef).trim());
+    if (esId) {
+      const depId = String(departamentoRef).trim();
+      console.log(`🔎 [buscarLocalidadUesPorId] localidad="${localidad}" departamento_id=${depId}`);
+
+      const normalizedKey = normalizeText(localidad);
+      const snapshot = getUesDepartamentosLocalidadesSnapshot();
+
+      if (snapshot.length > 0) {
+        const dep = snapshot.find((d) => String(d.departamento_id) === depId);
+        const localidades = dep?.localidades || [];
+        console.log(`   snapshot: ${localidades.length} localidades en dep ${depId}`);
+
+        const exact = localidades.find((loc) => normalizeText(loc.localidad_nombre) === normalizedKey);
+        if (exact) {
+          console.log(`   ✅ exacto: ${exact.localidad_nombre} (${exact.localidad_id})`);
+          return { ues_id: String(exact.localidad_id), departamento_id: Number(depId), nombre: exact.localidad_nombre };
+        }
+
+        const fuzzyPool = localidades.map((loc) => ({
+          localidad_id: loc.localidad_id,
+          localidad_nombre: loc.localidad_nombre,
+          departamento_id: depId,
+        }));
+        const fuzzy = findBestLocalidadMatch(normalizedKey, fuzzyPool);
+        if (fuzzy) {
+          console.log(`   ✅ fuzzy: ${fuzzy.localidad_nombre} (${fuzzy.localidad_id})`);
+          return { ues_id: String(fuzzy.localidad_id), departamento_id: Number(depId), nombre: fuzzy.localidad_nombre };
+        }
+        console.log(`   ⚠️ sin match en snapshot para "${localidad}" en dep ${depId}`);
+      }
+
+      // Fallback DB filtrada por departamento_id
+      const { data, error } = await supabase
+        .from('localidades_ues')
+        .select('ues_id, departamento_id, nombre')
+        .ilike('nombre', `%${String(localidad).trim()}%`)
+        .eq('departamento_id', depId)
+        .limit(5);
+      if (error) throw error;
+      console.log(`   DB resultados:`, data?.map((d) => d.nombre));
+      if (data && data.length > 0) return data[0];
+
+      throw new ValidationError(
+        `No se encontró localidad UES para: "${localidad}" en departamento ID ${depId}`,
+        'localidad',
+        { localidad, departamento_id: depId }
+      );
+    }
+    // Sin ID numérico: delegar a la búsqueda por nombre
+    return this.buscarLocalidadUes(localidad, departamentoRef);
+  }
+
   // Buscar localidad UES por nombre para obtener IDs requeridos por dispatcher.
   async buscarLocalidadUes(localidad, departamento) {
     if (!localidad) {
@@ -409,7 +465,7 @@ class SupabaseService {
     return data;
   }
 
-  // Obtener todos los pedidos activos (pendientes + con etiqueta, excluye procesados)
+  // Obtener todos los pedidos activos (pendientes + con etiqueta, excluye procesados y reclamos)
   async obtenerPedidosActivos() {
     try {
       const { data, error } = await supabase
@@ -417,6 +473,7 @@ class SupabaseService {
         .select('*')
         .neq('estado', 'enviado')
         .neq('es_envio_express', true)
+        .neq('es_reclamo', true)
         .order('created_at', { ascending: true });
 
       if (error) throw error;
@@ -439,6 +496,47 @@ class SupabaseService {
 
     if (error) throw error;
     return data || [];
+  }
+
+  // Calcular total de un pedido a partir de sus items
+  _calcularTotalItems(items = []) {
+    return items.reduce((sum, item) => {
+      const precio = item.precio_venta_manual ?? item.precio_unitario ?? 0;
+      return sum + (Number(precio) * (Number(item.cantidad) || 1));
+    }, 0);
+  }
+
+  // Obtener reclamos pendientes de notificación (es_reclamo=true, etiqueta generada, sin notificar)
+  async obtenerReclamosPendientes() {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .eq('es_reclamo', true)
+      .eq('etiqueta_generada', true)
+      .eq('estado', 'pendiente')
+      .is('notificacion_enviada_at', null)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Obtener pedidos candidatos para reclamo (items con total=0)
+  async obtenerPedidosParaReclamo() {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*, pedido_items(precio_unitario, precio_venta_manual, cantidad)')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    return (data || [])
+      .filter(p => {
+        const items = p.pedido_items || [];
+        if (items.length === 0) return false;
+        return this._calcularTotalItems(items) === 0;
+      })
+      .map(({ pedido_items: _, ...p }) => p);
   }
 
   // Obtener pedidos candidatos para follow-up comercial
@@ -593,8 +691,9 @@ class SupabaseService {
 
   // Sincronizar órdenes desde Shopify
   async sincronizarOrdenes(ordenes) {
+    const googleMapsService = require('./googleMapsService');
     const resultados = [];
-    
+
     for (const orden of ordenes) {
       try {
         // Verificar si ya existe
@@ -603,7 +702,7 @@ class SupabaseService {
           .select('id')
           .eq('shopify_order_id', orden.id)
           .single();
-        
+
         if (existente) {
           // Actualizar
           const { data } = await supabase
@@ -615,7 +714,7 @@ class SupabaseService {
             })
             .eq('shopify_order_id', orden.id)
             .select();
-          
+
           resultados.push(data[0]);
         } else {
           // Crear nuevo
@@ -637,14 +736,36 @@ class SupabaseService {
               updated_at: new Date().toISOString()
             })
             .select();
-          
-          resultados.push(data[0]);
+
+          const pedidoNuevo = data[0];
+          resultados.push(pedidoNuevo);
+
+          // Geocodificar automáticamente el nuevo pedido
+          if (pedidoNuevo?.id && orden.shipping_address?.address1) {
+            try {
+              const geoResult = await googleMapsService.geocodeAsync(
+                orden.shipping_address.address1,
+                orden.shipping_address.city || 'Montevideo',
+                'Uruguay'
+              );
+              if (geoResult.exitoso) {
+                await supabase.from('pedidos').update({
+                  barrio_google_maps: geoResult.barrio || null,
+                  localidad_detectada: geoResult.localidad || null,
+                  latitud: geoResult.latitud || null,
+                  longitud: geoResult.longitud || null,
+                }).eq('id', pedidoNuevo.id);
+              }
+            } catch (geoError) {
+              console.warn(`⚠️  No se pudo geocodificar orden ${orden.id}: ${geoError.message}`);
+            }
+          }
         }
       } catch (error) {
         console.error(`Error procesando orden ${orden.id}:`, error);
       }
     }
-    
+
     return resultados;
   }
 

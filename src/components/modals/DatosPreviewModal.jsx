@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  geocodificarPedido,
   obtenerCatalogoDepartamentosUES,
   obtenerCatalogoLocalidadesUES,
   obtenerPayloadPreviewUES,
@@ -15,6 +16,9 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
   const [formsByPedidoId, setFormsByPedidoId] = useState({});
   const [validationError, setValidationError] = useState('');
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
+  const [geocodificando, setGeocodificando] = useState(false);
+  const [geoResultadoByPedidoId, setGeoResultadoByPedidoId] = useState({});
+  const [geoAplicadoByPedidoId, setGeoAplicadoByPedidoId] = useState({});
   const [localidadSugerida, setLocalidadSugerida] = useState(null); // { id, nombre, score }
   const [numeroPuertaSugerido, setNumeroPuertaSugerido] = useState(false); // true si se autocompletó con s/n
 
@@ -451,6 +455,44 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     setLocalidadSugerida(null); // Limpiar sugerencia al cambiar de pedido
   }, [currentPedido]);
 
+  // Auto-geocodificar cada pedido al cargarse por primera vez
+  useEffect(() => {
+    if (!currentPedido?.id) return;
+    if (geoResultadoByPedidoId[currentPedido.id] !== undefined) return;
+    handleGeocodificar(currentPedido);
+  }, [currentPedido?.id]);
+
+  // Aplicar resultado de geocodificado al form una sola vez por resultado
+  useEffect(() => {
+    if (!currentPedido?.id) return;
+    const geo = geoResultadoByPedidoId[currentPedido.id];
+    const form = formsByPedidoId[currentPedido.id];
+    // Solo aplicar si: hay resultado ok, el form está listo, y aún no se aplicó
+    if (!geo?.ok || !geo.ues_id || !form) return;
+    if (geoAplicadoByPedidoId[currentPedido.id]) return;
+    const depId = String(geo.departamento_id);
+    const locId = String(geo.ues_id);
+    // Marcar como aplicado antes de actualizar para evitar loops
+    setGeoAplicadoByPedidoId((prev) => ({ ...prev, [currentPedido.id]: true }));
+    loadLocalidades(depId).then(() => {
+      setFormsByPedidoId((prev) => {
+        const existing = prev[currentPedido.id];
+        if (!existing) return prev;
+        return {
+          ...prev,
+          [currentPedido.id]: {
+            ...existing,
+            payloadDireccion: {
+              ...existing.payloadDireccion,
+              departamento_id: depId,
+              localidad_id: locId,
+            },
+          },
+        };
+      });
+    });
+  }, [currentPedido?.id, geoResultadoByPedidoId[currentPedido?.id], formsByPedidoId[currentPedido?.id]]);
+
   useEffect(() => {
     if (!currentDepartamentoId) return;
     loadLocalidades(currentDepartamentoId);
@@ -604,6 +646,34 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
         },
       },
     }));
+  };
+
+  const handleGeocodificar = async (pedidoOverride = null) => {
+    const pedido = pedidoOverride || currentPedido;
+    if (!pedido?.id) return;
+    // Marcar como en progreso inmediatamente para evitar doble disparo
+    setGeoResultadoByPedidoId((prev) => ({ ...prev, [pedido.id]: { loading: true } }));
+    // Resetear "ya aplicado" para que este nuevo resultado se aplique al form
+    setGeoAplicadoByPedidoId((prev) => ({ ...prev, [pedido.id]: false }));
+    setGeocodificando(true);
+    const depIdActual = formsByPedidoId[pedido.id]?.payloadDireccion?.departamento_id || null;
+    try {
+      const result = await geocodificarPedido(pedido.id, depIdActual);
+      // Solo guardar el resultado — el useEffect de aplicación al form se encarga del resto
+      setGeoResultadoByPedidoId((prev) => ({
+        ...prev,
+        [pedido.id]: result.success
+          ? { ok: true, ...result.data }
+          : { ok: false, error: result.error, google: result.google },
+      }));
+    } catch (err) {
+      setGeoResultadoByPedidoId((prev) => ({
+        ...prev,
+        [pedido.id]: { ok: false, error: err.message },
+      }));
+    } finally {
+      setGeocodificando(false);
+    }
   };
 
   const handleDepartamentoChange = async (value) => {
@@ -1148,6 +1218,56 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
             <div className="preview-field">
               <strong>Código Postal:</strong>
               <span>{currentPedido.codigo_postal}</span>
+            </div>
+
+            {/* Validación localidad UES */}
+            <div className="preview-field" style={{ alignItems: 'flex-start', gap: '8px', marginTop: '8px' }}>
+              <strong>🔎 Localidad UES:</strong>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flex: 1 }}>
+                {(() => {
+                  const geo = geoResultadoByPedidoId[currentPedido.id];
+                  if (!geo) return (
+                    <span style={{ color: '#888', fontSize: '13px' }}>Sin validar</span>
+                  );
+                  if (geo.loading) return (
+                    <span style={{ color: '#888', fontSize: '13px' }}>🔍 Validando...</span>
+                  );
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      {(geo.barrioGoogleMaps || geo.localidadGoogleMaps || geo.google) && (
+                        <span style={{ fontSize: '12px', color: '#555' }}>
+                          🗺️ Google Maps → barrio: <em>{geo.barrioGoogleMaps || geo.google?.barrio || '—'}</em> | localidad: <em>{geo.localidadGoogleMaps || geo.google?.localidad || '—'}</em>
+                        </span>
+                      )}
+                      {!geo.ok
+                        ? <span style={{ color: '#c62828', fontSize: '13px' }}>⚠️ {geo.error}</span>
+                        : <span style={{ color: '#2e7d32', fontSize: '13px' }}>✅ <strong>{geo.nombre}</strong> (ID: {geo.ues_id}, Dep: {geo.departamento_id})</span>
+                      }
+                    </div>
+                  );
+                })()}
+                <button
+                  onClick={handleGeocodificar}
+                  disabled={geocodificando}
+                  style={{
+                    marginTop: '4px',
+                    padding: '4px 10px',
+                    fontSize: '12px',
+                    cursor: geocodificando ? 'not-allowed' : 'pointer',
+                    opacity: geocodificando ? 0.6 : 1,
+                    alignSelf: 'flex-start',
+                  }}
+                >
+                  {geocodificando
+                    ? '🔍 Validando...'
+                    : geoResultadoByPedidoId[currentPedido.id]?.loading
+                      ? '🔍 Validando...'
+                      : geoResultadoByPedidoId[currentPedido.id]
+                        ? '🔄 Re-validar'
+                        : '🔍 Validar localidad'
+                  }
+                </button>
+              </div>
             </div>
           </div>
 

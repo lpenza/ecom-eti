@@ -8,6 +8,28 @@ const supabaseService = require('./supabaseService');
 const { parseAddress } = require('./direccionParserService');
 require('dotenv').config();
 
+// Determina la localidad a usar para resolver en UES, priorizando el barrio
+// obtenido de Google Maps (especialmente útil para pedidos de Montevideo).
+function determinarLocalidad(pedido) {
+  const departamento = (pedido.departamento || '').trim().toLowerCase();
+
+  // Prioridad 1: barrio detectado por Google Maps
+  if (pedido.barrio_google_maps) {
+    return pedido.barrio_google_maps;
+  }
+
+  // Prioridad 2: lógica original
+  if (departamento !== 'montevideo') {
+    // Si la localidad contiene dígitos (probable CP o código), usar localidad_detectada
+    if (pedido.localidad && /\d/.test(pedido.localidad)) {
+      return pedido.localidad_detectada || pedido.localidad;
+    }
+    return pedido.localidad;
+  }
+
+  return pedido.localidad;
+}
+
 class UESService {
   constructor() {
     this.baseUrl = 'https://sge.ues.com.uy'; // URL base de UES API
@@ -333,7 +355,10 @@ class UESService {
       };
       logService.info('Saltando validación de localidad (vendrá de overrides del usuario)');
     } else {
-      localidadUes = await supabaseService.buscarLocalidadUes(pedido.localidad, pedido.departamento);
+      localidadUes = await supabaseService.buscarLocalidadUes(
+        determinarLocalidad(pedido),
+        pedido.departamento
+      );
     }
     
     // Observaciones solo desde el parser de dirección (no usar pedido.notas)

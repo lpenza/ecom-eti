@@ -295,6 +295,17 @@ app.post('/api/pedidos/revision-contacto/email-masivo', async (req, res) => {
   }
 });
 
+// Obtener pedidos con total=0 (candidatos para reclamo)
+app.get('/api/pedidos-para-reclamo', async (req, res) => {
+  try {
+    const pedidos = await supabaseService.obtenerPedidosParaReclamo();
+    res.json(Array.isArray(pedidos) ? pedidos : []);
+  } catch (error) {
+    logService.error('Error al obtener pedidos para reclamo', error);
+    res.status(500).json([]);
+  }
+});
+
 // Obtener pedidos finalizados para reclamos
 app.get('/api/pedidos-finalizados', async (req, res) => {
   try {
@@ -636,9 +647,10 @@ app.post('/api/marcar-notificado/:pedidoId', async (req, res) => {
 
     await supabaseService.actualizarPedido(pedidoId, {
       notificacion_enviada_at: new Date().toISOString(),
+      estado: 'enviado',
     });
 
-    logService.info(`Pedido ${pedidoId} marcado como notificado (WhatsApp manual)`);
+    logService.info(`Pedido ${pedidoId} marcado como notificado y enviado (WhatsApp manual)`);
 
     res.json({
       success: true,
@@ -1228,6 +1240,24 @@ app.post('/api/reclamos/:pedidoId/generar-etiqueta', async (req, res) => {
 
     logService.info(`Etiqueta de reclamo generada para pedido ${pedidoId}: ${referencia}`);
 
+    // Persistir datos del reclamo en el pedido original
+    try {
+      await supabaseService.actualizarPedido(pedidoId, {
+        es_reclamo: true,
+        etiqueta_generada: true,
+        numero_seguimiento_ues: etiqueta.numeroSeguimiento || null,
+        link_etiqueta_drive: etiqueta.urlPdf || null,
+        notificacion_enviada_at: null,
+      });
+      logService.info(`Reclamo ${referencia} persistido en pedido ${pedidoId}`);
+    } catch (dbError) {
+      logService.warning('No se pudo persistir el reclamo en DB (etiqueta generada igual)', {
+        error: dbError.message,
+        referencia,
+        pedidoId,
+      });
+    }
+
     res.json({
       success: true,
       tipo: 'reclamo',
@@ -1258,6 +1288,18 @@ app.post('/api/reclamos/:pedidoId/generar-etiqueta', async (req, res) => {
     // Error del sistema (500)
     logService.error('Error al generar etiqueta de reclamo', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Obtener reclamos pendientes de notificación
+app.get('/api/reclamos-pendientes', async (req, res) => {
+  try {
+    const reclamos = await supabaseService.obtenerReclamosPendientes();
+    logService.info(`Reclamos pendientes devueltos: ${reclamos.length}`);
+    res.json({ success: true, data: reclamos });
+  } catch (error) {
+    logService.error('Error al obtener reclamos pendientes', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
   }
 });
 
@@ -1354,6 +1396,89 @@ app.get('/api/descargar-etiqueta/:pedidoId', async (req, res) => {
   } catch (error) {
     logService.error('Error al descargar etiqueta', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Geocodificar pedido individual con Google Maps y guardar resultados
+// Geocodificar dirección del pedido con Google Maps y resolver localidad UES
+app.post('/api/pedidos/:pedidoId/geocodificar', async (req, res) => {
+  try {
+    const googleMapsService = require('./services/googleMapsService');
+    const pedido = await supabaseService.obtenerPedido(req.params.pedidoId);
+    if (!pedido) {
+      return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    }
+
+    // El frontend puede enviar el departamento_id ya seleccionado en el form
+    const departamentoIdOverride = req.body?.departamento_id ? String(req.body.departamento_id) : null;
+    const departamentoNombre = pedido.departamento || pedido.direccion_departamento;
+
+    let geoResult;
+
+    // Prioridad 1: reverse geocoding con lat/lng guardados en la BD (más preciso para barrios)
+    if (pedido.latitud && pedido.longitud) {
+      console.log(`🌍 [geocodificar] Pedido ${pedido.id} | reverse geocoding lat: ${pedido.latitud}, lng: ${pedido.longitud}`);
+      geoResult = await googleMapsService.reverseGeocodeAsync(pedido.latitud, pedido.longitud);
+    }
+
+    // Prioridad 2: geocoding por dirección si no hay coordenadas o falló el reverse
+    if (!geoResult?.exitoso) {
+      const direccion = pedido.direccion_envio || pedido.direccion_calle || '';
+      const ciudad = pedido.direccion_ciudad || departamentoNombre || 'Montevideo';
+
+      if (!direccion) {
+        return res.json({ success: false, error: 'El pedido no tiene dirección ni coordenadas' });
+      }
+
+      console.log(`🌍 [geocodificar] Pedido ${pedido.id} | geocoding por dirección: "${direccion}, ${ciudad}"`);
+      geoResult = await googleMapsService.geocodeAsync(direccion, ciudad, 'Uruguay');
+    }
+
+    console.log(`🌍 [geocodificar] Google Maps resultado:`, {
+      exitoso: geoResult.exitoso,
+      barrio: geoResult.barrio,
+      localidad: geoResult.localidad,
+      departamento: geoResult.departamento,
+      direccionFormateada: geoResult.direccionFormateada,
+    });
+
+    if (!geoResult.exitoso) {
+      return res.json({ success: false, error: 'Google Maps no pudo obtener la ubicación' });
+    }
+
+    const localidadParaBuscar = geoResult.barrio || geoResult.localidad;
+    if (!localidadParaBuscar) {
+      return res.json({
+        success: false,
+        error: 'Google Maps no retornó barrio ni localidad para esta dirección',
+        google: { barrio: geoResult.barrio, localidad: geoResult.localidad, direccionFormateada: geoResult.direccionFormateada },
+      });
+    }
+
+    console.log(`🔎 [geocodificar] Buscando en UES | localidad: "${localidadParaBuscar}" | departamento_id: ${departamentoIdOverride || '(por nombre: ' + departamentoNombre + ')'}`);
+
+    const localidadUes = await supabaseService.buscarLocalidadUesPorId(
+      localidadParaBuscar,
+      departamentoIdOverride || departamentoNombre
+    );
+
+    console.log(`✅ [geocodificar] Localidad UES encontrada:`, localidadUes);
+
+    res.json({
+      success: true,
+      data: {
+        ues_id: localidadUes.ues_id,
+        departamento_id: localidadUes.departamento_id,
+        nombre: localidadUes.nombre,
+        barrioGoogleMaps: geoResult.barrio,
+        localidadGoogleMaps: geoResult.localidad,
+        direccionFormateada: geoResult.direccionFormateada,
+      },
+    });
+  } catch (error) {
+    logService.error('Error al geocodificar pedido', error);
+    const isValidation = error.isValidationError || error.name === 'ValidationError';
+    res.status(isValidation ? 400 : 500).json({ success: false, error: error.message });
   }
 });
 

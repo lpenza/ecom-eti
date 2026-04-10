@@ -63,6 +63,7 @@ body {
   position: sticky;
   top: 0;
   height: 100vh;
+  overflow: hidden;
 }
 
 .side-nav-brand {
@@ -90,6 +91,8 @@ body {
   flex-direction: column;
   gap: 0.35rem;
   overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .side-nav-item {
@@ -245,6 +248,10 @@ body {
 
 .stat-card-contact {
   background: linear-gradient(180deg, #fff8ea 0%, #ffe7b8 100%);
+}
+
+.stat-card-reclamo {
+  background: linear-gradient(180deg, #fdf4f7 0%, #f6dde6 100%);
 }
 
 .stat-card-success {
@@ -2593,4 +2600,70 @@ body {
   .modal-body iframe {
     height: 400px !important;
   }
+}
+
+/* ==================== Reclamos Pendientes ==================== */
+
+.side-nav-badge {
+  margin-left: auto;
+  background: var(--brand-primary);
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  line-height: 1.4;
+  min-width: 1.3em;
+  text-align: center;
+}
+
+.reclamos-table-wrapper {
+  overflow-x: auto;
+  margin-top: 1rem;
+}
+
+.reclamos-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  background: var(--brand-surface);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  box-shadow: var(--brand-shadow-soft);
+}
+
+.reclamos-table th {
+  background: var(--brand-primary-soft);
+  color: var(--brand-heading);
+  font-weight: 600;
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  border-bottom: 1px solid var(--brand-border);
+  white-space: nowrap;
+}
+
+.reclamos-table td {
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--brand-border);
+  vertical-align: top;
+}
+
+.reclamos-table tr:last-child td {
+  border-bottom: none;
+}
+
+.reclamos-table tr:hover td {
+  background: var(--brand-surface-alt);
+}
+
+.reclamo-sub {
+  font-size: 0.78rem;
+  color: var(--brand-text-soft);
+  margin-top: 0.15rem;
+}
+
+.reclamo-actions {
+  display: flex;
+  gap: 0.4rem;
+  white-space: nowrap;
 }

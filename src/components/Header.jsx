@@ -40,6 +40,14 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
           <div className="stat-label">Por Validar</div>
         </button>
         <button
+          className={`stat-card stat-card-reclamo ${activeFilter === 'reclamosPendientes' ? 'stat-card-active' : ''}`}
+          onClick={() => onFilterChange?.('reclamosPendientes')}
+          type="button"
+        >
+          <div className="stat-value">{stats.reclamosPendientes || 0}</div>
+          <div className="stat-label">Reclamos Pendientes</div>
+        </button>
+        <button
           className={`stat-card stat-card-contact ${activeFilter === 'pendientesContacto' ? 'stat-card-active' : ''}`}
           onClick={() => onFilterChange?.('pendientesContacto')}
           type="button"
@@ -54,14 +62,6 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
         >
           <div className="stat-value">{stats.etiquetasGeneradas}</div>
           <div className="stat-label">Etiquetas Generadas</div>
-        </button>
-        <button
-          className={`stat-card stat-card-success ${activeFilter === 'pendientesFulfillment' ? 'stat-card-active' : ''}`}
-          onClick={() => onFilterChange?.('pendientesFulfillment')}
-          type="button"
-        >
-          <div className="stat-value">{stats.pendientesFulfillment}</div>
-          <div className="stat-label">Pendientes Envio Tracking</div>
         </button>
         <button
           className={`stat-card stat-card-danger ${activeFilter === 'revisionManual' ? 'stat-card-active' : ''}`}
