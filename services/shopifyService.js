@@ -54,6 +54,11 @@ class ShopifyService {
       const orders = response.data.orders || [];
       return orders[0]?.id || null;
     } catch (error) {
+      if (error.response?.status === 401) {
+        throw new Error(
+          `Autenticación rechazada por Shopify (401) — verificar SHOPIFY_ACCESS_TOKEN y SHOPIFY_DOMAIN en el archivo .env`
+        );
+      }
       throw new Error(`Error buscando orden #${numeroPedido}: ${error.message}`);
     }
   }
@@ -116,7 +121,14 @@ class ShopifyService {
 
       return response.data.fulfillment;
     } catch (error) {
-      throw new Error(`Error marcando orden como cumplida: ${error.message}`);
+      const shopifyBody = error.response?.data;
+      const httpStatus = error.response?.status;
+      const detalle = shopifyBody
+        ? JSON.stringify(shopifyBody)
+        : error.message;
+      throw new Error(
+        `Error marcando orden como cumplida (HTTP ${httpStatus ?? 'N/A'}): ${detalle}`
+      );
     }
   }
 
@@ -156,6 +168,28 @@ class ShopifyService {
       return response.data.products;
     } catch (error) {
       throw new Error(`Error obteniendo productos: ${error.message}`);
+    }
+  }
+
+  // Agregar un tag a una orden de Shopify (no duplica si ya existe)
+  async agregarTagAOrden(orderId, tag) {
+    try {
+      const response = await axios.get(
+        `${this.baseUrl}/orders/${orderId}.json`,
+        { headers: this.getHeaders(), params: { fields: 'id,tags' } }
+      );
+      const currentTags = response.data.order?.tags || '';
+      const tagsArray = currentTags.split(',').map((t) => t.trim()).filter(Boolean);
+      if (tagsArray.includes(tag)) return; // ya tiene el tag
+      tagsArray.push(tag);
+      await axios.put(
+        `${this.baseUrl}/orders/${orderId}.json`,
+        { order: { id: orderId, tags: tagsArray.join(', ') } },
+        { headers: this.getHeaders() }
+      );
+    } catch (error) {
+      const status = error.response?.status;
+      throw new Error(`Error agregando tag "${tag}" a orden ${orderId} (HTTP ${status ?? 'N/A'}): ${error.message}`);
     }
   }
 

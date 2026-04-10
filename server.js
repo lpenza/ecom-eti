@@ -58,6 +58,42 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Diagnóstico de conexión con Shopify
+app.get('/api/shopify/test', async (req, res) => {
+  const domain = process.env.SHOPIFY_DOMAIN || '';
+  const token = process.env.SHOPIFY_ACCESS_TOKEN || '';
+  const tokenPreview = token ? `${token.slice(0, 10)}...${token.slice(-4)}` : '(no configurado)';
+
+  try {
+    const response = await axios.get(
+      `https://${domain}/admin/api/2024-01/shop.json`,
+      { headers: { 'X-Shopify-Access-Token': token, 'Content-Type': 'application/json' } }
+    );
+    res.json({
+      ok: true,
+      domain,
+      tokenPreview,
+      shopName: response.data?.shop?.name,
+      shopEmail: response.data?.shop?.email,
+    });
+  } catch (error) {
+    const status = error.response?.status;
+    const body = error.response?.data;
+    res.status(200).json({
+      ok: false,
+      domain,
+      tokenPreview,
+      httpStatus: status,
+      error: status === 401
+        ? 'Token inválido o revocado — generá un nuevo token en Shopify Admin → Apps → tu app → API credentials'
+        : status === 404
+        ? 'Dominio no encontrado — verificar SHOPIFY_DOMAIN en .env'
+        : error.message,
+      shopifyResponse: body || null,
+    });
+  }
+});
+
 // Obtener pedidos activos (pendientes + etiqueta generada, excluye procesados)
 app.get('/api/pedidos', async (req, res) => {
   try {
@@ -449,9 +485,19 @@ app.post('/api/ues/regenerar-cache', async (req, res) => {
 // Sincronizar con Shopify (alias para React)
 app.post('/api/sync-shopify', async (req, res) => {
   try {
-    const ordenes = await shopifyService.obtenerOrdenes();
+    const [ordenes, existingIds] = await Promise.all([
+      shopifyService.obtenerOrdenes(),
+      supabaseService.obtenerShopifyOrderIds(),
+    ]);
+    const ordenesNuevas = ordenes.filter((o) => !existingIds.has(String(o.id)));
     const resultado = await supabaseService.sincronizarOrdenes(ordenes);
-    logService.info(`Sincronizados ${resultado.length} pedidos desde Shopify`);
+    logService.info(`Sincronizados ${resultado.length} pedidos desde Shopify (${ordenesNuevas.length} nuevos)`);
+    // Agregar tag "ETIQUETA CREADA" a pedidos nuevos (best-effort)
+    for (const orden of ordenesNuevas) {
+      shopifyService.agregarTagAOrden(orden.id, 'ETIQUETA CREADA').catch((e) =>
+        logService.warning(`No se pudo agregar tag a orden ${orden.id}: ${e.message}`)
+      );
+    }
     res.json({ success: true, count: resultado.length });
   } catch (error) {
     logService.error('Error al sincronizar Shopify', error);
@@ -462,9 +508,18 @@ app.post('/api/sync-shopify', async (req, res) => {
 // Sincronizar con Shopify (ruta legacy)
 app.post('/api/sincronizar-shopify', async (req, res) => {
   try {
-    const ordenes = await shopifyService.obtenerOrdenes();
+    const [ordenes, existingIds] = await Promise.all([
+      shopifyService.obtenerOrdenes(),
+      supabaseService.obtenerShopifyOrderIds(),
+    ]);
+    const ordenesNuevas = ordenes.filter((o) => !existingIds.has(String(o.id)));
     const resultado = await supabaseService.sincronizarOrdenes(ordenes);
-    logService.info(`Sincronizados ${resultado.length} pedidos desde Shopify`);
+    logService.info(`Sincronizados ${resultado.length} pedidos desde Shopify (${ordenesNuevas.length} nuevos)`);
+    for (const orden of ordenesNuevas) {
+      shopifyService.agregarTagAOrden(orden.id, 'ETIQUETA CREADA').catch((e) =>
+        logService.warning(`No se pudo agregar tag a orden ${orden.id}: ${e.message}`)
+      );
+    }
     res.json({ success: true, data: resultado });
   } catch (error) {
     logService.error('Error al sincronizar Shopify', error);
@@ -497,11 +552,17 @@ async function handleFulfillmentShopify(req, res) {
         // Resolver shopify_order_id si no está guardado en DB
         let shopifyOrderId = pedido.shopify_order_id;
         if (!shopifyOrderId && pedido.numero_pedido) {
+          logService.info(`Resolviendo shopify_order_id para pedido #${pedido.numero_pedido}...`);
           shopifyOrderId = await shopifyService.obtenerIdPorNumeroPedido(pedido.numero_pedido);
           if (!shopifyOrderId) {
             throw new Error(`No se encontró la orden #${pedido.numero_pedido} en Shopify`);
           }
+          logService.info(`shopify_order_id resuelto: ${shopifyOrderId} para pedido #${pedido.numero_pedido}`);
+          // Persistir para no tener que buscarlo de nuevo
+          supabaseService.actualizarPedido(pedido.id, { shopify_order_id: String(shopifyOrderId) }).catch(() => {});
         }
+
+        logService.info(`Fulfillment pedido #${pedido.numero_pedido} | shopifyOrderId=${shopifyOrderId} | tracking=${pedido.numero_seguimiento_ues}`);
 
         const fulfillment = await shopifyService.marcarComoCumplida(
           shopifyOrderId,
@@ -513,6 +574,13 @@ async function handleFulfillmentShopify(req, res) {
           notificacion_enviada_at: new Date().toISOString(),
         });
 
+        logService.info(`✅ Fulfillment OK pedido #${pedido.numero_pedido} | fulfillmentId=${fulfillment?.id || 'N/A'}`);
+
+        // Tag DESPACHADO en Shopify (best-effort)
+        shopifyService.agregarTagAOrden(shopifyOrderId, 'DESPACHADO').catch((e) =>
+          logService.warning(`No se pudo agregar tag DESPACHADO a orden ${shopifyOrderId}: ${e.message}`)
+        );
+
         resultados.push({
           pedidoId: pedido.id,
           shopifyOrderId,
@@ -521,8 +589,13 @@ async function handleFulfillmentShopify(req, res) {
           pedido: pedido // Devolver pedido completo para generar links de WhatsApp
         });
       } catch (error) {
+        logService.error(`❌ Fulfillment FALLÓ pedido #${pedido.numero_pedido} | shopifyOrderId=${pedido.shopify_order_id || 'N/A'} | tracking=${pedido.numero_seguimiento_ues}`, {
+          mensaje: error.message,
+          stack: error.stack,
+        });
         resultados.push({
           pedidoId: pedido.id,
+          numeroPedido: pedido.numero_pedido,
           shopifyOrderId: pedido.shopify_order_id || null,
           success: false,
           error: error.message,
@@ -652,6 +725,13 @@ app.post('/api/marcar-notificado/:pedidoId', async (req, res) => {
 
     logService.info(`Pedido ${pedidoId} marcado como notificado y enviado (WhatsApp manual)`);
 
+    // Agregar tag DESPACHADO en Shopify (best-effort)
+    if (pedido.shopify_order_id) {
+      shopifyService.agregarTagAOrden(pedido.shopify_order_id, 'DESPACHADO').catch((e) =>
+        logService.warning(`No se pudo agregar tag DESPACHADO a orden ${pedido.shopify_order_id}: ${e.message}`)
+      );
+    }
+
     res.json({
       success: true,
       pedidoId,
@@ -659,6 +739,19 @@ app.post('/api/marcar-notificado/:pedidoId', async (req, res) => {
     });
   } catch (error) {
     logService.error('Error al marcar pedido como notificado', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Marcar etiqueta como impresa
+app.post('/api/marcar-impresa/:pedidoId', async (req, res) => {
+  try {
+    const { pedidoId } = req.params;
+    await supabaseService.actualizarPedido(pedidoId, { etiqueta_impresa: true });
+    logService.info(`Etiqueta marcada como impresa para pedido ${pedidoId}`);
+    res.json({ success: true, pedidoId });
+  } catch (error) {
+    logService.error('Error al marcar etiqueta como impresa', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1299,6 +1392,17 @@ app.get('/api/reclamos-pendientes', async (req, res) => {
     res.json({ success: true, data: reclamos });
   } catch (error) {
     logService.error('Error al obtener reclamos pendientes', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+// Obtener pedidos ya procesados/enviados
+app.get('/api/pedidos-enviados', async (req, res) => {
+  try {
+    const pedidos = await supabaseService.obtenerPedidosEnviados();
+    res.json({ success: true, data: pedidos });
+  } catch (error) {
+    logService.error('Error al obtener pedidos enviados', error);
     res.status(500).json({ success: false, data: [], error: error.message });
   }
 });

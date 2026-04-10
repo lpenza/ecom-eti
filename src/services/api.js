@@ -107,6 +107,13 @@ export async function marcarPedidoNotificado(pedidoId) {
 }
 
 /**
+ * Marcar etiqueta como impresa
+ */
+export async function marcarEtiquetaImpresa(pedidoId) {
+  return await fetchAPI(`/marcar-impresa/${pedidoId}`, { method: 'POST' });
+}
+
+/**
  * Marcar/desmarcar pedido como pendiente de contacto con cliente
  */
 export async function actualizarRevisionContacto(pedidoId, { pendiente, motivo = '' } = {}) {
@@ -343,6 +350,16 @@ export async function activarPlantilla(id) {
 export async function inicializarPlantillas() {
   const response = await fetchAPI('/templates/initialize', { method: 'POST' });
   return response.data || [];
+}
+
+// ==================== PEDIDOS PROCESADOS ====================
+
+/**
+ * Obtener pedidos ya enviados/procesados
+ */
+export async function obtenerPedidosEnviados() {
+  const data = await fetchAPI('/pedidos-enviados', { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
 }
 
 // ==================== RECLAMOS PENDIENTES ====================

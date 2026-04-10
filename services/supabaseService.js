@@ -506,6 +506,24 @@ class SupabaseService {
     }, 0);
   }
 
+  // Obtener pedidos ya enviados/procesados (estado='enviado' o con notificacion_enviada_at)
+  async obtenerPedidosEnviados() {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .or('estado.eq.enviado,notificacion_enviada_at.not.is.null')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Obtener todos los shopify_order_id existentes en DB (para detectar pedidos nuevos en sync)
+  async obtenerShopifyOrderIds() {
+    const { data } = await supabase.from('pedidos').select('shopify_order_id');
+    return new Set((data || []).map((p) => String(p.shopify_order_id)).filter(Boolean));
+  }
+
   // Obtener reclamos pendientes de notificación (es_reclamo=true, etiqueta generada, sin notificar)
   async obtenerReclamosPendientes() {
     const { data, error } = await supabase

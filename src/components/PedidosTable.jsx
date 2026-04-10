@@ -182,11 +182,17 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
     });
   };
 
+  const esReclamo = Boolean(pedido.es_reclamo);
+  const rowClass = [
+    fueNotificado ? 'pedidos-row-notified' : '',
+    esReclamo ? 'pedidos-row-reclamo' : '',
+  ].filter(Boolean).join(' ');
+
   return (
-    <tr className={fueNotificado ? 'pedidos-row-notified' : ''}>
+    <tr className={rowClass}>
       <td>
-        <input 
-          type="checkbox" 
+        <input
+          type="checkbox"
           checked={isSelected}
           onChange={onToggleSelect}
         />
@@ -195,6 +201,8 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
         <span className="pedido-number-cell">
           {fueNotificado && <span className="pedido-notified-check">✓</span>}
           <span>{pedido.numero_pedido || pedido.id?.substring(0, 8)}</span>
+          {esReclamo && <span className="pedido-reclamo-badge" title="Pedido con reclamo asociado">🔄 Reclamo</span>}
+          {pedido.etiqueta_impresa && <span className="pedido-impresa-badge" title="Etiqueta ya impresa">🖨️</span>}
         </span>
       </td>
       <td>{pedido.cliente_nombre || 'Sin nombre'}</td>

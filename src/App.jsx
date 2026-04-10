@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import Header from './components/Header';
 import Toolbar from './components/Toolbar';
 import PedidosTable from './components/PedidosTable';
@@ -22,6 +22,8 @@ import {
   regenerarCacheUES,
   obtenerEstadoCacheUES,
   obtenerReclamosPendientes,
+  obtenerPedidosEnviados,
+  marcarEtiquetaImpresa,
 } from './services/api';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
@@ -99,6 +101,9 @@ function App() {
   const [previewMode, setPreviewMode] = useState('normal'); // 'normal' | 'reclamo'
   const [reclamosPendientes, setReclamosPendientes] = useState([]);
   const [reclamosPendientesLoading, setReclamosPendientesLoading] = useState(false);
+  const [pedidosEnviadosList, setPedidosEnviadosList] = useState([]);
+  const [pedidosEnviadosLoaded, setPedidosEnviadosLoaded] = useState(false);
+  const [pedidosEnviadosLoading, setPedidosEnviadosLoading] = useState(false);
   const [templates, setTemplates] = useState([]);
   const [activeTemplateId, setActiveTemplateId] = useState('');
   const [activeTrackingTemplateId, setActiveTrackingTemplateId] = useState('');
@@ -209,7 +214,7 @@ function App() {
     pendientesFulfillment: pedidosListosFulfillment.length,
     whatsappTracking: pedidosTrackingWhatsApp.length,
     revisionManual: pedidosRevisionManual.length,
-    enviados: pedidosEnviados.length,
+    enviados: pedidosEnviadosList.length,
     trackingAlert: hayDescuadreTracking || pedidosRevisionManual.length > 0,
     trackingBreakdown: {
       total: pedidosConEtiqueta.length,
@@ -229,7 +234,7 @@ function App() {
     }
     if (tableFilter === 'pendientesFulfillment') return pedidosListosFulfillment;
     if (tableFilter === 'revisionManual') return pedidosRevisionManual;
-    if (tableFilter === 'enviados') return pedidosEnviados;
+    if (tableFilter === 'enviados') return pedidosEnviadosList;
     return pedidosPendientesValidables;
   })();
 
@@ -417,6 +422,24 @@ function App() {
 
     return () => { cancelled = true; };
   }, []);
+
+  // Cargar pedidos enviados/procesados
+  const cargarPedidosEnviados = useCallback(async () => {
+    setPedidosEnviadosLoading(true);
+    try {
+      const data = await obtenerPedidosEnviados();
+      setPedidosEnviadosList(Array.isArray(data) ? data : []);
+      setPedidosEnviadosLoaded(true);
+    } catch (error) {
+      console.error('❌ Error cargando pedidos enviados:', error);
+    } finally {
+      setPedidosEnviadosLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    cargarPedidosEnviados();
+  }, [cargarPedidosEnviados]);
 
   // Confirmación desde modal (uno o múltiples pedidos)
   const handleConfirmarGeneracion = async (items) => {
@@ -796,6 +819,7 @@ function App() {
       }
 
       await cargarPedidos(); // Recargar lista de pedidos
+      cargarPedidosEnviados(); // Actualizar procesados
     } catch (error) {
       console.error('Error en fulfillment:', error);
       mostrarToast('Error al procesar fulfillment', 'error');
@@ -936,6 +960,10 @@ function App() {
     document.body.appendChild(a);
     a.click();
     a.remove();
+
+    marcarEtiquetaImpresa(pedidoId)
+      .then(() => cargarPedidos())
+      .catch(() => {});
   };
 
   const handleDescargarEtiquetasSeleccionadas = async () => {
@@ -981,6 +1009,10 @@ function App() {
       if (pedidosSinPdf.length > 0) {
         mostrarToast(`Descarga combinada lista (${pdfUrls.length} etiquetas). ${pedidosSinPdf.length} pedido(s) sin PDF.`, 'warning');
       }
+
+      Promise.all(pedidosSeleccionadosConEtiquetaDescargable.map((p) => marcarEtiquetaImpresa(p.id)))
+        .then(() => cargarPedidos())
+        .catch(() => {});
     } catch (error) {
       console.error('Error combinando etiquetas seleccionadas:', error);
       mostrarToast('No se pudieron combinar las etiquetas seleccionadas', 'error');
@@ -1220,6 +1252,7 @@ function App() {
     try {
       await marcarPedidoNotificado(reclamo.id);
       setReclamosPendientes((prev) => prev.filter((r) => r.id !== reclamo.id));
+      cargarPedidosEnviados();
       mostrarToast(`✅ Reclamo notificado y marcado`, 'success');
     } catch {
       mostrarToast('WhatsApp abierto, pero no se pudo marcar como notificado', 'warning');
@@ -1520,7 +1553,7 @@ function App() {
               onToggleSelectAll={toggleSelectAll}
               onReenviarNotificacion={handleReenviarNotificacion}
               onContactarPendiente={handleContactarPendienteRapido}
-              onMarcarNotificado={marcarPedidoNotificado}
+              onMarcarNotificado={async (pedidoId) => { await marcarPedidoNotificado(pedidoId); cargarPedidosEnviados(); }}
               onDescargarEtiqueta={handleDescargarEtiqueta}
               onDescartarEtiqueta={handleDescartarEtiqueta}
               fulfillmentPreview={fulfillmentPreviewIds !== null}

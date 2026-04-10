@@ -77,7 +77,7 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
           type="button"
         >
           <div className="stat-value">{stats.enviados || 0}</div>
-          <div className="stat-label">✔️ Notificados</div>
+          <div className="stat-label">✅ Procesados</div>
         </button>
       </div>
       {stats.trackingAlert && (
