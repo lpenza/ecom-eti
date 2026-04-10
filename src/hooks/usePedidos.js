@@ -275,7 +275,8 @@ export function usePedidos() {
                 ...p, 
                 estado: 'etiqueta_generada', 
                 numero_seguimiento_ues: result.tracking,
-                etiqueta_generada: true
+                etiqueta_generada: true,
+                link_etiqueta_drive: result.pdfUrl || p.link_etiqueta_drive || null,
               }
             : p
         )
@@ -292,6 +293,40 @@ export function usePedidos() {
       return { success: false, error: error.message };
     } finally {
       setLoading(false);
+    }
+  }, []);
+
+  const consolidarEtiqueta = useCallback(async (pedidoId, data = {}) => {
+    console.log(`🔗 Consolidando etiqueta para pedido ${pedidoId}...`);
+
+    try {
+      const result = await api.consolidarEtiquetaExistente(pedidoId, data);
+
+      setPedidos(prevPedidos =>
+        prevPedidos.map(p => {
+          if (p.id !== pedidoId) return p;
+
+          const sourcePedido = prevPedidos.find((it) => it.id === data?.sourcePedidoId);
+          const pdfFallback = result.pdfUrl || data.pdfUrl || sourcePedido?.link_etiqueta_drive || p.link_etiqueta_drive || null;
+
+          return {
+            ...p,
+            estado: 'etiqueta_generada',
+            numero_seguimiento_ues: result.tracking || data.tracking || sourcePedido?.numero_seguimiento_ues || p.numero_seguimiento_ues,
+            etiqueta_generada: true,
+            link_etiqueta_drive: pdfFallback,
+          };
+        })
+      );
+
+      return {
+        success: true,
+        tracking: result.tracking || data.tracking || null,
+        pdfUrl: result.pdfUrl || data.pdfUrl || null,
+      };
+    } catch (error) {
+      console.error('❌ Error consolidando etiqueta:', error);
+      return { success: false, error: error.message };
     }
   }, []);
 
@@ -424,6 +459,7 @@ export function usePedidos() {
     enviarEmailMasivoPendientesContacto,
     descartarEtiqueta,
     generarEtiqueta,
+    consolidarEtiqueta,
     generarEtiquetaReclamo,
     generarEtiquetaColaboracion,
     generarEtiquetasMasivo,

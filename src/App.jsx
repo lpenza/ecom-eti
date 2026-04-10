@@ -66,6 +66,7 @@ function App() {
     enviarEmailMasivoPendientesContacto,
     descartarEtiqueta,
     generarEtiqueta,
+    consolidarEtiqueta,
     generarEtiquetaReclamo,
     generarEtiquetaColaboracion,
     limpiarSeleccion,
@@ -430,13 +431,96 @@ function App() {
     let exitososSinPdf = 0;
     const totalMarcados = items.length;
 
-    for (const item of items) {
-      const resultado = await generarEtiqueta(item.pedidoId, item.payloadOverrides || null);
+    const itemById = new Map(items.map((item) => [item.pedidoId, item]));
+    const pedidoById = new Map(pedidos.map((p) => [p.id, p]));
+    const resultadosPorPedidoId = new Map();
+    const pedidosBase = items.filter((item) => !item.consolidarConPedidoId);
+    const pedidosConsolidados = items.filter((item) => !!item.consolidarConPedidoId);
+
+    const grupoPorPrincipal = new Map();
+    pedidosConsolidados.forEach((item) => {
+      const principalId = item.consolidarConPedidoId;
+      if (!principalId) return;
+      if (!grupoPorPrincipal.has(principalId)) {
+        grupoPorPrincipal.set(principalId, new Set([principalId]));
+      }
+      grupoPorPrincipal.get(principalId).add(item.pedidoId);
+    });
+
+    const indexEnSeleccion = new Map(items.map((item, idx) => [item.pedidoId, idx]));
+
+    const resolverReferenciaPedido = (pedidoId) => {
+      const item = itemById.get(pedidoId);
+      const referenciaOverride = String(item?.payloadOverrides?.payloadEnvio?.referencia || '').trim();
+      if (referenciaOverride) return referenciaOverride;
+
+      const pedidoData = pedidoById.get(pedidoId);
+      return String(pedidoData?.numero_pedido || pedidoData?.id || pedidoId || '').trim();
+    };
+
+    for (const item of pedidosBase) {
+      let payloadOverridesFinal = item.payloadOverrides || null;
+      const grupo = grupoPorPrincipal.get(item.pedidoId);
+
+      if (grupo && grupo.size > 1) {
+        const refsConsolidadas = Array.from(grupo)
+          .sort((a, b) => (indexEnSeleccion.get(a) ?? Number.MAX_SAFE_INTEGER) - (indexEnSeleccion.get(b) ?? Number.MAX_SAFE_INTEGER))
+          .map((pedidoId) => resolverReferenciaPedido(pedidoId))
+          .filter(Boolean);
+
+        if (refsConsolidadas.length > 1) {
+          const referenciaConsolidada = refsConsolidadas.join('/');
+          payloadOverridesFinal = {
+            ...(item.payloadOverrides || {}),
+            payloadEnvio: {
+              ...(item.payloadOverrides?.payloadEnvio || {}),
+              referencia: referenciaConsolidada,
+            },
+            guia: {
+              ...(item.payloadOverrides?.guia || {}),
+              comentario: referenciaConsolidada,
+            },
+          };
+        }
+      }
+
+      const resultado = await generarEtiqueta(item.pedidoId, payloadOverridesFinal);
+      resultadosPorPedidoId.set(item.pedidoId, resultado);
+
       if (resultado.success) {
         exitosos += 1;
         if (resultado.pdfUrl) {
           pdfUrlsExitosas.push(resultado.pdfUrl);
         } else {
+          exitososSinPdf += 1;
+        }
+      } else {
+        fallidos += 1;
+      }
+    }
+
+    for (const item of pedidosConsolidados) {
+      const principalId = item.consolidarConPedidoId;
+      const resultadoPrincipal = resultadosPorPedidoId.get(principalId);
+      const principalItem = itemById.get(principalId);
+
+      if (!resultadoPrincipal?.success) {
+        fallidos += 1;
+        continue;
+      }
+
+      const consolidado = await consolidarEtiqueta(item.pedidoId, {
+        sourcePedidoId: principalId,
+        tracking: resultadoPrincipal.tracking,
+        pdfUrl: resultadoPrincipal.pdfUrl || null,
+        tipoEntrega: principalItem?.payloadOverrides?.tipoEntrega || 'domicilio',
+        puntoRetiroId: principalItem?.payloadOverrides?.puntoRetiroId || null,
+        puntoRetiroNombre: principalItem?.payloadOverrides?.puntoRetiroNombre || '',
+      });
+
+      if (consolidado.success) {
+        exitosos += 1;
+        if (!consolidado.pdfUrl) {
           exitososSinPdf += 1;
         }
       } else {

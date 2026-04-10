@@ -36,6 +36,190 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
 
   const isBatch = pedidos.length > 1;
   const checkedCount = Object.values(formsByPedidoId).filter((f) => f?.checked).length;
+  const [consolidacionConfigByGroup, setConsolidacionConfigByGroup] = useState({});
+
+  const consolidacionSugerida = useMemo(() => {
+    if (!isBatch || !Array.isArray(pedidos) || pedidos.length < 2) return [];
+
+    const normalizePhone = (value) => {
+      const digits = String(value || '').replace(/\D/g, '');
+      if (!digits) return '';
+
+      // Normaliza teléfonos UY para comparar local vs internacional.
+      // Ej: 099243970 -> 99243970, 59899243970 -> 99243970
+      let normalized = digits;
+      if (normalized.startsWith('598') && normalized.length >= 11) {
+        normalized = normalized.slice(3);
+      }
+      if (normalized.startsWith('0') && normalized.length >= 9) {
+        normalized = normalized.slice(1);
+      }
+      return normalized;
+    };
+    const normalizeEmail = (value) => String(value || '').trim().toLowerCase();
+    const n = pedidos.length;
+    const parent = Array.from({ length: n }, (_, i) => i);
+
+    const find = (x) => {
+      let p = x;
+      while (parent[p] !== p) {
+        parent[p] = parent[parent[p]];
+        p = parent[p];
+      }
+      return p;
+    };
+
+    const union = (a, b) => {
+      const ra = find(a);
+      const rb = find(b);
+      if (ra !== rb) parent[rb] = ra;
+    };
+
+    const linksByKey = new Map();
+    pedidos.forEach((pedido, idx) => {
+      const estado = String(pedido?.estado || '').trim().toLowerCase();
+      if (!estado) return;
+
+      const phone = normalizePhone(pedido?.cliente_telefono);
+      const email = normalizeEmail(pedido?.cliente_email);
+
+      if (phone.length >= 8) {
+        const key = `estado:${estado}|phone:${phone}`;
+        const arr = linksByKey.get(key) || [];
+        arr.push(idx);
+        linksByKey.set(key, arr);
+      }
+
+      if (email) {
+        const key = `estado:${estado}|email:${email}`;
+        const arr = linksByKey.get(key) || [];
+        arr.push(idx);
+        linksByKey.set(key, arr);
+      }
+    });
+
+    for (const arr of linksByKey.values()) {
+      if (arr.length < 2) continue;
+      const first = arr[0];
+      for (let i = 1; i < arr.length; i++) {
+        union(first, arr[i]);
+      }
+    }
+
+    const groupsByRoot = new Map();
+    pedidos.forEach((_, idx) => {
+      const root = find(idx);
+      const arr = groupsByRoot.get(root) || [];
+      arr.push(idx);
+      groupsByRoot.set(root, arr);
+    });
+
+    const sugerencias = [];
+    for (const indexList of groupsByRoot.values()) {
+      if (indexList.length < 2) continue;
+
+      const idsOrdenados = indexList
+        .map((i) => pedidos[i]?.id)
+        .filter(Boolean)
+        .sort((a, b) => {
+          const ia = pedidos.findIndex((p) => p.id === a);
+          const ib = pedidos.findIndex((p) => p.id === b);
+          return ia - ib;
+        });
+
+      if (idsOrdenados.length < 2) continue;
+
+      const groupId = idsOrdenados.join('|');
+      sugerencias.push({
+        groupId,
+        pedidoIds: idsOrdenados,
+        defaultPrincipalId: idsOrdenados[0],
+      });
+    }
+
+    return sugerencias;
+  }, [pedidos, isBatch]);
+
+  useEffect(() => {
+    if (consolidacionSugerida.length === 0) {
+      setConsolidacionConfigByGroup({});
+      return;
+    }
+
+    setConsolidacionConfigByGroup((prev) => {
+      const next = {};
+      consolidacionSugerida.forEach((group) => {
+        const previous = prev[group.groupId];
+        next[group.groupId] = {
+          enabled: previous?.enabled || false,
+          principalId: group.pedidoIds.includes(previous?.principalId)
+            ? previous.principalId
+            : group.defaultPrincipalId,
+        };
+      });
+      return next;
+    });
+  }, [consolidacionSugerida]);
+
+  const pedidosConsolidadosOcultos = useMemo(() => {
+    const hidden = new Set();
+    consolidacionSugerida.forEach((group) => {
+      const config = consolidacionConfigByGroup[group.groupId];
+      if (!config?.enabled) return;
+
+      const principalId = config.principalId || group.defaultPrincipalId;
+      group.pedidoIds.forEach((pedidoId) => {
+        if (pedidoId !== principalId) hidden.add(pedidoId);
+      });
+    });
+    return hidden;
+  }, [consolidacionSugerida, consolidacionConfigByGroup]);
+
+  const pedidosVisibles = useMemo(() => {
+    if (!isBatch) return pedidos;
+    return pedidos.filter((pedido) => !pedidosConsolidadosOcultos.has(pedido.id));
+  }, [isBatch, pedidos, pedidosConsolidadosOcultos]);
+
+  const visibleIndexes = useMemo(() => (
+    pedidos
+      .map((pedido, index) => ({ pedido, index }))
+      .filter(({ pedido }) => !pedidosConsolidadosOcultos.has(pedido.id))
+      .map(({ index }) => index)
+  ), [pedidos, pedidosConsolidadosOcultos]);
+
+  const currentVisiblePos = useMemo(() => {
+    if (!isBatch) return currentIndex;
+    return visibleIndexes.indexOf(currentIndex);
+  }, [isBatch, currentIndex, visibleIndexes]);
+
+  const consolidacionGroupByPedidoId = useMemo(() => {
+    const map = new Map();
+    consolidacionSugerida.forEach((group) => {
+      group.pedidoIds.forEach((pedidoId) => map.set(pedidoId, group));
+    });
+    return map;
+  }, [consolidacionSugerida]);
+
+  const currentConsolidacionGroup = currentPedido
+    ? consolidacionGroupByPedidoId.get(currentPedido.id) || null
+    : null;
+
+  const currentConsolidacionConfig = currentConsolidacionGroup
+    ? (consolidacionConfigByGroup[currentConsolidacionGroup.groupId]
+      || { enabled: false, principalId: currentConsolidacionGroup.defaultPrincipalId })
+    : null;
+
+  useEffect(() => {
+    if (!isBatch) return;
+    const current = pedidos[currentIndex];
+    if (!current) return;
+    if (!pedidosConsolidadosOcultos.has(current.id)) return;
+
+    const firstVisibleIndex = visibleIndexes[0];
+    if (typeof firstVisibleIndex === 'number') {
+      setCurrentIndex(firstVisibleIndex);
+    }
+  }, [isBatch, pedidos, currentIndex, pedidosConsolidadosOcultos, visibleIndexes]);
 
   const getFormValidation = (form) => {
     if (!form) {
@@ -47,25 +231,22 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
 
     const tipoEntrega = form.tipoEntrega || 'domicilio';
 
-    // Si es envío a domicilio, requiere dirección completa
     if (tipoEntrega === 'domicilio') {
       if (!String(form.payloadDireccion?.calle || '').trim()) blockers.push('Falta calle');
-      
+
       const nroPuerta = String(form.payloadDireccion?.nro_puerta || '').trim();
       if (!nroPuerta || nroPuerta.toLowerCase() === 's/n') {
         blockers.push('Falta número de puerta');
       }
-      
+
       if (!String(form.payloadDireccion?.departamento_id || '').trim()) blockers.push('Falta departamento');
       if (!String(form.payloadDireccion?.localidad_id || '').trim()) blockers.push('Falta localidad');
     } else if (tipoEntrega === 'pickup') {
-      // Si es pickup, solo requiere punto de retiro
       if (!form.puntoRetiroId) blockers.push('Falta seleccionar punto de retiro');
     }
 
     if (!String(form.payloadEnvio?.nombre_recibe || '').trim()) blockers.push('Falta nombre destinatario');
     if (!String(form.payloadEnvio?.telefono_recibe || '').trim()) blockers.push('Falta teléfono destinatario');
-
     if (!String(form.payloadEnvio?.email_recibe || '').trim()) warnings.push('Sin email destinatario');
 
     return { blockers, warnings };
@@ -484,12 +665,28 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
   };
 
   const handleConfirmClick = () => {
+    const groupByPedidoId = {};
+    consolidacionSugerida.forEach((group) => {
+      group.pedidoIds.forEach((pedidoId) => {
+        groupByPedidoId[pedidoId] = group;
+      });
+    });
+
     const items = pedidos.map((pedido) => {
       const form = formsByPedidoId[pedido.id];
-      const validation = getFormValidation(form);
       const pendienteContacto = Boolean(form?.revision_contacto_pendiente);
-      const blockers = [...validation.blockers];
-      if (pendienteContacto) {
+      const group = groupByPedidoId[pedido.id] || null;
+      const groupConfig = group ? consolidacionConfigByGroup[group.groupId] : null;
+      const principalId = groupConfig?.principalId || group?.defaultPrincipalId || null;
+      const consolidarConPedidoId = groupConfig?.enabled && principalId && pedido.id !== principalId
+        ? principalId
+        : null;
+      const isConsolidadoSecundario = Boolean(consolidarConPedidoId);
+      const validation = getFormValidation(form);
+      const blockers = isConsolidadoSecundario ? [] : [...validation.blockers];
+      const principalChecked = principalId ? !!formsByPedidoId[principalId]?.checked : false;
+
+      if (pendienteContacto && !isConsolidadoSecundario) {
         blockers.push('Pendiente de contacto con cliente');
       }
       const payloadOverrides = form ? {
@@ -503,9 +700,12 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
 
       return {
         pedidoId: pedido.id,
-        checked: !!form?.checked && !pendienteContacto,
-        bypassValidation: !!form?.bypassValidation,
+        checked: isConsolidadoSecundario
+          ? principalChecked
+          : (!!form?.checked && !pendienteContacto),
+        bypassValidation: isConsolidadoSecundario ? true : !!form?.bypassValidation,
         blockers,
+        consolidarConPedidoId,
         payloadOverrides: payloadOverrides,
       };
     });
@@ -522,6 +722,15 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     );
     if (withBlockers.length > 0) {
       setValidationError(`Hay ${withBlockers.length} pedido(s) con errores bloqueantes.`);
+      return;
+    }
+
+    const checkedIds = new Set(checkedItems.map((item) => item.pedidoId));
+    const consolidacionInvalida = checkedItems.find((item) => (
+      item.consolidarConPedidoId && !checkedIds.has(item.consolidarConPedidoId)
+    ));
+    if (consolidacionInvalida) {
+      setValidationError('Si activas consolidación, también debes marcar como revisado el pedido principal del grupo.');
       return;
     }
 
@@ -621,6 +830,13 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
       }
     }
 
+    if (isBatch) {
+      if (currentVisiblePos >= 0 && currentVisiblePos < visibleIndexes.length - 1) {
+        setCurrentIndex(visibleIndexes[currentVisiblePos + 1]);
+      }
+      return;
+    }
+
     if (currentIndex < pedidos.length - 1) {
       setCurrentIndex((i) => i + 1);
     }
@@ -690,14 +906,38 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
         <div className="preview-topbar">
           {!isReclamoMode && (
             <div className="preview-counter">
-              Pedido {currentIndex + 1} de {pedidos.length}
+              Pedido {isBatch ? Math.max(currentVisiblePos + 1, 1) : currentIndex + 1} de {isBatch ? pedidosVisibles.length : pedidos.length}
             </div>
           )}
           <div className="preview-nav-actions">
             {!isReclamoMode && (
               <>
-                <button className="btn btn-secondary btn-sm" onClick={() => setCurrentIndex((i) => Math.max(0, i - 1))} disabled={currentIndex === 0}>◀ Anterior</button>
-                <button className="btn btn-secondary btn-sm" onClick={() => setCurrentIndex((i) => Math.min(pedidos.length - 1, i + 1))} disabled={currentIndex === pedidos.length - 1}>Siguiente ▶</button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    if (isBatch) {
+                      if (currentVisiblePos > 0) setCurrentIndex(visibleIndexes[currentVisiblePos - 1]);
+                      return;
+                    }
+                    setCurrentIndex((i) => Math.max(0, i - 1));
+                  }}
+                  disabled={isBatch ? currentVisiblePos <= 0 : currentIndex === 0}
+                >
+                  ◀ Anterior
+                </button>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    if (isBatch) {
+                      if (currentVisiblePos >= 0 && currentVisiblePos < visibleIndexes.length - 1) setCurrentIndex(visibleIndexes[currentVisiblePos + 1]);
+                      return;
+                    }
+                    setCurrentIndex((i) => Math.min(pedidos.length - 1, i + 1));
+                  }}
+                  disabled={isBatch ? (currentVisiblePos < 0 || currentVisiblePos >= visibleIndexes.length - 1) : currentIndex === pedidos.length - 1}
+                >
+                  Siguiente ▶
+                </button>
                 <button className="btn btn-primary btn-sm" onClick={handleMarkOkAndNext} disabled={!canMarkCurrent}>✔ Marcar OK y siguiente</button>
               </>
             )}
@@ -722,17 +962,76 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                   <span className="preview-sidebar-summary-pill warn">Advertencias: {sidebarSummary.warn}</span>
                 )}
               </div>
+              {isBatch && currentConsolidacionGroup && currentConsolidacionConfig && (
+                <div className="preview-section" style={{ marginBottom: '0.75rem' }}>
+                  <h4 style={{ marginBottom: '0.4rem' }}>💡 Sugerencia de consolidación</h4>
+                  <span className="preview-hint" style={{ display: 'block', marginBottom: '0.45rem' }}>
+                    Coinciden por celular o email y comparten el mismo estado de preparación. Es una sugerencia: tú decides activarla.
+                  </span>
+                  <div style={{ border: '1px solid #99f6e4', borderRadius: '8px', padding: '0.45rem', marginBottom: '0.45rem', background: '#ffffff' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.35rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={!!currentConsolidacionConfig.enabled}
+                        onChange={(e) => {
+                          const enabled = e.target.checked;
+                          setConsolidacionConfigByGroup((prev) => ({
+                            ...prev,
+                            [currentConsolidacionGroup.groupId]: {
+                              enabled,
+                              principalId: prev[currentConsolidacionGroup.groupId]?.principalId || currentConsolidacionGroup.defaultPrincipalId,
+                            },
+                          }));
+                        }}
+                      />
+                      <span>Consolidar {currentConsolidacionGroup.pedidoIds.length} pedidos en 1 etiqueta</span>
+                    </label>
+
+                    {currentConsolidacionConfig.enabled && (
+                      <div className="preview-field preview-field-column" style={{ marginBottom: 0 }}>
+                        <strong>Pedido principal:</strong>
+                        <select
+                          value={currentConsolidacionConfig.principalId}
+                          onChange={(e) => {
+                            const principalId = e.target.value;
+                            setConsolidacionConfigByGroup((prev) => ({
+                              ...prev,
+                              [currentConsolidacionGroup.groupId]: {
+                                ...prev[currentConsolidacionGroup.groupId],
+                                enabled: true,
+                                principalId,
+                              },
+                            }));
+                          }}
+                        >
+                          {currentConsolidacionGroup.pedidoIds.map((pid) => {
+                            const pedido = pedidos.find((p) => p.id === pid);
+                            return (
+                              <option key={pid} value={pid}>
+                                #{getPedidoLabel(pedido || { id: pid })}
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               {isBatch ? (
                 <div className="preview-sidebar-list">
-                  {pedidos.map((pedidoItem, index) => {
-                    const active = index === currentIndex;
+                  {pedidosVisibles.map((pedidoItem) => {
+                    const active = pedidoItem.id === currentPedido?.id;
                     const status = getPedidoSidebarStatus(pedidoItem.id);
 
                     return (
                       <button
                         key={pedidoItem.id}
                         className={`preview-sidebar-item ${active ? 'active' : ''}`}
-                        onClick={() => setCurrentIndex(index)}
+                        onClick={() => {
+                          const index = pedidos.findIndex((p) => p.id === pedidoItem.id);
+                          if (index >= 0) setCurrentIndex(index);
+                        }}
                       >
                         <span className="preview-sidebar-item-main">#{getPedidoLabel(pedidoItem)}</span>
                         <span className={`preview-sidebar-item-status ${status.tone}`}>

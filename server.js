@@ -904,6 +904,93 @@ app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
   }
 });
 
+app.post('/api/etiquetas/consolidar/:pedidoId', async (req, res) => {
+  try {
+    const { pedidoId } = req.params;
+    const {
+      sourcePedidoId = null,
+      tracking = null,
+      pdfUrl = null,
+      tipoEntrega = 'domicilio',
+      puntoRetiroId = null,
+      puntoRetiroNombre = null,
+    } = req.body || {};
+
+    if (!pedidoId) {
+      return res.status(400).json({ success: false, error: 'ID de pedido requerido' });
+    }
+
+    const pedido = await supabaseService.obtenerPedido(pedidoId);
+    if (!pedido) {
+      return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    }
+
+    const sourcePedido = sourcePedidoId
+      ? await supabaseService.obtenerPedido(sourcePedidoId)
+      : null;
+
+    const trackingFinal = String(
+      tracking
+      || sourcePedido?.numero_seguimiento_ues
+      || ''
+    ).trim();
+
+    if (!trackingFinal) {
+      return res.status(400).json({ success: false, error: 'tracking requerido para consolidar' });
+    }
+
+    const pdfUrlFinal = String(
+      pdfUrl
+      || sourcePedido?.link_etiqueta_drive
+      || ''
+    ).trim() || null;
+
+    const isPickup = String(tipoEntrega || 'domicilio').toLowerCase() === 'pickup';
+    const updateBase = {
+      estado: 'pendiente',
+      numero_seguimiento_ues: trackingFinal,
+      link_etiqueta_drive: pdfUrlFinal,
+      etiqueta_generada: true,
+      etiqueta_impresa: false,
+    };
+
+    const updateExtended = {
+      ...updateBase,
+      tipo_entrega_ues: isPickup ? 'pickup' : 'domicilio',
+      punto_retiro_ues_id: isPickup ? String(puntoRetiroId || '').trim() || null : null,
+      punto_retiro_ues_nombre: isPickup ? String(puntoRetiroNombre || '').trim() || null : null,
+    };
+
+    try {
+      await supabaseService.actualizarPedido(pedidoId, updateExtended);
+    } catch (updateError) {
+      const msg = String(updateError?.message || '').toLowerCase();
+      const missingColumn = msg.includes('column') && msg.includes('does not exist');
+      if (!missingColumn) throw updateError;
+      await supabaseService.actualizarPedido(pedidoId, updateBase);
+    }
+
+    logService.info('Etiqueta consolidada aplicada a pedido', {
+      pedidoId,
+      sourcePedidoId,
+      tracking: updateBase.numero_seguimiento_ues,
+      pdfUrl: updateBase.link_etiqueta_drive,
+      tipoEntrega: isPickup ? 'pickup' : 'domicilio',
+    });
+
+    return res.json({
+      success: true,
+      pedidoId,
+      sourcePedidoId,
+      tracking: updateBase.numero_seguimiento_ues,
+      pdfUrl: updateBase.link_etiqueta_drive,
+    });
+  } catch (error) {
+    logService.error('Error consolidando etiqueta en pedido', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Generar etiqueta UES (ruta legacy con body)
 app.post('/api/generar-etiqueta', async (req, res) => {
   try {

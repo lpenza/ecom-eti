@@ -146,6 +146,13 @@ export async function generarEtiqueta(pedidoId, payloadOverrides = null) {
   });
 }
 
+export async function consolidarEtiquetaExistente(pedidoId, data = {}) {
+  return await fetchAPI(`/etiquetas/consolidar/${pedidoId}`, {
+    method: 'POST',
+    body: JSON.stringify(data || {}),
+  });
+}
+
 /**
  * Generar etiqueta de reclamo asociada a un pedido existente
  */
