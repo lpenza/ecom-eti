@@ -112,6 +112,14 @@ async function listBotRedisKeys() {
   return found;
 }
 
+function canonicalizeBotMode(rawMode) {
+  const normalized = String(rawMode || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'human_taken') return 'paused';
+  if (normalized === 'bot_active' || normalized === 'paused' || normalized === 'blacklist') return normalized;
+  return null;
+}
+
 function parseBotRedisValue(key, rawValue) {
   if (!rawValue) return null;
 
@@ -147,6 +155,18 @@ function parseBotRedisValue(key, rawValue) {
   const requiresHumanLastTime = Boolean(parsed.requires_human_last_time);
 
   const controlRaw = parsed.control && typeof parsed.control === 'object' ? parsed.control : {};
+  const mode = canonicalizeBotMode(parsed.mode || controlRaw.mode);
+  const botEnabledRaw = typeof parsed.bot_enabled === 'boolean'
+    ? parsed.bot_enabled
+    : (typeof controlRaw.bot_enabled === 'boolean' ? controlRaw.bot_enabled : null);
+  const blacklistedRaw = typeof parsed.blacklisted === 'boolean'
+    ? parsed.blacklisted
+    : Boolean(controlRaw.blacklisted);
+  const reasonRaw = typeof parsed.reason === 'string'
+    ? parsed.reason
+    : String(controlRaw.reason || '');
+  const updatedAtRaw = parsed.updated_at || controlRaw.updated_at || null;
+  const updatedByRaw = parsed.updated_by || controlRaw.updated_by || null;
 
   return {
     id: contactId,
@@ -167,12 +187,12 @@ function parseBotRedisValue(key, rawValue) {
     history,
     last_message_at: lastMessageAt,
     control: {
-      mode: controlRaw.mode || null,
-      bot_enabled: typeof controlRaw.bot_enabled === 'boolean' ? controlRaw.bot_enabled : !requiresHumanLastTime,
-      blacklisted: Boolean(controlRaw.blacklisted),
-      reason: String(controlRaw.reason || ''),
-      updated_at: controlRaw.updated_at || null,
-      updated_by: controlRaw.updated_by || null,
+      mode,
+      bot_enabled: typeof botEnabledRaw === 'boolean' ? botEnabledRaw : !requiresHumanLastTime,
+      blacklisted: Boolean(blacklistedRaw),
+      reason: String(reasonRaw || ''),
+      updated_at: updatedAtRaw,
+      updated_by: updatedByRaw,
     },
   };
 }
@@ -204,12 +224,20 @@ async function findRedisKeyByContactId(contactId) {
   if (!normalized) return null;
 
   const strictPattern = `${BOT_REDIS_PREFIX}:${normalized}@*`;
-  const strict = await redisScan(strictPattern, '0', 50);
-  if (strict.keys.length > 0) return strict.keys[0];
+  let cursor = '0';
+  do {
+    const strict = await redisScan(strictPattern, cursor, 200);
+    if (strict.keys.length > 0) return strict.keys[0];
+    cursor = strict.cursor;
+  } while (cursor !== '0');
 
   const fallbackPattern = `${BOT_REDIS_PREFIX}:*${normalized}*@*`;
-  const fallback = await redisScan(fallbackPattern, '0', 50);
-  if (fallback.keys.length > 0) return fallback.keys[0];
+  cursor = '0';
+  do {
+    const fallback = await redisScan(fallbackPattern, cursor, 200);
+    if (fallback.keys.length > 0) return fallback.keys[0];
+    cursor = fallback.cursor;
+  } while (cursor !== '0');
 
   return null;
 }
@@ -234,12 +262,21 @@ async function botControlRequest(method, endpoint, { params = undefined, data = 
   const controlMatch = endpoint.match(/^\/contacts\/([^/]+)\/control$/);
   if (method.toLowerCase() === 'patch' && controlMatch) {
     const contactId = decodeURIComponent(controlMatch[1]);
+    logService.info('Bot control PATCH recibido', {
+      contactId,
+      requestedMode: data?.mode || null,
+      hasReason: typeof data?.reason === 'string',
+    });
+
     const key = await findRedisKeyByContactId(contactId);
     if (!key) {
+      logService.warning('Bot control PATCH sin key Redis', { contactId });
       const error = new Error('Contacto no encontrado en Redis');
       error.status = 404;
       throw error;
     }
+
+    logService.info('Bot control key encontrada', { contactId, key });
 
     const getResult = await redisPipeline([['GET', key]]);
     const currentRaw = getResult?.[0]?.result || null;
@@ -247,30 +284,110 @@ async function botControlRequest(method, endpoint, { params = undefined, data = 
     try {
       current = currentRaw ? JSON.parse(currentRaw) : {};
     } catch {
+      logService.warning('Bot control JSON inválido en Redis, se recrea control', { contactId, key });
       current = {};
     }
 
-    const mode = String(data?.mode || '').trim();
-    const controlPrev = current.control && typeof current.control === 'object' ? current.control : {};
+    const mode = canonicalizeBotMode(data?.mode);
+    const controlFromMemory = current.control && typeof current.control === 'object' ? current.control : {};
+    const currentMode = canonicalizeBotMode(current.mode || controlFromMemory.mode);
+    const currentBotEnabled = typeof current.bot_enabled === 'boolean'
+      ? current.bot_enabled
+      : (typeof controlFromMemory.bot_enabled === 'boolean' ? controlFromMemory.bot_enabled : null);
+    const currentBlacklisted = typeof current.blacklisted === 'boolean'
+      ? current.blacklisted
+      : Boolean(controlFromMemory.blacklisted);
+    const currentReason = typeof current.reason === 'string'
+      ? current.reason
+      : String(controlFromMemory.reason || '');
+    const currentUpdatedAt = current.updated_at || controlFromMemory.updated_at || null;
+    const currentUpdatedBy = current.updated_by || controlFromMemory.updated_by || null;
+
+    const controlPrev = {
+      mode: currentMode,
+      bot_enabled: typeof currentBotEnabled === 'boolean' ? currentBotEnabled : !Boolean(current.requires_human_last_time),
+      blacklisted: currentBlacklisted,
+      reason: currentReason,
+      updated_at: currentUpdatedAt,
+      updated_by: currentUpdatedBy,
+    };
     const controlNext = {
       ...controlPrev,
       ...(typeof data?.reason === 'string' ? { reason: data.reason } : {}),
       ...(mode ? { mode } : {}),
       ...(mode ? { bot_enabled: mode === 'bot_active', blacklisted: mode === 'blacklist' } : {}),
+      ...(typeof data?.blacklisted === 'boolean' ? { blacklisted: data.blacklisted } : {}),
       updated_at: new Date().toISOString(),
       updated_by: 'panel',
     };
 
-    const nextValue = {
+    if (typeof data?.blacklisted === 'boolean' && data.blacklisted) {
+      controlNext.bot_enabled = false;
+    }
+
+    const nextRequiresHumanLastTime =
+      typeof data?.blacklisted === 'boolean'
+        ? (data.blacklisted ? true : Boolean(current.requires_human_last_time))
+        : (mode ? mode !== 'bot_active' : Boolean(current.requires_human_last_time));
+
+    const nextBlacklistedFlag =
+      typeof data?.blacklisted === 'boolean'
+        ? data.blacklisted
+        : (mode ? mode === 'blacklist' : Boolean(current.blacklisted));
+
+    const nextMemoryValue = {
       ...current,
-      control: controlNext,
+      requires_human_last_time: nextRequiresHumanLastTime,
+      blacklisted: nextBlacklistedFlag,
+      mode: controlNext.mode || null,
+      bot_enabled: controlNext.bot_enabled,
+      reason: controlNext.reason,
+      updated_at: controlNext.updated_at,
+      updated_by: controlNext.updated_by,
     };
 
-    await redisPipeline([['SET', key, JSON.stringify(nextValue)]]);
+    if (Object.prototype.hasOwnProperty.call(nextMemoryValue, 'control')) {
+      delete nextMemoryValue.control;
+    }
+
+    const setResult = await redisPipeline([['SET', key, JSON.stringify(nextMemoryValue)]]);
+    const memorySetReply = setResult?.[0]?.result || null;
+
+    if (setResult?.[0]?.error) {
+      const pipelineError = setResult?.[0]?.error || 'unknown';
+      const err = new Error(`Redis SET error: ${pipelineError}`);
+      err.status = 503;
+      throw err;
+    }
+
+    const verifyResult = await redisPipeline([['GET', key]]);
+    let verifyParsed = null;
+    try {
+      verifyParsed = verifyResult?.[0]?.result ? JSON.parse(verifyResult[0].result) : null;
+    } catch {
+      verifyParsed = null;
+    }
+
+    logService.info('Bot control PATCH persistido', {
+      contactId,
+      key,
+      mode: controlNext.mode || null,
+      bot_enabled: controlNext.bot_enabled,
+      blacklisted: controlNext.blacklisted,
+      requires_human_last_time: nextRequiresHumanLastTime,
+      memorySetReply,
+      verify_blacklisted: verifyParsed?.blacklisted ?? null,
+      verify_requires_human_last_time: verifyParsed?.requires_human_last_time ?? null,
+      verify_mode: verifyParsed?.mode ?? null,
+      verify_bot_enabled: verifyParsed?.bot_enabled ?? null,
+    });
 
     return {
       success: true,
       contact_id: contactId,
+      key,
+      redis_set_result: memorySetReply,
+      requires_human_last_time: nextRequiresHumanLastTime,
       control: controlNext,
     };
   }

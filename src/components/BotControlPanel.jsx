@@ -7,10 +7,11 @@ import {
 
 const MODE_CONFIG = {
   bot_active: { label: 'Bot activo', icon: '🤖', badgeClass: 'bot-badge-ok' },
-  human_taken: { label: 'Tomado por humano', icon: '👤', badgeClass: 'bot-badge-human-mode' },
   paused: { label: 'Pausado', icon: '⏸', badgeClass: 'bot-badge-paused' },
   blacklist: { label: 'Lista negra', icon: '🚫', badgeClass: 'bot-badge-black' },
 };
+
+const MODE_SELECTOR_OPTIONS = ['bot_active', 'paused'];
 
 function formatDate(iso) {
   if (!iso) return '-';
@@ -42,6 +43,7 @@ function formatPhone(value) {
 
 function resolveMode(contact) {
   const explicit = contact?.control?.mode;
+  if (explicit === 'human_taken') return 'paused';
   if (explicit && MODE_CONFIG[explicit]) return explicit;
   if (contact?.control?.blacklisted) return 'blacklist';
   if (contact?.control?.bot_enabled === false) return 'paused';
@@ -52,7 +54,6 @@ function getBlockingLabel(contact) {
   const mode = resolveMode(contact);
   if (mode === 'blacklist') return 'Lista negra';
   if (mode === 'paused') return 'Pausado';
-  if (mode === 'human_taken') return 'Tomado por humano';
   if (contact?.requires_human_last_time) return 'Requiere humano (bot)';
   return 'Sin bloqueo';
 }
@@ -208,7 +209,8 @@ export default function BotControlPanel({ mostrarToast }) {
     }
   };
 
-  const selectedMode = selected ? resolveMode(selected) : 'bot_active';
+  const resolvedMode = selected ? resolveMode(selected) : 'bot_active';
+  const selectedMode = resolvedMode === 'blacklist' ? 'paused' : resolvedMode;
 
   const selectedHistory = selected?.id
     ? (historyById[selected.id] || selected?.history || [])
@@ -316,7 +318,8 @@ export default function BotControlPanel({ mostrarToast }) {
                 <div className="bot-control-grid">
                   <span className="module-label" style={{ marginBottom: 0 }}>Modo</span>
                   <div className="bot-mode-selector" role="radiogroup" aria-label="Modo de atencion">
-                    {Object.entries(MODE_CONFIG).map(([modeKey, modeMeta]) => {
+                    {MODE_SELECTOR_OPTIONS.map((modeKey) => {
+                      const modeMeta = MODE_CONFIG[modeKey];
                       const checked = selectedMode === modeKey;
                       return (
                         <button
@@ -329,7 +332,7 @@ export default function BotControlPanel({ mostrarToast }) {
                             const nextControl = {
                               mode: modeKey,
                               bot_enabled: modeKey === 'bot_active',
-                              blacklisted: modeKey === 'blacklist',
+                              blacklisted: false,
                             };
                             const previousContact = selected;
                             applyControlChange(selected.id, nextControl);
@@ -343,6 +346,22 @@ export default function BotControlPanel({ mostrarToast }) {
                       );
                     })}
                   </div>
+                  <button
+                    type="button"
+                    className={`btn btn-secondary btn-sm ${selected.control.blacklisted ? 'bot-chip-active' : ''}`}
+                    onClick={() => {
+                      const nextBlacklisted = !selected.control.blacklisted;
+                      const previousContact = selected;
+                      applyControlChange(selected.id, {
+                        blacklisted: nextBlacklisted,
+                        ...(nextBlacklisted ? { bot_enabled: false } : {}),
+                      });
+                      saveControl(selected.id, { blacklisted: nextBlacklisted }, previousContact);
+                    }}
+                    disabled={savingControl}
+                  >
+                    {selected.control.blacklisted ? 'Quitar de lista negra' : 'Agregar a lista negra'}
+                  </button>
                 </div>
 
                 {selected.requires_human_last_time && (
