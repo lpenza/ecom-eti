@@ -36,6 +36,264 @@ let uesCacheStatus = {
   departamentos: 0
 };
 
+const REDIS_REST_URL = String(process.env.REDIS_REST_URL || process.env.UPSTASH_REDIS_REST_URL || '').trim().replace(/\/+$/, '');
+const REDIS_REST_TOKEN = String(process.env.REDIS_REST_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
+const BOT_REDIS_PREFIX = String(process.env.BOT_REDIS_PREFIX || 'velinne_memory').trim();
+
+function buildRedisHeaders() {
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+
+  if (REDIS_REST_TOKEN) {
+    headers.Authorization = REDIS_REST_TOKEN.startsWith('Bearer ')
+      ? REDIS_REST_TOKEN
+      : `Bearer ${REDIS_REST_TOKEN}`;
+  }
+
+  return headers;
+}
+
+async function redisScan(pattern, cursor = '0', count = 500) {
+  const encodedPattern = encodeURIComponent(pattern);
+  const response = await axios.get(
+    `${REDIS_REST_URL}/scan/${cursor}/match/${encodedPattern}/count/${count}`,
+    { headers: buildRedisHeaders(), timeout: 15000, validateStatus: () => true }
+  );
+
+  if (response.status >= 400) {
+    const error = new Error(response?.data?.error || `Redis scan error (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
+
+  const result = response?.data?.result;
+  if (!Array.isArray(result) || result.length < 2) return { cursor: '0', keys: [] };
+  return {
+    cursor: String(result[0] || '0'),
+    keys: Array.isArray(result[1]) ? result[1] : [],
+  };
+}
+
+async function redisPipeline(commands = []) {
+  const response = await axios.post(
+    `${REDIS_REST_URL}/pipeline`,
+    commands,
+    { headers: buildRedisHeaders(), timeout: 15000, validateStatus: () => true }
+  );
+
+  if (response.status >= 400) {
+    const error = new Error(response?.data?.error || `Redis pipeline error (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
+
+  return Array.isArray(response.data) ? response.data : [];
+}
+
+async function listBotRedisKeys() {
+  if (!REDIS_REST_URL) {
+    const error = new Error('REDIS_REST_URL no configurado');
+    error.status = 503;
+    throw error;
+  }
+
+  const pattern = `${BOT_REDIS_PREFIX}:*@*`;
+  let cursor = '0';
+  const found = [];
+
+  do {
+    const page = await redisScan(pattern, cursor, 500);
+    cursor = page.cursor;
+    found.push(...page.keys);
+  } while (cursor !== '0' && found.length < 10000);
+
+  return found;
+}
+
+function parseBotRedisValue(key, rawValue) {
+  if (!rawValue) return null;
+
+  let parsed;
+  try {
+    parsed = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue;
+  } catch {
+    return null;
+  }
+
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  const withoutPrefix = key.startsWith(`${BOT_REDIS_PREFIX}:`)
+    ? key.slice(BOT_REDIS_PREFIX.length + 1)
+    : key;
+  const atIdx = withoutPrefix.indexOf('@');
+  const contactId = atIdx >= 0 ? withoutPrefix.slice(0, atIdx) : withoutPrefix;
+  const phoneNumber = String(
+    parsed.phone_number
+    || parsed.phone
+    || parsed.customer_phone
+    || contactId
+    || ''
+  ).trim();
+  const customerName = String(
+    parsed.customer_name
+    || parsed.name
+    || parsed.cliente_nombre
+    || ''
+  ).trim();
+  const history = Array.isArray(parsed.history) ? parsed.history : [];
+  const lastMessageAt = history.length > 0 ? history[history.length - 1]?.at || null : null;
+
+  const controlRaw = parsed.control && typeof parsed.control === 'object' ? parsed.control : {};
+
+  return {
+    id: contactId,
+    contact_id: contactId,
+    phone: phoneNumber,
+    phone_number: phoneNumber,
+    customer_name: customerName,
+    name: customerName,
+    key,
+    stage: parsed.stage || null,
+    last_intent: parsed.last_intent || null,
+    last_subintent: parsed.last_subintent || null,
+    customer_state: parsed.customer_state || null,
+    interest_product: parsed.interest_product || null,
+    profile_summary: parsed.profile_summary || null,
+    pending_action: parsed.pending_action || null,
+    requires_human_last_time: Boolean(parsed.requires_human_last_time),
+    requires_human_trigger_at: parsed.requires_human_trigger_at || null,
+    history,
+    last_message_at: lastMessageAt,
+    control: {
+      mode: controlRaw.mode || null,
+      bot_enabled: typeof controlRaw.bot_enabled === 'boolean' ? controlRaw.bot_enabled : true,
+      blacklisted: Boolean(controlRaw.blacklisted),
+      reason: String(controlRaw.reason || ''),
+      updated_at: controlRaw.updated_at || null,
+      updated_by: controlRaw.updated_by || null,
+    },
+  };
+}
+
+async function loadBotContactsFromRedis() {
+  const keys = await listBotRedisKeys();
+  if (keys.length === 0) return [];
+
+  const commands = keys.map((k) => ['GET', k]);
+  const rawResults = await redisPipeline(commands);
+
+  const contacts = [];
+  for (let i = 0; i < keys.length; i += 1) {
+    const parsed = parseBotRedisValue(keys[i], rawResults[i]?.result || null);
+    if (parsed) contacts.push(parsed);
+  }
+
+  contacts.sort((a, b) => {
+    const atA = new Date(a.last_message_at || 0).getTime();
+    const atB = new Date(b.last_message_at || 0).getTime();
+    return atB - atA;
+  });
+
+  return contacts;
+}
+
+async function findRedisKeyByContactId(contactId) {
+  const normalized = String(contactId || '').trim();
+  if (!normalized) return null;
+
+  const strictPattern = `${BOT_REDIS_PREFIX}:${normalized}@*`;
+  const strict = await redisScan(strictPattern, '0', 50);
+  if (strict.keys.length > 0) return strict.keys[0];
+
+  const fallbackPattern = `${BOT_REDIS_PREFIX}:*${normalized}*@*`;
+  const fallback = await redisScan(fallbackPattern, '0', 50);
+  if (fallback.keys.length > 0) return fallback.keys[0];
+
+  return null;
+}
+
+async function botControlRequest(method, endpoint, { params = undefined, data = undefined } = {}) {
+  // Implementación explícita: solo Redis/Upstash como fuente real.
+  if (method.toLowerCase() === 'get' && endpoint === '/contacts') {
+    return await loadBotContactsFromRedis();
+  }
+
+  const historyMatch = endpoint.match(/^\/contacts\/([^/]+)\/history$/);
+  if (method.toLowerCase() === 'get' && historyMatch) {
+    const contactId = decodeURIComponent(historyMatch[1]);
+    const key = await findRedisKeyByContactId(contactId);
+    if (!key) return [];
+
+    const results = await redisPipeline([['GET', key]]);
+    const parsed = parseBotRedisValue(key, results?.[0]?.result || null);
+    return Array.isArray(parsed?.history) ? parsed.history : [];
+  }
+
+  const controlMatch = endpoint.match(/^\/contacts\/([^/]+)\/control$/);
+  if (method.toLowerCase() === 'patch' && controlMatch) {
+    const contactId = decodeURIComponent(controlMatch[1]);
+    const key = await findRedisKeyByContactId(contactId);
+    if (!key) {
+      const error = new Error('Contacto no encontrado en Redis');
+      error.status = 404;
+      throw error;
+    }
+
+    const getResult = await redisPipeline([['GET', key]]);
+    const currentRaw = getResult?.[0]?.result || null;
+    let current = {};
+    try {
+      current = currentRaw ? JSON.parse(currentRaw) : {};
+    } catch {
+      current = {};
+    }
+
+    const mode = String(data?.mode || '').trim();
+    const controlPrev = current.control && typeof current.control === 'object' ? current.control : {};
+    const controlNext = {
+      ...controlPrev,
+      ...(typeof data?.reason === 'string' ? { reason: data.reason } : {}),
+      ...(mode ? { mode } : {}),
+      ...(mode ? { bot_enabled: mode === 'bot_active', blacklisted: mode === 'blacklist' } : {}),
+      updated_at: new Date().toISOString(),
+      updated_by: 'panel',
+    };
+
+    const nextValue = {
+      ...current,
+      control: controlNext,
+    };
+
+    await redisPipeline([['SET', key, JSON.stringify(nextValue)]]);
+
+    return {
+      success: true,
+      contact_id: contactId,
+      control: controlNext,
+    };
+  }
+
+  const error = new Error('Operación no soportada para bot control Redis');
+  error.status = 400;
+  throw error;
+}
+
+function normalizeBotContactsPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.contacts)) return payload.contacts;
+  return [];
+}
+
+function normalizeBotHistoryPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.history)) return payload.history;
+  return [];
+}
+
 const CONTACT_REVIEW_FILE = path.join(__dirname, 'pedido_revision_contacto.json');
 
 async function leerRevisionContacto() {
@@ -180,6 +438,60 @@ app.post('/api/pedidos/:pedidoId/revision-contacto', async (req, res) => {
   } catch (error) {
     logService.error('Error actualizando revisión de contacto', error);
     return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/bot/contacts', async (req, res) => {
+  try {
+    const payload = await botControlRequest('get', '/contacts', { params: req.query || {} });
+    return res.json(normalizeBotContactsPayload(payload));
+  } catch (error) {
+    logService.error('Error al obtener contactos bot', error);
+    return res.status(error.status || 503).json({
+      success: false,
+      error: error.message || 'No se pudo obtener contactos del bot',
+    });
+  }
+});
+
+app.get('/api/bot/contacts/:contactId/history', async (req, res) => {
+  try {
+    const { contactId } = req.params;
+    if (!String(contactId || '').trim()) {
+      return res.status(400).json({ success: false, error: 'contactId requerido' });
+    }
+
+    const payload = await botControlRequest('get', `/contacts/${encodeURIComponent(contactId)}/history`);
+    return res.json(normalizeBotHistoryPayload(payload));
+  } catch (error) {
+    logService.error('Error al obtener historial de contacto bot', error);
+    return res.status(error.status || 503).json({
+      success: false,
+      error: error.message || 'No se pudo obtener historial del contacto',
+    });
+  }
+});
+
+app.patch('/api/bot/contacts/:contactId/control', async (req, res) => {
+  try {
+    const { contactId } = req.params;
+    if (!String(contactId || '').trim()) {
+      return res.status(400).json({ success: false, error: 'contactId requerido' });
+    }
+
+    const payload = await botControlRequest(
+      'patch',
+      `/contacts/${encodeURIComponent(contactId)}/control`,
+      { data: req.body || {} }
+    );
+
+    return res.json(payload || { success: true });
+  } catch (error) {
+    logService.error('Error al actualizar control de contacto bot', error);
+    return res.status(error.status || 503).json({
+      success: false,
+      error: error.message || 'No se pudo actualizar control del contacto',
+    });
   }
 });
 
