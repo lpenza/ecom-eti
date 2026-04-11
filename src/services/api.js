@@ -372,3 +372,30 @@ export async function obtenerReclamosPendientes() {
   return Array.isArray(data?.data) ? data.data : [];
 }
 
+// ==================== BOT WHATSAPP ====================
+
+export async function obtenerBotContacts(params = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params || {}).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && String(v).trim() !== '') {
+      query.set(k, String(v));
+    }
+  });
+
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const data = await fetchAPI(`/bot/contacts${suffix}`, { method: 'GET' });
+  return Array.isArray(data) ? data : [];
+}
+
+export async function obtenerBotContactHistory(contactId) {
+  const data = await fetchAPI(`/bot/contacts/${encodeURIComponent(contactId)}/history`, { method: 'GET' });
+  return Array.isArray(data) ? data : [];
+}
+
+export async function actualizarBotContactControl(contactId, payload = {}) {
+  return await fetchAPI(`/bot/contacts/${encodeURIComponent(contactId)}/control`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload || {}),
+  });
+}
+

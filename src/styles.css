@@ -2693,3 +2693,337 @@ body {
   gap: 0.4rem;
   white-space: nowrap;
 }
+
+/* ==================== Bot WhatsApp Panel ==================== */
+
+.bot-panel-shell {
+  padding: 0.9rem 1rem 1.3rem;
+  overflow-y: auto;
+}
+
+.bot-panel-toolbar {
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.bot-panel-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.bot-chip-active {
+  border-color: var(--brand-primary);
+  color: var(--brand-primary);
+  background: var(--brand-primary-soft);
+}
+
+.bot-search {
+  min-width: 280px;
+  max-width: 420px;
+}
+
+.bot-grid {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 0.9rem;
+  min-height: 62vh;
+}
+
+.bot-contact-list {
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-md);
+  background: var(--brand-surface-alt);
+  padding: 0.5rem;
+  overflow-y: auto;
+}
+
+.bot-contact-item {
+  width: 100%;
+  text-align: left;
+  background: #fff;
+  border: 1px solid var(--brand-border);
+  border-radius: 12px;
+  padding: 0.65rem;
+  margin-bottom: 0.45rem;
+  cursor: pointer;
+}
+
+.bot-contact-item:hover {
+  border-color: var(--brand-border-strong);
+}
+
+.bot-contact-item-active {
+  border-color: var(--brand-primary);
+  box-shadow: 0 0 0 2px rgba(123, 47, 77, 0.12);
+}
+
+.bot-contact-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.2rem;
+}
+
+.bot-contact-title span {
+  color: var(--brand-text-soft);
+  font-size: 0.8rem;
+}
+
+.bot-contact-subline {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--brand-text-soft);
+  font-size: 0.8rem;
+  margin-bottom: 0.45rem;
+}
+
+.bot-contact-phone {
+  color: var(--brand-text);
+  font-weight: 600;
+}
+
+.bot-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.bot-badge {
+  font-size: 0.72rem;
+  border-radius: 999px;
+  padding: 0.12rem 0.48rem;
+  border: 1px solid transparent;
+}
+
+.bot-badge-human {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fca5a5;
+}
+
+.bot-badge-human-mode {
+  background: #e0ecff;
+  color: #1e40af;
+  border-color: #93c5fd;
+}
+
+.bot-badge-paused {
+  background: #fff7ed;
+  color: #9a3412;
+  border-color: #fdba74;
+}
+
+.bot-badge-black {
+  background: #1f2937;
+  color: #fff;
+  border-color: #111827;
+}
+
+.bot-badge-ok {
+  background: #ecfdf3;
+  color: #166534;
+  border-color: #86efac;
+}
+
+.bot-detail {
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-md);
+  background: #fff;
+  padding: 0.8rem;
+  overflow-y: auto;
+}
+
+.bot-detail-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.7rem;
+  align-items: flex-start;
+  margin-bottom: 0.65rem;
+}
+
+.bot-detail-head h4 {
+  margin: 0;
+}
+
+.bot-detail-head p {
+  margin: 0.2rem 0 0;
+  color: var(--brand-text-soft);
+}
+
+.bot-detail-state {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.8rem;
+  color: var(--brand-text-soft);
+}
+
+.bot-state-line strong {
+  color: var(--brand-heading);
+}
+
+.bot-control-grid {
+  display: grid;
+  gap: 0.45rem;
+  margin-bottom: 0.75rem;
+}
+
+.bot-mode-selector {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.bot-mode-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.45rem;
+  border: 1px solid var(--brand-border);
+  border-radius: 10px;
+  background: var(--brand-surface-alt);
+  color: var(--brand-text);
+  padding: 0.5rem 0.65rem;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.bot-mode-option:hover {
+  border-color: var(--brand-border-strong);
+}
+
+.bot-mode-option-active {
+  border-color: var(--brand-primary);
+  box-shadow: 0 0 0 2px rgba(123, 47, 77, 0.12);
+  background: var(--brand-primary-soft);
+}
+
+.bot-human-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 1px solid #fca5a5;
+  border-radius: 10px;
+  padding: 0.5rem 0.65rem;
+  margin-bottom: 0.75rem;
+  background: #fff1f2;
+  color: #9f1239;
+  font-weight: 600;
+}
+
+.bot-reason-box {
+  margin-bottom: 0.75rem;
+}
+
+.bot-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  font-size: 0.88rem;
+  margin-bottom: 0.75rem;
+}
+
+.bot-summary-box {
+  border: 1px solid var(--brand-border);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  margin-bottom: 0.75rem;
+  background: var(--brand-surface-alt);
+}
+
+.bot-summary-box p {
+  margin-top: 0.35rem;
+  color: var(--brand-text-soft);
+}
+
+.bot-history h5 {
+  margin-bottom: 0.5rem;
+}
+
+.bot-msg {
+  border-radius: 10px;
+  padding: 0.5rem 0.6rem;
+  margin-bottom: 0.45rem;
+  border: 1px solid var(--brand-border);
+}
+
+.bot-msg-user {
+  background: #fff;
+}
+
+.bot-msg-assistant {
+  background: #f6f8ff;
+  border-color: #cad2ff;
+}
+
+.bot-msg-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: var(--brand-text-soft);
+  margin-bottom: 0.25rem;
+}
+
+.bot-msg p {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 0.88rem;
+}
+
+.bot-msg-tags {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.32rem;
+}
+
+.bot-msg-tag {
+  font-size: 0.68rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  padding: 0.1rem 0.44rem;
+  color: #334155;
+  background: #f8fafc;
+}
+
+.bot-msg-tag-danger {
+  background: #fff1f2;
+  border-color: #fda4af;
+  color: #9f1239;
+}
+
+.bot-msg-last-user {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.bot-msg-trigger {
+  border-color: #f59e0b;
+  background: #fffbeb;
+}
+
+@media (max-width: 980px) {
+  .bot-grid {
+    grid-template-columns: 1fr;
+    min-height: unset;
+  }
+
+  .bot-search {
+    width: 100%;
+    min-width: 0;
+    max-width: unset;
+  }
+
+  .bot-meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bot-mode-selector {
+    grid-template-columns: 1fr;
+  }
+}

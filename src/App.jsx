@@ -8,6 +8,7 @@ import LoadingModal from './components/modals/LoadingModal';
 import Toast from './components/Toast';
 import FollowUpPanel from './components/FollowUpPanel';
 import TemplateManagerPanel from './components/TemplateManagerPanel';
+import BotControlPanel from './components/BotControlPanel';
 import { usePedidos } from './hooks/usePedidos';
 import {
   generarLinkWhatsApp,
@@ -88,7 +89,7 @@ function App() {
   const [toast, setToast] = useState({ show: false, message: '', type: '' });
   const [fulfillmentPreviewIds, setFulfillmentPreviewIds] = useState(null); // null = normal, array = preview mode
   const [tableFilter, setTableFilter] = useState('porValidar');
-  const [activeView, setActiveView] = useState('pedidos'); // pedidos | especiales | followup | plantillas
+  const [activeView, setActiveView] = useState('pedidos'); // pedidos | especiales | followup | plantillas | bot
   const [notifChannelFilter, setNotifChannelFilter] = useState(null); // null | 'email' | 'whatsapp' | 'noChannel'
   const [etiquetasCanalFilter, setEtiquetasCanalFilter] = useState('whatsapp'); // null | 'whatsapp' | 'email'
   const [channelPriority, setChannelPriority] = useState('email'); // 'email' | 'whatsapp'
@@ -1332,6 +1333,14 @@ function App() {
             <span className="side-nav-icon">📝</span>
             Plantillas
           </button>
+          <button
+            type="button"
+            className={`side-nav-item ${activeView === 'bot' ? 'side-nav-item-active' : ''}`}
+            onClick={() => setActiveView('bot')}
+          >
+            <span className="side-nav-icon">🤖</span>
+            Bot WhatsApp
+          </button>
         </nav>
       </aside>
 
@@ -1748,6 +1757,10 @@ function App() {
           onBackToFollowUp={() => setActiveView('followup')}
           mostrarToast={mostrarToast}
         />
+      )}
+
+      {activeView === 'bot' && (
+        <BotControlPanel mostrarToast={mostrarToast} />
       )}
 
       {/* Modal de vista previa de datos */}
