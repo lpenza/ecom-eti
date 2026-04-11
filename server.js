@@ -325,10 +325,9 @@ async function botControlRequest(method, endpoint, { params = undefined, data = 
       controlNext.bot_enabled = false;
     }
 
-    const nextRequiresHumanLastTime =
-      typeof data?.blacklisted === 'boolean'
-        ? (data.blacklisted ? true : Boolean(current.requires_human_last_time))
-        : (mode ? mode !== 'bot_active' : Boolean(current.requires_human_last_time));
+    const nextRequiresHumanLastTime = mode
+      ? mode !== 'bot_active'
+      : Boolean(current.requires_human_last_time);
 
     const nextBlacklistedFlag =
       typeof data?.blacklisted === 'boolean'
