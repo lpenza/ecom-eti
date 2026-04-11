@@ -60,6 +60,7 @@ function getBlockingLabel(contact) {
 function normalizeContact(raw) {
   const id = String(raw?.id || raw?.contact_id || raw?.phone || '').trim();
   const phone = String(raw?.phone || raw?.contact_id || raw?.id || '').trim();
+  const requiresHumanLastTime = Boolean(raw?.requires_human_last_time);
   const controlRaw = raw?.control && typeof raw.control === 'object' ? raw.control : {};
   const displayName = String(
     raw?.displayName
@@ -74,11 +75,10 @@ function normalizeContact(raw) {
     id,
     phone,
     displayName: displayName || 'Sin nombre',
-    requires_human_last_time: Boolean(raw?.requires_human_last_time),
-    requires_human_trigger_at: raw?.requires_human_trigger_at || null,
+    requires_human_last_time: requiresHumanLastTime,
     control: {
       mode: controlRaw.mode || null,
-      bot_enabled: typeof controlRaw.bot_enabled === 'boolean' ? controlRaw.bot_enabled : true,
+      bot_enabled: typeof controlRaw.bot_enabled === 'boolean' ? controlRaw.bot_enabled : !requiresHumanLastTime,
       blacklisted: Boolean(controlRaw.blacklisted),
       reason: String(controlRaw.reason || ''),
       updated_at: controlRaw.updated_at || null,
@@ -400,10 +400,7 @@ export default function BotControlPanel({ mostrarToast }) {
                     const isTriggerMessage = Boolean(
                       selected.requires_human_last_time
                       && msg.role === 'user'
-                      && (
-                        (selected.requires_human_trigger_at && msg.at === selected.requires_human_trigger_at)
-                        || (!selected.requires_human_trigger_at && idx === lastUserIndex)
-                      )
+                      && idx === lastUserIndex
                     );
 
                     return (

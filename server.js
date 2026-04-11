@@ -144,6 +144,7 @@ function parseBotRedisValue(key, rawValue) {
   ).trim();
   const history = Array.isArray(parsed.history) ? parsed.history : [];
   const lastMessageAt = history.length > 0 ? history[history.length - 1]?.at || null : null;
+  const requiresHumanLastTime = Boolean(parsed.requires_human_last_time);
 
   const controlRaw = parsed.control && typeof parsed.control === 'object' ? parsed.control : {};
 
@@ -162,13 +163,12 @@ function parseBotRedisValue(key, rawValue) {
     interest_product: parsed.interest_product || null,
     profile_summary: parsed.profile_summary || null,
     pending_action: parsed.pending_action || null,
-    requires_human_last_time: Boolean(parsed.requires_human_last_time),
-    requires_human_trigger_at: parsed.requires_human_trigger_at || null,
+    requires_human_last_time: requiresHumanLastTime,
     history,
     last_message_at: lastMessageAt,
     control: {
       mode: controlRaw.mode || null,
-      bot_enabled: typeof controlRaw.bot_enabled === 'boolean' ? controlRaw.bot_enabled : true,
+      bot_enabled: typeof controlRaw.bot_enabled === 'boolean' ? controlRaw.bot_enabled : !requiresHumanLastTime,
       blacklisted: Boolean(controlRaw.blacklisted),
       reason: String(controlRaw.reason || ''),
       updated_at: controlRaw.updated_at || null,
