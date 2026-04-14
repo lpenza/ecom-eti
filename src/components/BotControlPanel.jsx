@@ -143,10 +143,11 @@ function resolveMode(contact) {
 
 function isCriticalContact(contact) {
   if (!contact) return false;
-  if (String(contact?.stage || '').toLowerCase() === 'risk') return true;
-  if (getStateMeta(contact?.customer_state).urgent) return true;
-  if (getIntentMeta(contact?.last_intent).urgent) return true;
-  return false;
+  const hasStructuralRisk = String(contact?.stage || '').toLowerCase() === 'risk'
+    || Boolean(contact?.requires_human_last_time);
+  const hasActiveUrgency  = getStateMeta(contact?.customer_state).urgent
+    || getIntentMeta(contact?.last_intent).urgent;
+  return hasStructuralRisk && hasActiveUrgency;
 }
 
 function isUrgentContact(contact) {
