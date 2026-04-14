@@ -206,9 +206,26 @@ function isSupportOrPostPurchaseIntent(intent, subintent) {
     'payment_issue', 'address_issue',
   ]);
 
-  if (exactSupportIntents.has(intent)) return true;
+  const exactSupportSubintents = new Set([
+    'delivery_expectation_mismatch',
+    'product_expectation_mismatch',
+    'wrong_product',
+    'missing_item',
+    'damaged_product',
+    'refund_request',
+    'exchange_request',
+    'shipping_cost_objection',
+  ]);
 
-  const supportHints = ['reclam', 'complain', 'claim', 'devol', 'return', 'tracking', 'order_status', 'post_purchase'];
+  if (exactSupportIntents.has(intent)) return true;
+  if (exactSupportSubintents.has(subintent)) return true;
+
+  const supportHints = [
+    'reclam', 'complain', 'claim', 'devol', 'return',
+    'tracking', 'order_status', 'post_purchase',
+    'mismatch', 'wrong_product', 'missing_item', 'damaged_product',
+    'refund', 'exchange', 'shipping', 'delivery',
+  ];
   if (supportHints.some((hint) => intent.includes(hint))) return true;
   if (supportHints.some((hint) => subintent.includes(hint))) return true;
 
