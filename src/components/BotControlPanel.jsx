@@ -55,9 +55,14 @@ const SUBINTENT_LABELS = {
   shipping_cost_objection:         'Costo de envío',
 };
 
-function getStageMeta(s)  { return STAGE_META[String(s||'').toLowerCase()]  || { label: s||'—', icon: '⚪', cls: 'bot-stage-inactive', priority: 5 }; }
-function getIntentMeta(s) { return INTENT_META[String(s||'').toLowerCase()] || { label: s||'—', icon: '💬', cls: 'bot-intent-inquiry', urgent: false }; }
-function getStateMeta(s)  { return STATE_META[String(s||'').toLowerCase()]  || { label: s||'—', icon: '😐', cls: 'bot-cstate-neutral', urgent: false }; }
+function prettifyKey(s) {
+  if (!s) return '—';
+  return String(s).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function getStageMeta(s)  { return STAGE_META[String(s||'').toLowerCase()]  || { label: prettifyKey(s), icon: '⚪', cls: 'bot-stage-inactive', priority: 5 }; }
+function getIntentMeta(s) { return INTENT_META[String(s||'').toLowerCase()] || { label: prettifyKey(s), icon: '💬', cls: 'bot-intent-inquiry', urgent: false }; }
+function getStateMeta(s)  { return STATE_META[String(s||'').toLowerCase()]  || { label: prettifyKey(s), icon: '😐', cls: 'bot-cstate-neutral', urgent: false }; }
 
 // ── Contact priority score (lower = more urgent) ──────────────────────────────
 function contactPriority(c) {
@@ -449,7 +454,7 @@ export default function BotControlPanel({ mostrarToast }) {
                   <div className="bot-section-title">Diagnóstico del caso</div>
                   <div className="bot-situation-cards">
                     <SitCard icon={intentMeta.icon} label="Motivo" value={intentMeta.label}
-                      sub={selected.last_subintent ? SUBINTENT_LABELS[selected.last_subintent] || selected.last_subintent : null}
+                      sub={selected.last_subintent ? SUBINTENT_LABELS[selected.last_subintent] || prettifyKey(selected.last_subintent) : null}
                       cls={intentMeta.cls} />
                     <SitCard icon={stateMeta.icon}  label="Estado cliente" value={stateMeta.label} cls={stateMeta.cls} />
                     {selected.pending_action && (
