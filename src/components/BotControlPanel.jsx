@@ -169,23 +169,14 @@ function isUrgentContact(contact) {
   return Boolean(contact?.requires_human_last_time) || isCriticalContact(contact);
 }
 
-function getStatusBucket(contact) {
-  const mode = resolveMode(contact);
-  if (mode === 'blacklist') return 'blacklist';
-  if (isCriticalContact(contact)) return 'critical';
-  if (Boolean(contact?.requires_human_last_time)) return 'requires_human';
-  if (mode === 'paused') return 'bot_paused';
-  return 'bot_active';
-}
-
 function getStatusPredicates() {
   return {
     all:            () => true,
-    critical:       (c) => getStatusBucket(c) === 'critical',
-    requires_human: (c) => getStatusBucket(c) === 'requires_human',
-    bot_paused:     (c) => getStatusBucket(c) === 'bot_paused',
-    blacklist:      (c) => getStatusBucket(c) === 'blacklist',
-    bot_active:     (c) => getStatusBucket(c) === 'bot_active',
+    critical:       (c) => isCriticalContact(c),
+    requires_human: (c) => Boolean(c?.requires_human_last_time),
+    bot_paused:     (c) => resolveMode(c) === 'paused',
+    blacklist:      (c) => resolveMode(c) === 'blacklist',
+    bot_active:     (c) => resolveMode(c) === 'bot_active',
   };
 }
 
@@ -319,6 +310,7 @@ export default function BotControlPanel({ mostrarToast }) {
   const [search,            setSearch]            = useState('');
   const [filterStatus,      setFilterStatus]      = useState('all');
   const [filterTemperature, setFilterTemperature] = useState('all');
+  const [activeFilterGroup, setActiveFilterGroup] = useState('status');
   const [reasonDraft,       setReasonDraft]       = useState('');
   const [loadingContacts,   setLoadingContacts]   = useState(true);
   const [serviceDown,       setServiceDown]       = useState(false);
@@ -358,8 +350,8 @@ export default function BotControlPanel({ mostrarToast }) {
     const temperaturePredicate = temperaturePredicates[filterTemperature] || temperaturePredicates.all;
 
     return contacts.filter((c) => {
-      if (!statusPredicate(c)) return false;
-      if (!temperaturePredicate(c)) return false;
+      if (activeFilterGroup === 'status' && !statusPredicate(c)) return false;
+      if (activeFilterGroup === 'temperature' && !temperaturePredicate(c)) return false;
       if (!q) return true;
       return (
         String(c.displayName    || '').toLowerCase().includes(q) ||
@@ -367,7 +359,7 @@ export default function BotControlPanel({ mostrarToast }) {
         String(c.profile_summary|| '').toLowerCase().includes(q)
       );
     });
-  }, [contacts, filterStatus, filterTemperature, search]);
+  }, [contacts, filterStatus, filterTemperature, activeFilterGroup, search]);
 
   const selected = useMemo(
     () => contacts.find((c) => c.id === selectedId) || filteredContacts[0] || null,
@@ -431,9 +423,7 @@ export default function BotControlPanel({ mostrarToast }) {
 
   const statusPredicates = useMemo(() => getStatusPredicates(), []);
   const temperaturePredicates = useMemo(() => getTemperaturePredicates(), []);
-  const statusPredicate = statusPredicates[filterStatus] || statusPredicates.all;
-  const statusScopedContacts = contacts.filter(statusPredicate);
-  const purchaseScopedContacts = statusScopedContacts.filter(temperaturePredicates.all);
+  const purchaseScopedContacts = contacts.filter(temperaturePredicates.all);
   const hotCount = purchaseScopedContacts.filter(temperaturePredicates.hot).length;
   const warmCount = purchaseScopedContacts.filter(temperaturePredicates.warm).length;
   const coldCount = purchaseScopedContacts.filter(temperaturePredicates.cold).length;
@@ -471,8 +461,11 @@ export default function BotControlPanel({ mostrarToast }) {
             <button
               key={k}
               type="button"
-              className={`bot-filter-pill ${filterStatus === k ? 'active' : ''} ${critical ? 'critical' : ''} ${urgent ? 'urgent' : ''} ${ok ? 'ok' : ''}`}
-              onClick={() => setFilterStatus(k)}
+              className={`bot-filter-pill ${(activeFilterGroup === 'status' && filterStatus === k) ? 'active' : ''} ${critical ? 'critical' : ''} ${urgent ? 'urgent' : ''} ${ok ? 'ok' : ''}`}
+              onClick={() => {
+                setActiveFilterGroup('status');
+                setFilterStatus(k);
+              }}
             >
               {label}
             </button>
@@ -489,8 +482,11 @@ export default function BotControlPanel({ mostrarToast }) {
             <button
               key={k}
               type="button"
-              className={`bot-filter-pill bot-temp-pill ${filterTemperature === k ? 'active' : ''} ${temp ? `temp-${temp}` : ''}`}
-              onClick={() => setFilterTemperature(k)}
+              className={`bot-filter-pill bot-temp-pill ${(activeFilterGroup === 'temperature' && filterTemperature === k) ? 'active' : ''} ${temp ? `temp-${temp}` : ''}`}
+              onClick={() => {
+                setActiveFilterGroup('temperature');
+                setFilterTemperature(k);
+              }}
             >
               {label}
             </button>
