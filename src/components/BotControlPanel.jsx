@@ -189,6 +189,36 @@ function getStatusPredicates() {
   };
 }
 
+function getPurchaseTemperature(contact) {
+  const stage = String(contact?.stage || '').toLowerCase();
+  const intent = String(contact?.last_intent || '').toLowerCase();
+  const pendingAction = String(contact?.pending_action || '').toLowerCase();
+  const hasUrgentState = getStateMeta(contact?.customer_state).urgent;
+
+  // Clear buying signals
+  if (stage === 'ready_to_buy' || intent === 'purchase_intent') return 'hot';
+  if (pendingAction === 'follow_up' && !hasUrgentState) return 'hot';
+
+  // Non-buying friction signals
+  if (hasUrgentState) return 'cold';
+  if (['complaint', 'delivery_delay', 'returns'].includes(intent)) return 'cold';
+
+  // Mid-funnel and discovery
+  if (['consideration', 'interested', 'new', 'active'].includes(stage)) return 'warm';
+  if (['product_inquiry', 'price_inquiry', 'general', 'greeting'].includes(intent)) return 'warm';
+
+  return 'warm';
+}
+
+function getTemperaturePredicates() {
+  return {
+    all: () => true,
+    hot: (c) => getPurchaseTemperature(c) === 'hot',
+    warm: (c) => getPurchaseTemperature(c) === 'warm',
+    cold: (c) => getPurchaseTemperature(c) === 'cold',
+  };
+}
+
 function normalizeContact(raw) {
   const id    = String(raw?.id || raw?.contact_id || raw?.phone || '').trim();
   const phone = String(raw?.phone || raw?.contact_id || raw?.id || '').trim();
@@ -235,6 +265,7 @@ export default function BotControlPanel({ mostrarToast }) {
   const [selectedId,        setSelectedId]        = useState('');
   const [search,            setSearch]            = useState('');
   const [filterStatus,      setFilterStatus]      = useState('all');
+  const [filterTemperature, setFilterTemperature] = useState('all');
   const [reasonDraft,       setReasonDraft]       = useState('');
   const [loadingContacts,   setLoadingContacts]   = useState(true);
   const [serviceDown,       setServiceDown]       = useState(false);
@@ -269,10 +300,13 @@ export default function BotControlPanel({ mostrarToast }) {
   const filteredContacts = useMemo(() => {
     const q = search.trim().toLowerCase();
     const statusPredicates = getStatusPredicates();
+    const temperaturePredicates = getTemperaturePredicates();
     const statusPredicate = statusPredicates[filterStatus] || statusPredicates.all;
+    const temperaturePredicate = temperaturePredicates[filterTemperature] || temperaturePredicates.all;
 
     return contacts.filter((c) => {
       if (!statusPredicate(c)) return false;
+      if (!temperaturePredicate(c)) return false;
       if (!q) return true;
       return (
         String(c.displayName    || '').toLowerCase().includes(q) ||
@@ -280,7 +314,7 @@ export default function BotControlPanel({ mostrarToast }) {
         String(c.profile_summary|| '').toLowerCase().includes(q)
       );
     });
-  }, [contacts, filterStatus, search]);
+  }, [contacts, filterStatus, filterTemperature, search]);
 
   const selected = useMemo(
     () => contacts.find((c) => c.id === selectedId) || filteredContacts[0] || null,
@@ -343,6 +377,12 @@ export default function BotControlPanel({ mostrarToast }) {
   }, [history, historyMsgFilter]);
 
   const statusPredicates = useMemo(() => getStatusPredicates(), []);
+  const temperaturePredicates = useMemo(() => getTemperaturePredicates(), []);
+  const statusPredicate = statusPredicates[filterStatus] || statusPredicates.all;
+  const statusScopedContacts = contacts.filter(statusPredicate);
+  const hotCount = statusScopedContacts.filter(temperaturePredicates.hot).length;
+  const warmCount = statusScopedContacts.filter(temperaturePredicates.warm).length;
+  const coldCount = statusScopedContacts.filter(temperaturePredicates.cold).length;
   const criticalCount    = contacts.filter(statusPredicates.critical).length;
   const urgentCount      = contacts.filter(statusPredicates.requires_human).length;
   const blacklistedCount = contacts.filter(statusPredicates.blacklist).length;
@@ -379,6 +419,24 @@ export default function BotControlPanel({ mostrarToast }) {
               type="button"
               className={`bot-filter-pill ${filterStatus === k ? 'active' : ''} ${critical ? 'critical' : ''} ${urgent ? 'urgent' : ''} ${ok ? 'ok' : ''}`}
               onClick={() => setFilterStatus(k)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="bot-temperature-tabs" aria-label="Filtro de temperatura de compra">
+          {[
+            { k: 'all',  label: `Todas (${statusScopedContacts.length})` },
+            { k: 'hot',  label: `Caliente (${hotCount})`, temp: 'hot' },
+            { k: 'warm', label: `Templada (${warmCount})`, temp: 'warm' },
+            { k: 'cold', label: `Fría (${coldCount})`, temp: 'cold' },
+          ].map(({ k, label, temp }) => (
+            <button
+              key={k}
+              type="button"
+              className={`bot-filter-pill bot-temp-pill ${filterTemperature === k ? 'active' : ''} ${temp ? `temp-${temp}` : ''}`}
+              onClick={() => setFilterTemperature(k)}
             >
               {label}
             </button>

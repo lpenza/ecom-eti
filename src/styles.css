@@ -3355,6 +3355,12 @@ body {
   flex: 1;
 }
 
+.bot-temperature-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
 .bot-filter-actions {
   display: inline-flex;
   align-items: center;
@@ -3463,6 +3469,28 @@ body {
   background: #ecfdf3;
   border-color: #86efac;
   color: #166534;
+}
+
+.bot-temp-pill {
+  font-size: 0.75rem;
+}
+
+.bot-temp-pill.temp-hot.active {
+  background: #fff7ed;
+  border-color: #fb923c;
+  color: #9a3412;
+}
+
+.bot-temp-pill.temp-warm.active {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  color: #92400e;
+}
+
+.bot-temp-pill.temp-cold.active {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1e3a8a;
 }
 
 /* Stage filter pills */
