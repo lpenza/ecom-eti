@@ -153,14 +153,23 @@ function isUrgentContact(contact) {
   return Boolean(contact?.requires_human_last_time) || isCriticalContact(contact);
 }
 
+function getStatusBucket(contact) {
+  const mode = resolveMode(contact);
+  if (mode === 'blacklist') return 'blacklist';
+  if (isCriticalContact(contact)) return 'critical';
+  if (Boolean(contact?.requires_human_last_time)) return 'requires_human';
+  if (mode === 'paused') return 'bot_paused';
+  return 'bot_active';
+}
+
 function getStatusPredicates() {
   return {
     all:            () => true,
-    critical:       (c) => isCriticalContact(c),
-    requires_human: (c) => Boolean(c?.requires_human_last_time) && !isCriticalContact(c),
-    bot_paused:     (c) => resolveMode(c) === 'paused',
-    blacklist:      (c) => resolveMode(c) === 'blacklist',
-    bot_active:     (c) => resolveMode(c) === 'bot_active' && !Boolean(c.requires_human_last_time),
+    critical:       (c) => getStatusBucket(c) === 'critical',
+    requires_human: (c) => getStatusBucket(c) === 'requires_human',
+    bot_paused:     (c) => getStatusBucket(c) === 'bot_paused',
+    blacklist:      (c) => getStatusBucket(c) === 'blacklist',
+    bot_active:     (c) => getStatusBucket(c) === 'bot_active',
   };
 }
 
@@ -324,6 +333,7 @@ export default function BotControlPanel({ mostrarToast }) {
   const pausedCount      = contacts.filter(statusPredicates.bot_paused).length;
   const botActiveCount   = contacts.filter(statusPredicates.bot_active).length;
   const recommendation = getRecommendedAction(selected);
+  const immediateAttentionCount = criticalCount + urgentCount;
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -371,9 +381,9 @@ export default function BotControlPanel({ mostrarToast }) {
 
         {/* ── Lista de contactos ── */}
         <aside className="bot-contact-list">
-          {urgentCount > 0 && (
+          {immediateAttentionCount > 0 && (
             <div className="bot-list-urgency-banner">
-              ⚠ {urgentCount} contacto{urgentCount > 1 ? 's' : ''} requiere{urgentCount === 1 ? '' : 'n'} atención inmediata
+              ⚠ {immediateAttentionCount} contacto{immediateAttentionCount > 1 ? 's' : ''} requiere{immediateAttentionCount === 1 ? '' : 'n'} atención inmediata
             </div>
           )}
 
