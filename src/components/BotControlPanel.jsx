@@ -8,30 +8,37 @@ import {
 // ── Metadata maps ─────────────────────────────────────────────────────────────
 
 const STAGE_META = {
-  risk:         { label: 'Riesgo',        icon: '🔴', cls: 'bot-stage-risk',         priority: 0 },
-  active:       { label: 'Activo',        icon: '🟢', cls: 'bot-stage-active',        priority: 2 },
-  interested:   { label: 'Interesado',    icon: '🟣', cls: 'bot-stage-interested',    priority: 3 },
-  inactive:     { label: 'Inactivo',      icon: '⚪', cls: 'bot-stage-inactive',      priority: 4 },
-  new:          { label: 'Nuevo',         icon: '🔵', cls: 'bot-stage-new',           priority: 1 },
-  ready_to_buy: { label: 'Ready to buy',  icon: '🛒', cls: 'bot-stage-ready-to-buy',  priority: 2 },
+  risk:          { label: 'Riesgo',         icon: '🔴', cls: 'bot-stage-risk',         priority: 0 },
+  active:        { label: 'Activo',         icon: '🟢', cls: 'bot-stage-active',        priority: 2 },
+  interested:    { label: 'Interesado',     icon: '🟣', cls: 'bot-stage-interested',    priority: 3 },
+  consideration: { label: 'Consideración',  icon: '🤔', cls: 'bot-stage-interested',    priority: 3 },
+  inactive:      { label: 'Inactivo',       icon: '⚪', cls: 'bot-stage-inactive',      priority: 4 },
+  new:           { label: 'Nuevo',          icon: '🔵', cls: 'bot-stage-new',           priority: 1 },
+  ready_to_buy:  { label: 'Ready to buy',   icon: '🛒', cls: 'bot-stage-ready-to-buy',  priority: 2 },
 };
 
 const INTENT_META = {
-  complaint:        { label: 'Reclamo',     icon: '😡', cls: 'bot-intent-complaint', urgent: true },
-  delivery_delay:   { label: 'Demora',      icon: '⏳', cls: 'bot-intent-delay',     urgent: true },
+  complaint:        { label: 'Reclamo',     icon: '😡', cls: 'bot-intent-complaint', urgent: true  },
+  delivery_delay:   { label: 'Demora',      icon: '⏳', cls: 'bot-intent-delay',     urgent: true  },
   returns:          { label: 'Devolución',  icon: '↩️', cls: 'bot-intent-return',    urgent: false },
   purchase_intent:  { label: 'Compra',      icon: '🛒', cls: 'bot-intent-purchase',  urgent: false },
   tracking_request: { label: 'Seguimiento', icon: '📦', cls: 'bot-intent-tracking',  urgent: false },
   product_inquiry:  { label: 'Consulta',    icon: '💬', cls: 'bot-intent-inquiry',   urgent: false },
   greeting:         { label: 'Saludo',      icon: '👋', cls: 'bot-intent-greeting',  urgent: false },
+  objection:        { label: 'Objeción',    icon: '🤨', cls: 'bot-intent-complaint', urgent: false },
+  general:          { label: 'General',     icon: '💬', cls: 'bot-intent-inquiry',   urgent: false },
+  post_purchase:    { label: 'Post-compra', icon: '🧾', cls: 'bot-intent-tracking',  urgent: false },
+  order_status:     { label: 'Estado pedido',icon: '📦', cls: 'bot-intent-tracking', urgent: false },
 };
 
 const STATE_META = {
-  upset:   { label: 'Molesta',    icon: '😠', cls: 'bot-cstate-upset',   urgent: true  },
-  anxious: { label: 'Ansiosa',    icon: '😰', cls: 'bot-cstate-anxious', urgent: true  },
-  neutral: { label: 'Neutral',    icon: '😐', cls: 'bot-cstate-neutral', urgent: false },
-  curious: { label: 'Curiosa',    icon: '🤔', cls: 'bot-cstate-curious', urgent: false },
-  happy:   { label: 'Satisfecha', icon: '😊', cls: 'bot-cstate-happy',   urgent: false },
+  upset:      { label: 'Molesta',     icon: '😠', cls: 'bot-cstate-upset',   urgent: true  },
+  frustrated: { label: 'Frustrada',   icon: '😤', cls: 'bot-cstate-upset',   urgent: true  },
+  anxious:    { label: 'Ansiosa',     icon: '😰', cls: 'bot-cstate-anxious', urgent: true  },
+  neutral:    { label: 'Neutral',     icon: '😐', cls: 'bot-cstate-neutral', urgent: false },
+  curious:    { label: 'Curiosa',     icon: '🤔', cls: 'bot-cstate-curious', urgent: false },
+  happy:      { label: 'Satisfecha',  icon: '😊', cls: 'bot-cstate-happy',   urgent: false },
+  cold:       { label: 'Fría',        icon: '🥶', cls: 'bot-cstate-neutral', urgent: false },
 };
 
 const SUBINTENT_LABELS = {
@@ -93,18 +100,6 @@ function getRecommendedAction(contact) {
   };
 }
 
-function getCaseFlowStep(contact) {
-  if (!contact) return 0;
-  const mode = resolveMode(contact);
-  const pending = String(contact.pending_action || '').toLowerCase();
-
-  if (pending.includes('resolved') || pending.includes('cerrad')) return 4;
-  if (pending.includes('propuesta') || pending.includes('solution')) return 3;
-  if (mode === 'paused' || mode === 'blacklist' || contact.requires_human_last_time) return 2;
-  if (contact.last_intent) return 1;
-  return 0;
-}
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function formatDate(iso) {
   if (!iso) return '—';
@@ -114,7 +109,11 @@ function formatDate(iso) {
 }
 
 function formatPhone(value) {
-  const digits = String(value || '').replace(/\D/g, '');
+  const raw = String(value || '');
+  // WhatsApp-style IDs: strip @suffix, use numeric prefix as-is
+  const atIdx = raw.indexOf('@');
+  const base = atIdx !== -1 ? raw.slice(0, atIdx) : raw;
+  const digits = base.replace(/\D/g, '');
   if (!digits) return '—';
   if (digits.startsWith('598') && digits.length >= 11) {
     const local = digits.slice(3);
@@ -130,6 +129,21 @@ function resolveMode(contact) {
   if (contact?.control?.blacklisted) return 'blacklist';
   if (contact?.control?.bot_enabled === false) return 'paused';
   return 'bot_active';
+}
+
+function isUrgentContact(contact) {
+  return Boolean(contact?.requires_human_last_time)
+    || String(contact?.stage || '').toLowerCase() === 'risk';
+}
+
+function getStatusPredicates() {
+  return {
+    all: () => true,
+    requires_human: (c) => isUrgentContact(c),
+    bot_paused: (c) => resolveMode(c) === 'paused',
+    blacklist: (c) => resolveMode(c) === 'blacklist',
+    bot_active: (c) => resolveMode(c) === 'bot_active' && !Boolean(c.requires_human_last_time),
+  };
 }
 
 function normalizeContact(raw) {
@@ -178,8 +192,6 @@ export default function BotControlPanel({ mostrarToast }) {
   const [selectedId,        setSelectedId]        = useState('');
   const [search,            setSearch]            = useState('');
   const [filterStatus,      setFilterStatus]      = useState('all');
-  const [filterStage,       setFilterStage]       = useState('all');
-  const [filterIntent,      setFilterIntent]      = useState('all');
   const [reasonDraft,       setReasonDraft]       = useState('');
   const [loadingContacts,   setLoadingContacts]   = useState(true);
   const [serviceDown,       setServiceDown]       = useState(false);
@@ -187,8 +199,6 @@ export default function BotControlPanel({ mostrarToast }) {
   const [historyById,       setHistoryById]       = useState({});
   const [loadingHistory,    setLoadingHistory]    = useState(false);
   const [historyMsgFilter,  setHistoryMsgFilter]  = useState('all'); // all | user | assistant
-  const [draftMessage,      setDraftMessage]      = useState('');
-  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
   // ── Load ──────────────────────────────────────────────────────────────────
   const loadContacts = async () => {
@@ -215,14 +225,11 @@ export default function BotControlPanel({ mostrarToast }) {
   // ── Filtered list (sorted already) ────────────────────────────────────────
   const filteredContacts = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const statusPredicates = getStatusPredicates();
+    const statusPredicate = statusPredicates[filterStatus] || statusPredicates.all;
+
     return contacts.filter((c) => {
-      const mode = resolveMode(c);
-      if (filterStatus === 'requires_human' && !c.requires_human_last_time)                        return false;
-      if (filterStatus === 'bot_paused'     && mode !== 'paused')                                   return false;
-      if (filterStatus === 'blacklist'      && mode !== 'blacklist')                                 return false;
-      if (filterStatus === 'bot_active'     && (c.requires_human_last_time || mode !== 'bot_active')) return false;
-      if (filterStage  !== 'all' && String(c.stage       || '').toLowerCase() !== filterStage)  return false;
-      if (filterIntent !== 'all' && String(c.last_intent || '').toLowerCase() !== filterIntent) return false;
+      if (!statusPredicate(c)) return false;
       if (!q) return true;
       return (
         String(c.displayName    || '').toLowerCase().includes(q) ||
@@ -230,7 +237,7 @@ export default function BotControlPanel({ mostrarToast }) {
         String(c.profile_summary|| '').toLowerCase().includes(q)
       );
     });
-  }, [contacts, filterStatus, filterStage, filterIntent, search]);
+  }, [contacts, filterStatus, search]);
 
   const selected = useMemo(
     () => contacts.find((c) => c.id === selectedId) || filteredContacts[0] || null,
@@ -250,7 +257,6 @@ export default function BotControlPanel({ mostrarToast }) {
 
   useEffect(() => {
     setReasonDraft(selected?.control?.reason || '');
-    setDraftMessage('');
     setHistoryMsgFilter('all');
     if (selected?.id) loadHistory(selected.id);
   }, [selected?.id]);
@@ -271,18 +277,6 @@ export default function BotControlPanel({ mostrarToast }) {
     }
     finally { setSavingControl(false); }
   };
-
-  // ── Derived counts for filter pills ───────────────────────────────────────
-  const counts = useMemo(() => {
-    const stage = {}, intent = {};
-    contacts.forEach((c) => {
-      const s = String(c.stage       || '—').toLowerCase();
-      const i = String(c.last_intent || '—').toLowerCase();
-      stage[s]  = (stage[s]  || 0) + 1;
-      intent[i] = (intent[i] || 0) + 1;
-    });
-    return { stage, intent };
-  }, [contacts]);
 
   const mode     = selected ? resolveMode(selected) : 'bot_active';
   const selMode  = mode === 'blacklist' ? 'paused' : mode;
@@ -305,27 +299,16 @@ export default function BotControlPanel({ mostrarToast }) {
     return history.filter((m) => m.role === historyMsgFilter);
   }, [history, historyMsgFilter]);
 
-  const urgentCount = contacts.filter((c) => c.requires_human_last_time || String(c.stage||'').toLowerCase() === 'risk').length;
-  const blacklistedCount = contacts.filter((c) => c.control.blacklisted).length;
-  const pausedCount = contacts.filter((c) => resolveMode(c) === 'paused').length;
-  const botActiveCount = contacts.filter((c) => resolveMode(c) === 'bot_active' && !c.requires_human_last_time).length;
+  const statusPredicates = useMemo(() => getStatusPredicates(), []);
+  const urgentCount = contacts.filter(statusPredicates.requires_human).length;
+  const blacklistedCount = contacts.filter(statusPredicates.blacklist).length;
+  const pausedCount = contacts.filter(statusPredicates.bot_paused).length;
+  const botActiveCount = contacts.filter(statusPredicates.bot_active).length;
   const recommendation = getRecommendedAction(selected);
-  const quickActions = [
-    { key: 'devolucion', label: 'Confirmar devolución', reason: 'Se confirma devolución y seguimiento manual.' },
-    { key: 'escalar', label: 'Escalar a supervisor', reason: 'Caso escalado a supervisor por criticidad.' },
-    { key: 'datos', label: 'Solicitar datos envío', reason: 'Solicitar datos de envío para continuar resolución.' },
-    { key: 'personalizada', label: 'Respuesta personalizada', reason: 'Se requiere respuesta personalizada del operador.' },
-  ];
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="bot-panel-shell">
-      <section className="bot-workflow-head">
-        <div className="bot-workflow-step active">1. Priorizar cola</div>
-        <div className="bot-workflow-step">2. Entender contexto</div>
-        <div className="bot-workflow-step">3. Ejecutar acción</div>
-      </section>
-
       <section className="bot-filterbar bot-filterbar-compact">
         <div className="bot-search-wrap">
           <span className="bot-search-icon">🔍</span>
@@ -357,41 +340,11 @@ export default function BotControlPanel({ mostrarToast }) {
         </div>
 
         <div className="bot-filter-actions">
-          <button
-            type="button"
-            className="bot-link-btn"
-            onClick={() => setShowAdvancedFilters((v) => !v)}
-          >
-            {showAdvancedFilters ? 'Ocultar filtros avanzados' : 'Mostrar filtros avanzados'}
-          </button>
           <button type="button" className="bot-refresh-btn" onClick={loadContacts} disabled={loadingContacts} title="Actualizar">
             {loadingContacts ? '⏳' : '↻'}
           </button>
         </div>
       </section>
-
-      {showAdvancedFilters && (
-        <section className="bot-advanced-filters">
-          <label>
-            Stage
-            <select value={filterStage} onChange={(e) => setFilterStage(e.target.value)}>
-              <option value="all">Todos</option>
-              {Object.keys(counts.stage).filter((s) => s !== '—').map((s) => (
-                <option key={s} value={s}>{getStageMeta(s).label} ({counts.stage[s]})</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Motivo
-            <select value={filterIntent} onChange={(e) => setFilterIntent(e.target.value)}>
-              <option value="all">Todos</option>
-              {Object.keys(counts.intent).filter((i) => i !== '—').map((i) => (
-                <option key={i} value={i}>{getIntentMeta(i).label} ({counts.intent[i]})</option>
-              ))}
-            </select>
-          </label>
-        </section>
-      )}
 
       {/* ── Grid principal ──────────────────────────────────────────────── */}
       <section className="bot-main-grid">
@@ -414,7 +367,7 @@ export default function BotControlPanel({ mostrarToast }) {
             const stageMeta = getStageMeta(c.stage);
             const intentMeta= getIntentMeta(c.last_intent);
             const stateMeta = getStateMeta(c.customer_state);
-            const isRisk    = c.requires_human_last_time || String(c.stage||'').toLowerCase() === 'risk';
+            const isRisk    = isUrgentContact(c);
 
             return (
               <button key={c.id} type="button"
@@ -438,7 +391,6 @@ export default function BotControlPanel({ mostrarToast }) {
                 {/* Fila de intent + estado */}
                 <div className="bot-cc-tags">
                   {c.last_intent && <Badge cls={intentMeta.cls}>{intentMeta.icon} {intentMeta.label}</Badge>}
-                  {c.customer_state && <Badge cls={stateMeta.cls}>{stateMeta.icon} {stateMeta.label}</Badge>}
                   {cMode === 'paused'    && <Badge cls="bot-badge-paused">⏸ Pausado</Badge>}
                   {cMode === 'blacklist' && <Badge cls="bot-badge-black">🚫 Negra</Badge>}
                 </div>
@@ -463,7 +415,7 @@ export default function BotControlPanel({ mostrarToast }) {
             const stageMeta  = getStageMeta(selected.stage);
             const intentMeta = getIntentMeta(selected.last_intent);
             const stateMeta  = getStateMeta(selected.customer_state);
-            const isUrgent   = selected.requires_human_last_time || String(selected.stage||'').toLowerCase() === 'risk';
+            const isUrgent   = isUrgentContact(selected);
 
             return (
               <div className="bot-detail-inner">
@@ -487,38 +439,9 @@ export default function BotControlPanel({ mostrarToast }) {
                   <p>{recommendation.detail}</p>
                 </div>
 
-                <div className="bot-section bot-case-flow">
-                  <div className="bot-section-title">Línea de vida del ticket</div>
-                  <div className="bot-flow-track">
-                    {[
-                      { title: 'Caso iniciado', hint: 'Entrada del cliente' },
-                      { title: 'Identificado', hint: 'Clasificación bot' },
-                      { title: 'Intervención humana', hint: 'Operador toma control' },
-                      { title: 'Propuesta solución', hint: 'Definición de salida' },
-                      { title: 'Resolución', hint: 'Cierre del caso' },
-                    ].map((step, idx) => {
-                      const activeIdx = getCaseFlowStep(selected);
-                      const isDone = idx < activeIdx;
-                      const isCurrent = idx === activeIdx;
-                      return (
-                        <div
-                          key={step.title}
-                          className={`bot-flow-step ${isDone ? 'done' : ''} ${isCurrent ? 'current' : ''}`}
-                        >
-                          <span className="bot-flow-dot" />
-                          <div className="bot-flow-content">
-                            <strong>{step.title}</strong>
-                            <small>{step.hint}</small>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
                 {/* ② Situación del caso */}
                 <div className="bot-section">
-                  <div className="bot-section-title">2. Diagnóstico rápido</div>
+                  <div className="bot-section-title">Diagnóstico del caso</div>
                   <div className="bot-situation-cards">
                     <SitCard icon={intentMeta.icon} label="Motivo" value={intentMeta.label}
                       sub={selected.last_subintent ? SUBINTENT_LABELS[selected.last_subintent] || selected.last_subintent : null}
@@ -527,10 +450,11 @@ export default function BotControlPanel({ mostrarToast }) {
                     {selected.pending_action && (
                       <SitCard icon="⏳" label="Acción pendiente" value={selected.pending_action} cls="bot-sit-card-pending" />
                     )}
-                    {selected.interest_product && (
-                      <SitCard icon="🛍" label="Producto" value={selected.interest_product} cls="bot-sit-card-product" />
-                    )}
                   </div>
+
+                  {selected.interest_product && (
+                    <div className="bot-interest-product">🛍 Producto foco: {selected.interest_product}</div>
+                  )}
 
                   {selected.profile_summary && (
                     <div className="bot-case-summary">
@@ -542,7 +466,7 @@ export default function BotControlPanel({ mostrarToast }) {
 
                 {/* ③ Control del bot */}
                 <div className="bot-section">
-                  <div className="bot-section-title">3. Decisión operativa</div>
+                  <div className="bot-section-title">Decisión operativa</div>
                   <div className="bot-control-row">
                     {/* Bot on/off */}
                     <div className="bot-toggle-group">
@@ -603,7 +527,7 @@ export default function BotControlPanel({ mostrarToast }) {
                 <div className="bot-section bot-section-history">
                   <div className="bot-history-header">
                     <span className="bot-section-title" style={{ marginBottom: 0 }}>
-                      4. Validar conversación
+                      Conversación
                     </span>
                     <div className="bot-history-filters">
                       {[
@@ -645,67 +569,6 @@ export default function BotControlPanel({ mostrarToast }) {
                         </div>
                       );
                     })}
-                  </div>
-
-                  <div className="bot-quick-actions-wrap">
-                    <div className="bot-section-title" style={{ marginBottom: '0.5rem' }}>Atajos operativos</div>
-                    <div className="bot-quick-actions">
-                      {quickActions.map((action) => (
-                        <button
-                          key={action.key}
-                          type="button"
-                          className="bot-quick-action-btn"
-                          onClick={() => {
-                            setReasonDraft(action.reason);
-                            mostrarToast?.('Plantilla aplicada al motivo operativo', 'success');
-                          }}
-                        >
-                          {action.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div className="bot-composer-dock">
-                      <div className="bot-composer-head">
-                        <span>Mensaje operativo</span>
-                        <div className="bot-composer-head-actions">
-                          <strong>{selMode === 'bot_active' ? 'Bot' : 'Humano'}</strong>
-                          <button
-                            type="button"
-                            className="bot-composer-pause"
-                            disabled={savingControl}
-                            onClick={() => {
-                              const prev = selected;
-                              patchLocal(selected.id, { mode: 'paused', bot_enabled: false });
-                              saveControl(selected.id, { mode: 'paused' }, prev);
-                            }}
-                          >
-                            Pausar Bot
-                          </button>
-                        </div>
-                      </div>
-                      <textarea
-                        className="bot-composer-input"
-                        rows={2}
-                        value={draftMessage}
-                        onChange={(e) => setDraftMessage(e.target.value)}
-                        placeholder="Nueva respuesta operativa..."
-                      />
-                      <div className="bot-composer-footer">
-                        <button
-                          type="button"
-                          className="bot-composer-save"
-                          onClick={() => {
-                            if (!draftMessage.trim()) return;
-                            setReasonDraft(draftMessage.trim());
-                            setDraftMessage('');
-                            mostrarToast?.('Mensaje preparado y copiado a motivo operativo', 'success');
-                          }}
-                        >
-                          Guardar
-                        </button>
-                      </div>
-                    </div>
                   </div>
                 </div>
 
