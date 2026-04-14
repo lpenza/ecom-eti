@@ -333,7 +333,7 @@ export default function BotControlPanel({ mostrarToast }) {
         <div className="bot-primary-tabs">
           {[
             { k: 'all', label: `Inbox (${contacts.length})` },
-            { k: 'requires_human', label: `En riesgo (${urgentCount})`, urgent: true },
+            { k: 'requires_human', label: `Requiere humano (${urgentCount})`, urgent: true },
             { k: 'bot_paused', label: `Pausados (${pausedCount})` },
             { k: 'blacklist', label: `Lista negra (${blacklistedCount})` },
             { k: 'bot_active', label: `Bot activo (${botActiveCount})`, ok: true },
