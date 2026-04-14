@@ -195,24 +195,31 @@ function getPurchaseTemperature(contact) {
   const pendingAction = String(contact?.pending_action || '').toLowerCase();
   const hasUrgentState = getStateMeta(contact?.customer_state).urgent;
 
-  // Clear buying signals
+  // Post-purchase or support intents should stay out of purchase-temperature scoring
+  if (['complaint', 'delivery_delay', 'returns', 'tracking_request', 'order_status', 'post_purchase'].includes(intent)) {
+    return null;
+  }
+
+  const hasPurchaseSignal =
+    ['ready_to_buy', 'consideration', 'interested'].includes(stage)
+    || ['purchase_intent', 'product_inquiry', 'price_inquiry', 'objection'].includes(intent)
+    || pendingAction === 'follow_up';
+
+  if (!hasPurchaseSignal) return null;
+
+  // Cold: buying intent exists but current sentiment is resistant
+  if (hasUrgentState || intent === 'objection') return 'cold';
+
+  // Hot: close to decision
   if (stage === 'ready_to_buy' || intent === 'purchase_intent') return 'hot';
-  if (pendingAction === 'follow_up' && !hasUrgentState) return 'hot';
 
-  // Non-buying friction signals
-  if (hasUrgentState) return 'cold';
-  if (['complaint', 'delivery_delay', 'returns'].includes(intent)) return 'cold';
-
-  // Mid-funnel and discovery
-  if (['consideration', 'interested', 'new', 'active'].includes(stage)) return 'warm';
-  if (['product_inquiry', 'price_inquiry', 'general', 'greeting'].includes(intent)) return 'warm';
-
+  // Warm: exploration/qualification phase (including follow-up)
   return 'warm';
 }
 
 function getTemperaturePredicates() {
   return {
-    all: () => true,
+    all: (c) => getPurchaseTemperature(c) !== null,
     hot: (c) => getPurchaseTemperature(c) === 'hot',
     warm: (c) => getPurchaseTemperature(c) === 'warm',
     cold: (c) => getPurchaseTemperature(c) === 'cold',
@@ -380,9 +387,10 @@ export default function BotControlPanel({ mostrarToast }) {
   const temperaturePredicates = useMemo(() => getTemperaturePredicates(), []);
   const statusPredicate = statusPredicates[filterStatus] || statusPredicates.all;
   const statusScopedContacts = contacts.filter(statusPredicate);
-  const hotCount = statusScopedContacts.filter(temperaturePredicates.hot).length;
-  const warmCount = statusScopedContacts.filter(temperaturePredicates.warm).length;
-  const coldCount = statusScopedContacts.filter(temperaturePredicates.cold).length;
+  const purchaseScopedContacts = statusScopedContacts.filter(temperaturePredicates.all);
+  const hotCount = purchaseScopedContacts.filter(temperaturePredicates.hot).length;
+  const warmCount = purchaseScopedContacts.filter(temperaturePredicates.warm).length;
+  const coldCount = purchaseScopedContacts.filter(temperaturePredicates.cold).length;
   const criticalCount    = contacts.filter(statusPredicates.critical).length;
   const urgentCount      = contacts.filter(statusPredicates.requires_human).length;
   const blacklistedCount = contacts.filter(statusPredicates.blacklist).length;
@@ -427,7 +435,7 @@ export default function BotControlPanel({ mostrarToast }) {
 
         <div className="bot-temperature-tabs" aria-label="Filtro de temperatura de compra">
           {[
-            { k: 'all',  label: `Todas (${statusScopedContacts.length})` },
+            { k: 'all',  label: `En compra (${purchaseScopedContacts.length})` },
             { k: 'hot',  label: `Caliente (${hotCount})`, temp: 'hot' },
             { k: 'warm', label: `Templada (${warmCount})`, temp: 'warm' },
             { k: 'cold', label: `Fría (${coldCount})`, temp: 'cold' },
