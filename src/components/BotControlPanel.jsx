@@ -148,11 +148,22 @@ function formatPhone(value) {
   return digits.length >= 8 ? `${digits.slice(0,4)} ${digits.slice(4,8)}`.trim() : digits;
 }
 
+function stripPhoneSuffix(value) {
+  const raw = String(value || '');
+  const atIdx = raw.indexOf('@');
+  return (atIdx !== -1 ? raw.slice(0, atIdx) : raw).trim();
+}
+
+function digitsOnly(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
 function resolveMode(contact) {
+  const hasBlacklistFlag = Boolean(contact?.blacklisted) || Boolean(contact?.control?.blacklisted);
   const e = contact?.control?.mode;
+  if (e === 'blacklist' || hasBlacklistFlag) return 'blacklist';
   if (e === 'human_taken') return 'paused';
   if (e === 'bot_active' || e === 'paused' || e === 'blacklist') return e;
-  if (contact?.control?.blacklisted) return 'blacklist';
   if (contact?.control?.bot_enabled === false) return 'paused';
   return 'bot_active';
 }
@@ -268,6 +279,7 @@ function normalizeContact(raw) {
   const phone = String(raw?.phone || raw?.contact_id || raw?.id || '').trim();
   const requiresHuman = Boolean(raw?.requires_human_last_time);
   const ctrl  = raw?.control && typeof raw.control === 'object' ? raw.control : {};
+  const blacklisted = typeof raw?.blacklisted === 'boolean' ? raw.blacklisted : Boolean(ctrl.blacklisted);
   const name  = String(raw?.displayName || raw?.name || raw?.customer_name || raw?.cliente_nombre || '').trim();
   return {
     ...raw, id, phone,
@@ -276,7 +288,7 @@ function normalizeContact(raw) {
     control: {
       mode: ctrl.mode || null,
       bot_enabled: typeof ctrl.bot_enabled === 'boolean' ? ctrl.bot_enabled : !requiresHuman,
-      blacklisted: Boolean(ctrl.blacklisted),
+      blacklisted,
       reason: String(ctrl.reason || ''),
       updated_at: ctrl.updated_at || null,
     },
@@ -344,6 +356,7 @@ export default function BotControlPanel({ mostrarToast }) {
   // ── Filtered list (sorted already) ────────────────────────────────────────
   const filteredContacts = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const qDigits = digitsOnly(search);
     const statusPredicates = getStatusPredicates();
     const temperaturePredicates = getTemperaturePredicates();
     const statusPredicate = statusPredicates[filterStatus] || statusPredicates.all;
@@ -353,9 +366,16 @@ export default function BotControlPanel({ mostrarToast }) {
       if (activeFilterGroup === 'status' && !statusPredicate(c)) return false;
       if (activeFilterGroup === 'temperature' && !temperaturePredicate(c)) return false;
       if (!q) return true;
+
+      const contactPhoneRaw = String(c.phone || '');
+      const contactPhoneBase = stripPhoneSuffix(contactPhoneRaw);
+      const contactPhoneDigits = digitsOnly(contactPhoneBase);
+
       return (
         String(c.displayName    || '').toLowerCase().includes(q) ||
-        String(c.phone          || '').toLowerCase().includes(q) ||
+        contactPhoneRaw.toLowerCase().includes(q) ||
+        contactPhoneBase.toLowerCase().includes(q) ||
+        (qDigits.length > 0 && contactPhoneDigits.includes(qDigits)) ||
         String(c.profile_summary|| '').toLowerCase().includes(q)
       );
     });
