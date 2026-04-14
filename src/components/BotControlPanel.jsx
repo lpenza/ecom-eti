@@ -60,6 +60,13 @@ function prettifyKey(s) {
   return String(s).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+function cleanDisplayValue(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  if (text.toLowerCase() === 'null' || text.toLowerCase() === 'undefined') return null;
+  return text;
+}
+
 function getStageMeta(s)  { return STAGE_META[String(s||'').toLowerCase()]  || { label: prettifyKey(s), icon: '⚪', cls: 'bot-stage-inactive', priority: 5 }; }
 function getIntentMeta(s) { return INTENT_META[String(s||'').toLowerCase()] || { label: prettifyKey(s), icon: '💬', cls: 'bot-intent-inquiry', urgent: false }; }
 function getStateMeta(s)  { return STATE_META[String(s||'').toLowerCase()]  || { label: prettifyKey(s), icon: '😐', cls: 'bot-cstate-neutral', urgent: false }; }
@@ -472,26 +479,49 @@ export default function BotControlPanel({ mostrarToast }) {
                 {/* ② Situación del caso */}
                 <div className="bot-section">
                   <div className="bot-section-title">Diagnóstico del caso</div>
-                  <div className="bot-situation-cards">
-                    <SitCard icon={intentMeta.icon} label="Motivo" value={intentMeta.label}
-                      sub={selected.last_subintent ? SUBINTENT_LABELS[selected.last_subintent] || prettifyKey(selected.last_subintent) : null}
-                      cls={intentMeta.cls} />
-                    <SitCard icon={stateMeta.icon}  label="Estado cliente" value={stateMeta.label} cls={stateMeta.cls} />
-                    {selected.pending_action && (
-                      <SitCard icon="⏳" label="Acción pendiente" value={selected.pending_action} cls="bot-sit-card-pending" />
-                    )}
-                  </div>
+                  <div className="bot-diagnosis-layout">
+                    <div className="bot-diagnosis-main">
+                      {selected.profile_summary && (
+                        <div className="bot-case-summary bot-case-summary-main">
+                          <span className="bot-case-summary-icon">📋</span>
+                          <div className="bot-case-summary-body">
+                            <div className="bot-case-summary-label">Resumen ejecutivo</div>
+                            <p>{selected.profile_summary}</p>
+                          </div>
+                        </div>
+                      )}
 
-                  {selected.interest_product && (
-                    <div className="bot-interest-product">🛍 Producto foco: {selected.interest_product}</div>
-                  )}
-
-                  {selected.profile_summary && (
-                    <div className="bot-case-summary">
-                      <span className="bot-case-summary-icon">📋</span>
-                      <p>{selected.profile_summary}</p>
+                      <div className="bot-diagnosis-supporting">
+                        {selected.interest_product && (
+                          <div className="bot-interest-product">🛍 Producto foco: {prettifyKey(selected.interest_product)}</div>
+                        )}
+                      </div>
                     </div>
-                  )}
+
+                    <div className="bot-situation-cards">
+                      <SitCard
+                        icon={intentMeta.icon}
+                        label="Motivo"
+                        value={intentMeta.label}
+                        sub={cleanDisplayValue(selected.last_subintent) ? (SUBINTENT_LABELS[selected.last_subintent] || prettifyKey(selected.last_subintent)) : null}
+                        cls={intentMeta.cls}
+                      />
+                      <SitCard
+                        icon={stateMeta.icon}
+                        label="Estado cliente"
+                        value={stateMeta.label}
+                        cls={stateMeta.cls}
+                      />
+                      {cleanDisplayValue(selected.pending_action) && (
+                        <SitCard
+                          icon="⏳"
+                          label="Acción pendiente"
+                          value={prettifyKey(selected.pending_action)}
+                          cls="bot-sit-card-pending"
+                        />
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 {/* ③ Control del bot */}

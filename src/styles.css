@@ -2934,18 +2934,37 @@ body {
 }
 
 /* ── Situation cards (detail view) ── */
+.bot-diagnosis-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.9fr);
+  gap: 0.9rem;
+  align-items: start;
+}
+
+.bot-diagnosis-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.bot-diagnosis-supporting {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
 .bot-situation-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  grid-template-columns: 1fr;
   gap: 0.6rem;
-  margin-bottom: 0.9rem;
 }
 
 .bot-sit-card {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
-  padding: 0.55rem 0.7rem;
+  padding: 0.65rem 0.75rem;
   border-radius: 10px;
   border: 1px solid transparent;
   background: #f8fafc;
@@ -2988,7 +3007,6 @@ body {
   border: 1px solid #86efac;
   border-radius: 8px;
   padding: 0.4rem 0.75rem;
-  margin-bottom: 0.75rem;
   color: #15803d;
 }
 
@@ -3808,6 +3826,25 @@ body {
   margin-top: 0.5rem;
 }
 
+.bot-case-summary-main {
+  margin-top: 0;
+  background: #fffaf0;
+  border-color: #fed7aa;
+}
+
+.bot-case-summary-body {
+  min-width: 0;
+}
+
+.bot-case-summary-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #9a3412;
+  margin-bottom: 0.2rem;
+}
+
 .bot-case-summary-icon {
   font-size: 1rem;
   flex-shrink: 0;
@@ -3819,6 +3856,16 @@ body {
   font-size: 0.85rem;
   color: var(--brand-text-soft);
   line-height: 1.5;
+}
+
+@media (max-width: 920px) {
+  .bot-diagnosis-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .bot-situation-cards {
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  }
 }
 
 /* ── Sit card product variant ── */
