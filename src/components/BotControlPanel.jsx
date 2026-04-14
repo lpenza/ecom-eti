@@ -58,6 +58,53 @@ function contactPriority(c) {
   return score;
 }
 
+function getRecommendedAction(contact) {
+  if (!contact) return { title: 'Sin selección', detail: 'Elegí un contacto para ver acciones sugeridas.', level: 'neutral' };
+
+  const mode = resolveMode(contact);
+  if (mode === 'blacklist') {
+    return {
+      title: 'No responder automáticamente',
+      detail: 'Este contacto está en lista negra. Solo quitar blacklist si corresponde reabrir atención.',
+      level: 'critical',
+    };
+  }
+
+  if (contact.requires_human_last_time || String(contact.stage || '').toLowerCase() === 'risk') {
+    return {
+      title: 'Intervención humana prioritaria',
+      detail: 'Revisar historial y tomar el caso manualmente. Mantener bot pausado hasta cerrar contexto.',
+      level: 'warning',
+    };
+  }
+
+  if (mode === 'paused') {
+    return {
+      title: 'Caso en pausa',
+      detail: 'Validar motivo operativo. Si está resuelto, reactivar Bot activo para retomar automatización.',
+      level: 'info',
+    };
+  }
+
+  return {
+    title: 'Seguimiento normal por bot',
+    detail: 'El bot puede responder. Monitorear intent y estado cliente para detectar escalamiento.',
+    level: 'ok',
+  };
+}
+
+function getCaseFlowStep(contact) {
+  if (!contact) return 0;
+  const mode = resolveMode(contact);
+  const pending = String(contact.pending_action || '').toLowerCase();
+
+  if (pending.includes('resolved') || pending.includes('cerrad')) return 4;
+  if (pending.includes('propuesta') || pending.includes('solution')) return 3;
+  if (mode === 'paused' || mode === 'blacklist' || contact.requires_human_last_time) return 2;
+  if (contact.last_intent) return 1;
+  return 0;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function formatDate(iso) {
   if (!iso) return '—';
@@ -140,6 +187,8 @@ export default function BotControlPanel({ mostrarToast }) {
   const [historyById,       setHistoryById]       = useState({});
   const [loadingHistory,    setLoadingHistory]    = useState(false);
   const [historyMsgFilter,  setHistoryMsgFilter]  = useState('all'); // all | user | assistant
+  const [draftMessage,      setDraftMessage]      = useState('');
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
   // ── Load ──────────────────────────────────────────────────────────────────
   const loadContacts = async () => {
@@ -201,6 +250,7 @@ export default function BotControlPanel({ mostrarToast }) {
 
   useEffect(() => {
     setReasonDraft(selected?.control?.reason || '');
+    setDraftMessage('');
     setHistoryMsgFilter('all');
     if (selected?.id) loadHistory(selected.id);
   }, [selected?.id]);
@@ -256,92 +306,92 @@ export default function BotControlPanel({ mostrarToast }) {
   }, [history, historyMsgFilter]);
 
   const urgentCount = contacts.filter((c) => c.requires_human_last_time || String(c.stage||'').toLowerCase() === 'risk').length;
+  const blacklistedCount = contacts.filter((c) => c.control.blacklisted).length;
+  const pausedCount = contacts.filter((c) => resolveMode(c) === 'paused').length;
+  const botActiveCount = contacts.filter((c) => resolveMode(c) === 'bot_active' && !c.requires_human_last_time).length;
+  const recommendation = getRecommendedAction(selected);
+  const quickActions = [
+    { key: 'devolucion', label: 'Confirmar devolución', reason: 'Se confirma devolución y seguimiento manual.' },
+    { key: 'escalar', label: 'Escalar a supervisor', reason: 'Caso escalado a supervisor por criticidad.' },
+    { key: 'datos', label: 'Solicitar datos envío', reason: 'Solicitar datos de envío para continuar resolución.' },
+    { key: 'personalizada', label: 'Respuesta personalizada', reason: 'Se requiere respuesta personalizada del operador.' },
+  ];
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="bot-panel-shell">
+      <section className="bot-workflow-head">
+        <div className="bot-workflow-step active">1. Priorizar cola</div>
+        <div className="bot-workflow-step">2. Entender contexto</div>
+        <div className="bot-workflow-step">3. Ejecutar acción</div>
+      </section>
 
-      {/* ── Barra de filtros ────────────────────────────────────────────── */}
-      <section className="bot-filterbar">
-
-        {/* Búsqueda */}
+      <section className="bot-filterbar bot-filterbar-compact">
         <div className="bot-search-wrap">
           <span className="bot-search-icon">🔍</span>
-          <input className="bot-search-input" placeholder="Buscar nombre, teléfono, resumen…"
-            value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input
+            className="bot-search-input"
+            placeholder="Buscar nombre, teléfono o resumen..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
         </div>
 
-        {/* Grupos de filtros */}
-        <div className="bot-filter-rows">
-          <div className="bot-filter-row">
-            <span className="bot-filter-label">Atención:</span>
-            {[
-              { k: 'all',            label: `Todos (${contacts.length})` },
-              { k: 'requires_human', label: `⚠ Requiere humano (${contacts.filter(c=>c.requires_human_last_time).length})`, urgent: true },
-              { k: 'bot_active',     label: `🤖 Bot activo (${contacts.filter(c=>!c.requires_human_last_time && resolveMode(c)==='bot_active').length})`, ok: true },
-              { k: 'bot_paused',     label: `⏸ Bot pausado (${contacts.filter(c=>resolveMode(c)==='paused').length})` },
-              { k: 'blacklist',      label: `🚫 Lista negra (${contacts.filter(c=>resolveMode(c)==='blacklist').length})` },
-            ].map(({ k, label, urgent, ok }) => (
-              <button key={k} type="button"
-                className={`bot-filter-pill ${filterStatus === k ? 'active' : ''} ${urgent ? 'urgent' : ''} ${ok ? 'ok' : ''}`}
-                onClick={() => setFilterStatus(k)}>{label}</button>
-            ))}
-          </div>
-
-          <div className="bot-filter-row">
-            <span className="bot-filter-label">Stage:</span>
-            {/* Quick-access shortcuts */}
-            {[
-              { k: 'all',          label: 'Todos',        icon: '' },
-              { k: 'risk',         label: 'Riesgo',       icon: '🔴', cls: 'bot-stage-pill-risk' },
-              { k: 'new',          label: 'Nuevo',        icon: '🔵', cls: 'bot-stage-pill-new' },
-              { k: 'ready_to_buy', label: 'Ready to buy', icon: '🛒', cls: 'bot-stage-pill-ready-to-buy' },
-            ].map(({ k, label, icon, cls }) => (
-              <button key={k} type="button"
-                className={`bot-filter-pill ${filterStage===k?'active':''} ${cls||''}`}
-                onClick={() => setFilterStage(k)}>
-                {icon} {label}
-                {k !== 'all' && counts.stage[k] !== undefined && (
-                  <span className="bot-pill-count">{counts.stage[k]}</span>
-                )}
-              </button>
-            ))}
-            {/* Remaining stages from data not already shown */}
-            {Object.keys(counts.stage).filter(s => s!=='—' && !['risk','new','ready_to_buy'].includes(s)).map((s) => {
-              const m = getStageMeta(s);
-              return (
-                <button key={s} type="button"
-                  className={`bot-filter-pill ${filterStage===s?'active':''} bot-stage-pill-${s}`}
-                  onClick={()=>setFilterStage(s)}>
-                  {m.icon} {m.label} <span className="bot-pill-count">{counts.stage[s]}</span>
-                </button>
-              );
-            })}
-          </div>
-
-          {Object.keys(counts.intent).filter(i=>i!=='—').length > 0 && (
-            <div className="bot-filter-row">
-              <span className="bot-filter-label">Motivo:</span>
-              <button type="button" className={`bot-filter-pill ${filterIntent==='all'?'active':''}`} onClick={()=>setFilterIntent('all')}>Todos</button>
-              {Object.keys(counts.intent).filter(i=>i!=='—').map((i) => {
-                const m = getIntentMeta(i);
-                return (
-                  <button key={i} type="button"
-                    className={`bot-filter-pill ${filterIntent===i?'active':''}`}
-                    onClick={()=>setFilterIntent(i)}>
-                    {m.icon} {m.label} <span className="bot-pill-count">{counts.intent[i]}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
+        <div className="bot-primary-tabs">
+          {[
+            { k: 'all', label: `Inbox (${contacts.length})` },
+            { k: 'requires_human', label: `En riesgo (${urgentCount})`, urgent: true },
+            { k: 'bot_paused', label: `Pausados (${pausedCount})` },
+            { k: 'blacklist', label: `Lista negra (${blacklistedCount})` },
+            { k: 'bot_active', label: `Bot activo (${botActiveCount})`, ok: true },
+          ].map(({ k, label, urgent, ok }) => (
+            <button
+              key={k}
+              type="button"
+              className={`bot-filter-pill ${filterStatus === k ? 'active' : ''} ${urgent ? 'urgent' : ''} ${ok ? 'ok' : ''}`}
+              onClick={() => setFilterStatus(k)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
 
-        <button type="button" className="bot-refresh-btn" onClick={loadContacts} disabled={loadingContacts}
-          title="Actualizar">
-          {loadingContacts ? '⏳' : '↻'}
-        </button>
+        <div className="bot-filter-actions">
+          <button
+            type="button"
+            className="bot-link-btn"
+            onClick={() => setShowAdvancedFilters((v) => !v)}
+          >
+            {showAdvancedFilters ? 'Ocultar filtros avanzados' : 'Mostrar filtros avanzados'}
+          </button>
+          <button type="button" className="bot-refresh-btn" onClick={loadContacts} disabled={loadingContacts} title="Actualizar">
+            {loadingContacts ? '⏳' : '↻'}
+          </button>
+        </div>
       </section>
+
+      {showAdvancedFilters && (
+        <section className="bot-advanced-filters">
+          <label>
+            Stage
+            <select value={filterStage} onChange={(e) => setFilterStage(e.target.value)}>
+              <option value="all">Todos</option>
+              {Object.keys(counts.stage).filter((s) => s !== '—').map((s) => (
+                <option key={s} value={s}>{getStageMeta(s).label} ({counts.stage[s]})</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            Motivo
+            <select value={filterIntent} onChange={(e) => setFilterIntent(e.target.value)}>
+              <option value="all">Todos</option>
+              {Object.keys(counts.intent).filter((i) => i !== '—').map((i) => (
+                <option key={i} value={i}>{getIntentMeta(i).label} ({counts.intent[i]})</option>
+              ))}
+            </select>
+          </label>
+        </section>
+      )}
 
       {/* ── Grid principal ──────────────────────────────────────────────── */}
       <section className="bot-main-grid">
@@ -432,9 +482,43 @@ export default function BotControlPanel({ mostrarToast }) {
                   </div>
                 </div>
 
+                <div className={`bot-recommendation bot-recommendation-${recommendation.level}`}>
+                  <div className="bot-recommendation-title">Acción recomendada: {recommendation.title}</div>
+                  <p>{recommendation.detail}</p>
+                </div>
+
+                <div className="bot-section bot-case-flow">
+                  <div className="bot-section-title">Línea de vida del ticket</div>
+                  <div className="bot-flow-track">
+                    {[
+                      { title: 'Caso iniciado', hint: 'Entrada del cliente' },
+                      { title: 'Identificado', hint: 'Clasificación bot' },
+                      { title: 'Intervención humana', hint: 'Operador toma control' },
+                      { title: 'Propuesta solución', hint: 'Definición de salida' },
+                      { title: 'Resolución', hint: 'Cierre del caso' },
+                    ].map((step, idx) => {
+                      const activeIdx = getCaseFlowStep(selected);
+                      const isDone = idx < activeIdx;
+                      const isCurrent = idx === activeIdx;
+                      return (
+                        <div
+                          key={step.title}
+                          className={`bot-flow-step ${isDone ? 'done' : ''} ${isCurrent ? 'current' : ''}`}
+                        >
+                          <span className="bot-flow-dot" />
+                          <div className="bot-flow-content">
+                            <strong>{step.title}</strong>
+                            <small>{step.hint}</small>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 {/* ② Situación del caso */}
                 <div className="bot-section">
-                  <div className="bot-section-title">Situación del caso</div>
+                  <div className="bot-section-title">2. Diagnóstico rápido</div>
                   <div className="bot-situation-cards">
                     <SitCard icon={intentMeta.icon} label="Motivo" value={intentMeta.label}
                       sub={selected.last_subintent ? SUBINTENT_LABELS[selected.last_subintent] || selected.last_subintent : null}
@@ -458,7 +542,7 @@ export default function BotControlPanel({ mostrarToast }) {
 
                 {/* ③ Control del bot */}
                 <div className="bot-section">
-                  <div className="bot-section-title">Control del bot</div>
+                  <div className="bot-section-title">3. Decisión operativa</div>
                   <div className="bot-control-row">
                     {/* Bot on/off */}
                     <div className="bot-toggle-group">
@@ -519,7 +603,7 @@ export default function BotControlPanel({ mostrarToast }) {
                 <div className="bot-section bot-section-history">
                   <div className="bot-history-header">
                     <span className="bot-section-title" style={{ marginBottom: 0 }}>
-                      💬 Historial de conversación
+                      4. Validar conversación
                     </span>
                     <div className="bot-history-filters">
                       {[
@@ -561,6 +645,67 @@ export default function BotControlPanel({ mostrarToast }) {
                         </div>
                       );
                     })}
+                  </div>
+
+                  <div className="bot-quick-actions-wrap">
+                    <div className="bot-section-title" style={{ marginBottom: '0.5rem' }}>Atajos operativos</div>
+                    <div className="bot-quick-actions">
+                      {quickActions.map((action) => (
+                        <button
+                          key={action.key}
+                          type="button"
+                          className="bot-quick-action-btn"
+                          onClick={() => {
+                            setReasonDraft(action.reason);
+                            mostrarToast?.('Plantilla aplicada al motivo operativo', 'success');
+                          }}
+                        >
+                          {action.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="bot-composer-dock">
+                      <div className="bot-composer-head">
+                        <span>Mensaje operativo</span>
+                        <div className="bot-composer-head-actions">
+                          <strong>{selMode === 'bot_active' ? 'Bot' : 'Humano'}</strong>
+                          <button
+                            type="button"
+                            className="bot-composer-pause"
+                            disabled={savingControl}
+                            onClick={() => {
+                              const prev = selected;
+                              patchLocal(selected.id, { mode: 'paused', bot_enabled: false });
+                              saveControl(selected.id, { mode: 'paused' }, prev);
+                            }}
+                          >
+                            Pausar Bot
+                          </button>
+                        </div>
+                      </div>
+                      <textarea
+                        className="bot-composer-input"
+                        rows={2}
+                        value={draftMessage}
+                        onChange={(e) => setDraftMessage(e.target.value)}
+                        placeholder="Nueva respuesta operativa..."
+                      />
+                      <div className="bot-composer-footer">
+                        <button
+                          type="button"
+                          className="bot-composer-save"
+                          onClick={() => {
+                            if (!draftMessage.trim()) return;
+                            setReasonDraft(draftMessage.trim());
+                            setDraftMessage('');
+                            mostrarToast?.('Mensaje preparado y copiado a motivo operativo', 'success');
+                          }}
+                        >
+                          Guardar
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
