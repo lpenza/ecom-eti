@@ -189,21 +189,50 @@ function getStatusPredicates() {
   };
 }
 
+function normalizeClassifierValue(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function isSupportOrPostPurchaseIntent(intent, subintent) {
+  const exactSupportIntents = new Set([
+    'complaint', 'reclamo', 'claim',
+    'delivery_delay', 'returns', 'tracking_request',
+    'order_status', 'post_purchase',
+    'payment_issue', 'address_issue',
+  ]);
+
+  if (exactSupportIntents.has(intent)) return true;
+
+  const supportHints = ['reclam', 'complain', 'claim', 'devol', 'return', 'tracking', 'order_status', 'post_purchase'];
+  if (supportHints.some((hint) => intent.includes(hint))) return true;
+  if (supportHints.some((hint) => subintent.includes(hint))) return true;
+
+  return false;
+}
+
 function getPurchaseTemperature(contact) {
-  const stage = String(contact?.stage || '').toLowerCase();
-  const intent = String(contact?.last_intent || '').toLowerCase();
-  const pendingAction = String(contact?.pending_action || '').toLowerCase();
+  const stage = normalizeClassifierValue(contact?.stage);
+  const intent = normalizeClassifierValue(contact?.last_intent);
+  const subintent = normalizeClassifierValue(contact?.last_subintent);
+  const pendingAction = normalizeClassifierValue(contact?.pending_action);
   const hasUrgentState = getStateMeta(contact?.customer_state).urgent;
 
   // Post-purchase or support intents should stay out of purchase-temperature scoring
-  if (['complaint', 'delivery_delay', 'returns', 'tracking_request', 'order_status', 'post_purchase'].includes(intent)) {
+  if (isSupportOrPostPurchaseIntent(intent, subintent)) {
     return null;
   }
 
+  const isPurchaseStage = ['ready_to_buy', 'consideration', 'interested'].includes(stage);
+  const isPurchaseIntent = ['purchase_intent', 'product_inquiry', 'price_inquiry', 'objection'].includes(intent);
   const hasPurchaseSignal =
-    ['ready_to_buy', 'consideration', 'interested'].includes(stage)
-    || ['purchase_intent', 'product_inquiry', 'price_inquiry', 'objection'].includes(intent)
-    || pendingAction === 'follow_up';
+    isPurchaseStage
+    || isPurchaseIntent
+    || (pendingAction === 'follow_up' && (isPurchaseStage || isPurchaseIntent));
 
   if (!hasPurchaseSignal) return null;
 
