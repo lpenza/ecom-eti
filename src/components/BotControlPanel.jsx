@@ -71,15 +71,24 @@ function getStageMeta(s)  { return STAGE_META[String(s||'').toLowerCase()]  || {
 function getIntentMeta(s) { return INTENT_META[String(s||'').toLowerCase()] || { label: prettifyKey(s), icon: '💬', cls: 'bot-intent-inquiry', urgent: false }; }
 function getStateMeta(s)  { return STATE_META[String(s||'').toLowerCase()]  || { label: prettifyKey(s), icon: '😐', cls: 'bot-cstate-neutral', urgent: false }; }
 
-// ── Contact priority score (lower = more urgent) ──────────────────────────────
-function contactPriority(c) {
-  let score = 100;
-  if (c.requires_human_last_time) score -= 40;
-  const stage = String(c.stage || '').toLowerCase();
-  score += (STAGE_META[stage]?.priority ?? 5) * 5;
-  if (getIntentMeta(c.last_intent).urgent) score -= 10;
-  if (getStateMeta(c.customer_state).urgent) score -= 10;
-  return score;
+// ── Contact recency sorting (newest first) ───────────────────────────────────
+function getContactSortTimestamp(contact) {
+  const candidates = [
+    contact?.last_message_at,
+    contact?.updated_at,
+    contact?.control?.updated_at,
+  ];
+
+  for (const value of candidates) {
+    const timestamp = new Date(value || 0).getTime();
+    if (!Number.isNaN(timestamp) && timestamp > 0) return timestamp;
+  }
+
+  return 0;
+}
+
+function compareContactsByRecency(a, b) {
+  return getContactSortTimestamp(b) - getContactSortTimestamp(a);
 }
 
 function getRecommendedAction(contact) {
@@ -242,7 +251,7 @@ export default function BotControlPanel({ mostrarToast }) {
       const normalized = (Array.isArray(data) ? data : [])
         .map(normalizeContact)
         .filter((c) => !!c.id)
-        .sort((a, b) => contactPriority(a) - contactPriority(b));
+        .sort(compareContactsByRecency);
       setContacts(normalized);
       setServiceDown(false);
       setSelectedId((prev) =>
