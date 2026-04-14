@@ -42,12 +42,17 @@ const STATE_META = {
 };
 
 const SUBINTENT_LABELS = {
-  delivery_delay:   'Demora en entrega',
-  wrong_product:    'Producto incorrecto',
-  missing_item:     'Falta un ítem',
-  damaged_product:  'Producto dañado',
-  refund_request:   'Reembolso',
-  exchange_request: 'Cambio de producto',
+  delivery_delay:                  'Demora en entrega',
+  wrong_product:                   'Producto incorrecto',
+  missing_item:                    'Falta un ítem',
+  damaged_product:                 'Producto dañado',
+  refund_request:                  'Reembolso',
+  exchange_request:                'Cambio de producto',
+  delivery_expectation_mismatch:   'Expectativa de entrega',
+  product_expectation_mismatch:    'Expectativa de producto',
+  price_objection:                 'Objeción de precio',
+  quality_objection:               'Objeción de calidad',
+  shipping_cost_objection:         'Costo de envío',
 };
 
 function getStageMeta(s)  { return STAGE_META[String(s||'').toLowerCase()]  || { label: s||'—', icon: '⚪', cls: 'bot-stage-inactive', priority: 5 }; }
