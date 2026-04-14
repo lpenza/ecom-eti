@@ -23,8 +23,10 @@ import {
   regenerarCacheUES,
   obtenerEstadoCacheUES,
   obtenerReclamosPendientes,
+  obtenerPedidosDespachados,
   obtenerPedidosEnviados,
   marcarEtiquetaImpresa,
+  marcarDespachados,
 } from './services/api';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
@@ -102,6 +104,7 @@ function App() {
   const [previewMode, setPreviewMode] = useState('normal'); // 'normal' | 'reclamo'
   const [reclamosPendientes, setReclamosPendientes] = useState([]);
   const [reclamosPendientesLoading, setReclamosPendientesLoading] = useState(false);
+  const [pedidosDespachadosList, setPedidosDespachadosList] = useState([]);
   const [pedidosEnviadosList, setPedidosEnviadosList] = useState([]);
   const [pedidosEnviadosLoaded, setPedidosEnviadosLoaded] = useState(false);
   const [pedidosEnviadosLoading, setPedidosEnviadosLoading] = useState(false);
@@ -215,6 +218,7 @@ function App() {
     pendientesFulfillment: pedidosListosFulfillment.length,
     whatsappTracking: pedidosTrackingWhatsApp.length,
     revisionManual: pedidosRevisionManual.length,
+    despachados: pedidosDespachadosList.length,
     enviados: pedidosEnviadosList.length,
     trackingAlert: hayDescuadreTracking || pedidosRevisionManual.length > 0,
     trackingBreakdown: {
@@ -235,6 +239,7 @@ function App() {
     }
     if (tableFilter === 'pendientesFulfillment') return pedidosListosFulfillment;
     if (tableFilter === 'revisionManual') return pedidosRevisionManual;
+    if (tableFilter === 'despachados') return pedidosDespachadosList;
     if (tableFilter === 'enviados') return pedidosEnviadosList;
     return pedidosPendientesValidables;
   })();
@@ -424,7 +429,17 @@ function App() {
     return () => { cancelled = true; };
   }, []);
 
-  // Cargar pedidos enviados/procesados
+  // Cargar pedidos despachados (sin fulfillment aún)
+  const cargarPedidosDespachados = useCallback(async () => {
+    try {
+      const data = await obtenerPedidosDespachados();
+      setPedidosDespachadosList(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('❌ Error cargando pedidos despachados:', error);
+    }
+  }, []);
+
+  // Cargar pedidos procesados (fulfillment enviado)
   const cargarPedidosEnviados = useCallback(async () => {
     setPedidosEnviadosLoading(true);
     try {
@@ -439,8 +454,9 @@ function App() {
   }, []);
 
   useEffect(() => {
+    cargarPedidosDespachados();
     cargarPedidosEnviados();
-  }, [cargarPedidosEnviados]);
+  }, [cargarPedidosDespachados, cargarPedidosEnviados]);
 
   // Confirmación desde modal (uno o múltiples pedidos)
   const handleConfirmarGeneracion = async (items) => {
@@ -820,7 +836,7 @@ function App() {
       }
 
       await cargarPedidos(); // Recargar lista de pedidos
-      cargarPedidosEnviados(); // Actualizar procesados
+      cargarPedidosEnviados(); cargarPedidosDespachados();
     } catch (error) {
       console.error('Error en fulfillment:', error);
       mostrarToast('Error al procesar fulfillment', 'error');
@@ -1018,6 +1034,54 @@ function App() {
       console.error('Error combinando etiquetas seleccionadas:', error);
       mostrarToast('No se pudieron combinar las etiquetas seleccionadas', 'error');
     }
+  };
+
+  // Fulfillment para pedidos en revision manual (sin canal de notificacion)
+  const handleFulfillmentRevisionManual = async () => {
+    const ids = selectedPedidos.length > 0
+      ? selectedPedidos.filter((id) => pedidosRevisionManual.some((p) => p.id === id))
+      : pedidosRevisionManual.map((p) => p.id);
+
+    if (ids.length === 0) {
+      mostrarToast('No hay pedidos de revision manual para procesar', 'warning');
+      return;
+    }
+
+    const resultado = await ejecutarFulfillmentShopify(ids);
+    if (!resultado.success) {
+      mostrarToast(resultado.error || 'Error en fulfillment', 'error');
+      return;
+    }
+    if (resultado.failCount > 0) {
+      mostrarToast(`⚠️ Fulfillment: ${resultado.successCount}/${resultado.count} OK`, 'warning');
+    } else {
+      mostrarToast(`✅ ${resultado.successCount} fulfillment(s) enviados`, 'success');
+    }
+    cargarPedidosEnviados();
+    cargarPedidosDespachados();
+  };
+
+  // Marcar pedidos seleccionados como despachados (tag DESPACHADO en Shopify + estado enviado)
+  const handleMarcarDespachados = async () => {
+    const ids = selectedPedidos.length > 0
+      ? selectedPedidos
+      : pedidosFiltradosPorCard.map((p) => p.id);
+
+    if (ids.length === 0) {
+      mostrarToast('No hay pedidos para marcar', 'warning');
+      return;
+    }
+
+    const resultado = await marcarDespachados(ids);
+    if (!resultado?.success) {
+      mostrarToast(resultado?.error || 'Error al marcar como despachados', 'error');
+      return;
+    }
+
+    mostrarToast(`✅ ${resultado.ok}/${resultado.total} pedidos marcados como despachados`, 'success');
+    limpiarSeleccion();
+    await cargarPedidos();
+    cargarPedidosDespachados();
   };
 
   // Handler para login UES
@@ -1286,9 +1350,25 @@ function App() {
         mostrarToast(resultado.error || 'Error en fulfillment del reclamo', 'error');
         return;
       }
+      setReclamosPendientes((prev) => prev.filter((r) => r.id !== reclamo.id));
       mostrarToast(`✅ Fulfillment de reclamo enviado a Shopify`, 'success');
     } catch (error) {
       mostrarToast('Error al ejecutar fulfillment del reclamo', 'error');
+    }
+  };
+
+  const handleMarcarDespachadoReclamo = async (reclamo) => {
+    try {
+      const resultado = await marcarDespachados([reclamo.id]);
+      if (!resultado.success) {
+        mostrarToast(resultado.error || 'Error al marcar como despachado', 'error');
+        return;
+      }
+      setReclamosPendientes((prev) => prev.filter((r) => r.id !== reclamo.id));
+      cargarPedidosDespachados();
+      mostrarToast(`✅ Reclamo #${reclamo.numero_pedido || reclamo.id} marcado como despachado`, 'success');
+    } catch (error) {
+      mostrarToast('Error al marcar reclamo como despachado', 'error');
     }
   };
 
@@ -1358,7 +1438,7 @@ function App() {
         )}
 
       {activeView === 'pedidos' && (
-        <>
+        <div className="app-main-body">
           {/* Toolbar con acciones */}
           <Toolbar
             onSincronizar={handleSincronizarShopify}
@@ -1452,6 +1532,74 @@ function App() {
               >
                 📥 Descargar seleccionadas ({pedidosSeleccionadosConEtiquetaDescargable.length})
               </button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleMarcarDespachados}
+                title={selectedPedidos.length > 0
+                  ? `Marcar ${selectedPedidos.length} pedido(s) seleccionado(s) como despachados`
+                  : `Marcar todos los ${pedidosFiltradosPorCard.length} pedidos de esta vista como despachados`}
+              >
+                🚀 Marcar como Despachados ({selectedPedidos.length > 0 ? selectedPedidos.length : pedidosFiltradosPorCard.length})
+              </button>
+            </div>
+          )}
+
+          {tableFilter === 'revisionManual' && (
+            <div className="section-action-bar">
+              <span>
+                {selectedPedidos.length > 0
+                  ? `Seleccionados: ${selectedPedidos.length}`
+                  : `${pedidosRevisionManual.length} pedido(s) sin canal de notificación`}
+              </span>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleFulfillmentRevisionManual}
+                disabled={pedidosRevisionManual.length === 0}
+                title="Enviar fulfillment a Shopify para estos pedidos (sin notificación al cliente)"
+              >
+                📨 Enviar Fulfillment ({selectedPedidos.length > 0 ? selectedPedidos.length : pedidosRevisionManual.length})
+              </button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleMarcarDespachados}
+                disabled={pedidosRevisionManual.length === 0}
+                title="Marcar como despachados y agregar tag DESPACHADO en Shopify"
+              >
+                🚀 Marcar como Despachados ({selectedPedidos.length > 0 ? selectedPedidos.length : pedidosRevisionManual.length})
+              </button>
+            </div>
+          )}
+
+          {tableFilter === 'despachados' && (
+            <div className="section-action-bar">
+              <span>
+                {selectedPedidos.length > 0
+                  ? `Seleccionados: ${selectedPedidos.length}`
+                  : `${pedidosDespachadosList.length} pedido(s) despachados sin fulfillment`}
+              </span>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={async () => {
+                  const ids = selectedPedidos.length > 0
+                    ? selectedPedidos.filter((id) => pedidosDespachadosList.some((p) => p.id === id))
+                    : pedidosDespachadosList.map((p) => p.id);
+                  if (ids.length === 0) { mostrarToast('No hay pedidos para procesar', 'warning'); return; }
+                  const resultado = await ejecutarFulfillmentShopify(ids);
+                  if (!resultado.success) { mostrarToast(resultado.error || 'Error en fulfillment', 'error'); return; }
+                  if (resultado.failCount > 0) {
+                    mostrarToast(`⚠️ Fulfillment: ${resultado.successCount}/${resultado.count} OK`, 'warning');
+                  } else {
+                    mostrarToast(`✅ ${resultado.successCount} fulfillment(s) enviados`, 'success');
+                  }
+                  limpiarSeleccion();
+                  cargarPedidosDespachados();
+                  cargarPedidosEnviados();
+                }}
+                disabled={pedidosDespachadosList.length === 0}
+                title="Enviar fulfillment a Shopify para los despachados seleccionados"
+              >
+                📨 Enviar Fulfillment ({selectedPedidos.length > 0 ? selectedPedidos.length : pedidosDespachadosList.length})
+              </button>
             </div>
           )}
 
@@ -1491,51 +1639,71 @@ function App() {
                         <th>Pedido</th>
                         <th>Cliente</th>
                         <th>Tracking</th>
+                        <th>Estado</th>
                         <th>Fecha</th>
                         <th>Acciones</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {reclamosPendientes.map((reclamo) => (
-                        <tr key={reclamo.id}>
-                          <td><strong>RCL{reclamo.numero_pedido || reclamo.id}</strong></td>
-                          <td>#{reclamo.numero_pedido || reclamo.id}</td>
-                          <td>
-                            <div>{reclamo.cliente_nombre || '—'}</div>
-                            <div className="reclamo-sub">{reclamo.cliente_telefono || reclamo.cliente_email || '—'}</div>
-                          </td>
-                          <td>{reclamo.numero_seguimiento_ues || '—'}</td>
-                          <td>{reclamo.created_at ? new Date(reclamo.created_at).toLocaleDateString('es-UY') : '—'}</td>
-                          <td className="reclamo-actions">
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => handleNotificarReclamoWhatsApp(reclamo)}
-                              title="Notificar por WhatsApp y marcar como notificado"
-                            >
-                              💬 WhatsApp
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => handleDescargarPdfReclamo(reclamo)}
-                              disabled={!reclamo.link_etiqueta_drive}
-                              title="Descargar PDF de la etiqueta"
-                            >
-                              📥 PDF
-                            </button>
-                            <button
-                              type="button"
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => handleFulfillmentReclamo(reclamo)}
-                              disabled={!reclamo.numero_seguimiento_ues}
-                              title="Ejecutar fulfillment en Shopify"
-                            >
-                              🏪 Shopify
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
+                      {reclamosPendientes.map((reclamo) => {
+                        const estado = reclamo.estado || 'etiqueta_generada';
+                        const isDespachado = estado === 'despachado';
+                        const isEnviado    = estado === 'enviado';
+                        return (
+                          <tr key={reclamo.id}>
+                            <td><strong>RCL{reclamo.numero_pedido || reclamo.id}</strong></td>
+                            <td>#{reclamo.numero_pedido || reclamo.id}</td>
+                            <td>
+                              <div>{reclamo.cliente_nombre || '—'}</div>
+                              <div className="reclamo-sub">{reclamo.cliente_telefono || reclamo.cliente_email || '—'}</div>
+                            </td>
+                            <td>{reclamo.numero_seguimiento_ues || '—'}</td>
+                            <td>
+                              {isEnviado    && <span className="reclamo-estado-badge reclamo-estado-enviado">✅ Procesado</span>}
+                              {isDespachado && !isEnviado && <span className="reclamo-estado-badge reclamo-estado-despachado">🚀 Despachado</span>}
+                              {!isDespachado && !isEnviado && <span className="reclamo-estado-badge reclamo-estado-generada">📦 Etiqueta lista</span>}
+                            </td>
+                            <td>{reclamo.created_at ? new Date(reclamo.created_at).toLocaleDateString('es-UY') : '—'}</td>
+                            <td className="reclamo-actions">
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => handleNotificarReclamoWhatsApp(reclamo)}
+                                title="Notificar por WhatsApp y marcar como notificado"
+                              >
+                                💬 WhatsApp
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => handleDescargarPdfReclamo(reclamo)}
+                                disabled={!reclamo.link_etiqueta_drive}
+                                title="Descargar PDF de la etiqueta"
+                              >
+                                📥 PDF
+                              </button>
+                              <button
+                                type="button"
+                                className={`btn btn-sm ${isDespachado || isEnviado ? 'btn-secondary' : 'btn-primary'}`}
+                                onClick={() => handleMarcarDespachadoReclamo(reclamo)}
+                                disabled={isDespachado || isEnviado}
+                                title={isDespachado || isEnviado ? 'Ya marcado como despachado' : 'Marcar como despachado'}
+                              >
+                                🚀 Despachar
+                              </button>
+                              <button
+                                type="button"
+                                className={`btn btn-sm ${isEnviado ? 'btn-secondary' : 'btn-primary'}`}
+                                onClick={() => handleFulfillmentReclamo(reclamo)}
+                                disabled={!reclamo.numero_seguimiento_ues || isEnviado}
+                                title={isEnviado ? 'Fulfillment ya enviado' : 'Ejecutar fulfillment en Shopify'}
+                              >
+                                🏪 Shopify
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -1562,7 +1730,7 @@ function App() {
               onToggleSelectAll={toggleSelectAll}
               onReenviarNotificacion={handleReenviarNotificacion}
               onContactarPendiente={handleContactarPendienteRapido}
-              onMarcarNotificado={async (pedidoId) => { await marcarPedidoNotificado(pedidoId); cargarPedidosEnviados(); }}
+              onMarcarNotificado={async (pedidoId) => { await marcarPedidoNotificado(pedidoId); cargarPedidosEnviados(); cargarPedidosDespachados(); }}
               onDescargarEtiqueta={handleDescargarEtiqueta}
               onDescartarEtiqueta={handleDescartarEtiqueta}
               fulfillmentPreview={fulfillmentPreviewIds !== null}
@@ -1575,7 +1743,7 @@ function App() {
             />
           </div>
           )}
-        </>
+        </div>
       )}
 
       {activeView === 'especiales' && (

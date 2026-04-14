@@ -472,6 +472,7 @@ class SupabaseService {
         .from('pedidos')
         .select('*')
         .neq('estado', 'enviado')
+        .neq('estado', 'despachado')
         .neq('es_envio_express', true)
         .neq('es_reclamo', true)
         .order('created_at', { ascending: true });
@@ -506,22 +507,34 @@ class SupabaseService {
     }, 0);
   }
 
-  // Obtener pedidos ya enviados/procesados (estado='enviado' o con notificacion_enviada_at)
-  async obtenerPedidosEnviados() {
+  // Obtener pedidos despachados (marcados manualmente, sin fulfillment Shopify aún)
+  async obtenerPedidosDespachados() {
     const { data, error } = await supabase
       .from('pedidos')
       .select('*')
-      .or('estado.eq.enviado,notificacion_enviada_at.not.is.null')
+      .eq('estado', 'despachado')
       .order('created_at', { ascending: false });
 
     if (error) throw error;
     return data || [];
   }
 
-  // Obtener todos los shopify_order_id existentes en DB (para detectar pedidos nuevos en sync)
+  // Obtener pedidos procesados (fulfillment enviado a Shopify)
+  async obtenerPedidosEnviados() {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .eq('estado', 'enviado')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Obtener todos los numero_pedido existentes en DB (para detectar pedidos nuevos en sync)
   async obtenerShopifyOrderIds() {
-    const { data } = await supabase.from('pedidos').select('shopify_order_id');
-    return new Set((data || []).map((p) => String(p.shopify_order_id)).filter(Boolean));
+    const { data } = await supabase.from('pedidos').select('numero_pedido');
+    return new Set((data || []).map((p) => String(p.numero_pedido)).filter(Boolean));
   }
 
   // Obtener reclamos pendientes de notificación (es_reclamo=true, etiqueta generada, sin notificar)
@@ -714,11 +727,13 @@ class SupabaseService {
 
     for (const orden of ordenes) {
       try {
+        const numeroPedido = String(orden.order_number);
+
         // Verificar si ya existe
         const { data: existente } = await supabase
           .from('pedidos')
           .select('id')
-          .eq('shopify_order_id', orden.id)
+          .eq('numero_pedido', numeroPedido)
           .single();
 
         if (existente) {
@@ -727,10 +742,9 @@ class SupabaseService {
             .from('pedidos')
             .update({
               estado: this.mapearEstadoShopify(orden.fulfillment_status),
-              total: parseFloat(orden.total_price),
               updated_at: new Date().toISOString()
             })
-            .eq('shopify_order_id', orden.id)
+            .eq('numero_pedido', numeroPedido)
             .select();
 
           resultados.push(data[0]);
@@ -739,8 +753,7 @@ class SupabaseService {
           const { data } = await supabase
             .from('pedidos')
             .insert({
-              shopify_order_id: orden.id,
-              numero_orden: orden.order_number,
+              numero_pedido: numeroPedido,
               cliente_nombre: `${orden.customer?.first_name || ''} ${orden.customer?.last_name || ''}`.trim(),
               cliente_email: orden.customer?.email || '',
               cliente_telefono: orden.customer?.phone || orden.shipping_address?.phone || '',
@@ -748,7 +761,6 @@ class SupabaseService {
               direccion_ciudad: orden.shipping_address?.city || '',
               direccion_departamento: orden.shipping_address?.province || '',
               direccion_codigo_postal: orden.shipping_address?.zip || '',
-              total: parseFloat(orden.total_price),
               estado: 'pendiente',
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString()

@@ -72,6 +72,14 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
           <div className="stat-label">Revision Manual</div>
         </button>
         <button
+          className={`stat-card stat-card-despachado ${activeFilter === 'despachados' ? 'stat-card-active' : ''}`}
+          onClick={() => onFilterChange?.('despachados')}
+          type="button"
+        >
+          <div className="stat-value">{stats.despachados || 0}</div>
+          <div className="stat-label">🚀 Despachados</div>
+        </button>
+        <button
           className={`stat-card stat-card-neutral ${activeFilter === 'enviados' ? 'stat-card-active' : ''}`}
           onClick={() => onFilterChange?.('enviados')}
           type="button"

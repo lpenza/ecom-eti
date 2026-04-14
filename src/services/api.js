@@ -352,10 +352,30 @@ export async function inicializarPlantillas() {
   return response.data || [];
 }
 
-// ==================== PEDIDOS PROCESADOS ====================
+// ==================== MARCAR DESPACHADOS BULK ====================
 
 /**
- * Obtener pedidos ya enviados/procesados
+ * Marcar múltiples pedidos como despachados (estado enviado + tag DESPACHADO en Shopify)
+ */
+export async function marcarDespachados(pedidoIds) {
+  return await fetchAPI('/marcar-despachados-bulk', {
+    method: 'POST',
+    body: JSON.stringify({ pedidoIds }),
+  });
+}
+
+// ==================== PEDIDOS DESPACHADOS / PROCESADOS ====================
+
+/**
+ * Obtener pedidos despachados (sin fulfillment Shopify aún)
+ */
+export async function obtenerPedidosDespachados() {
+  const data = await fetchAPI('/pedidos-despachados', { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+/**
+ * Obtener pedidos procesados (fulfillment enviado a Shopify)
  */
 export async function obtenerPedidosEnviados() {
   const data = await fetchAPI('/pedidos-enviados', { method: 'GET' });

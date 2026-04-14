@@ -913,11 +913,11 @@ app.post('/api/ues/regenerar-cache', async (req, res) => {
 // Sincronizar con Shopify (alias para React)
 app.post('/api/sync-shopify', async (req, res) => {
   try {
-    const [ordenes, existingIds] = await Promise.all([
+    const [ordenes, existingNums] = await Promise.all([
       shopifyService.obtenerOrdenes(),
       supabaseService.obtenerShopifyOrderIds(),
     ]);
-    const ordenesNuevas = ordenes.filter((o) => !existingIds.has(String(o.id)));
+    const ordenesNuevas = ordenes.filter((o) => !existingNums.has(String(o.order_number)));
     const resultado = await supabaseService.sincronizarOrdenes(ordenes);
     logService.info(`Sincronizados ${resultado.length} pedidos desde Shopify (${ordenesNuevas.length} nuevos)`);
     // Agregar tag "ETIQUETA CREADA" a pedidos nuevos (best-effort)
@@ -936,11 +936,11 @@ app.post('/api/sync-shopify', async (req, res) => {
 // Sincronizar con Shopify (ruta legacy)
 app.post('/api/sincronizar-shopify', async (req, res) => {
   try {
-    const [ordenes, existingIds] = await Promise.all([
+    const [ordenes, existingNums] = await Promise.all([
       shopifyService.obtenerOrdenes(),
       supabaseService.obtenerShopifyOrderIds(),
     ]);
-    const ordenesNuevas = ordenes.filter((o) => !existingIds.has(String(o.id)));
+    const ordenesNuevas = ordenes.filter((o) => !existingNums.has(String(o.order_number)));
     const resultado = await supabaseService.sincronizarOrdenes(ordenes);
     logService.info(`Sincronizados ${resultado.length} pedidos desde Shopify (${ordenesNuevas.length} nuevos)`);
     for (const orden of ordenesNuevas) {
@@ -970,25 +970,20 @@ async function handleFulfillmentShopify(req, res) {
     }
 
     const candidatos = pedidos.filter(
-      (p) => (p.shopify_order_id || p.numero_pedido) && p.numero_seguimiento_ues
+      (p) => p.numero_pedido && p.numero_seguimiento_ues
     );
 
     const resultados = [];
 
     for (const pedido of candidatos) {
       try {
-        // Resolver shopify_order_id si no está guardado en DB
-        let shopifyOrderId = pedido.shopify_order_id;
-        if (!shopifyOrderId && pedido.numero_pedido) {
-          logService.info(`Resolviendo shopify_order_id para pedido #${pedido.numero_pedido}...`);
-          shopifyOrderId = await shopifyService.obtenerIdPorNumeroPedido(pedido.numero_pedido);
-          if (!shopifyOrderId) {
-            throw new Error(`No se encontró la orden #${pedido.numero_pedido} en Shopify`);
-          }
-          logService.info(`shopify_order_id resuelto: ${shopifyOrderId} para pedido #${pedido.numero_pedido}`);
-          // Persistir para no tener que buscarlo de nuevo
-          supabaseService.actualizarPedido(pedido.id, { shopify_order_id: String(shopifyOrderId) }).catch(() => {});
+        // Resolver shopify_order_id interno de Shopify usando numero_pedido
+        logService.info(`Resolviendo ID Shopify para pedido #${pedido.numero_pedido}...`);
+        const shopifyOrderId = await shopifyService.obtenerIdPorNumeroPedido(pedido.numero_pedido);
+        if (!shopifyOrderId) {
+          throw new Error(`No se encontró la orden #${pedido.numero_pedido} en Shopify`);
         }
+        logService.info(`ID Shopify resuelto: ${shopifyOrderId} para pedido #${pedido.numero_pedido}`);
 
         logService.info(`Fulfillment pedido #${pedido.numero_pedido} | shopifyOrderId=${shopifyOrderId} | tracking=${pedido.numero_seguimiento_ues}`);
 
@@ -1017,14 +1012,13 @@ async function handleFulfillmentShopify(req, res) {
           pedido: pedido // Devolver pedido completo para generar links de WhatsApp
         });
       } catch (error) {
-        logService.error(`❌ Fulfillment FALLÓ pedido #${pedido.numero_pedido} | shopifyOrderId=${pedido.shopify_order_id || 'N/A'} | tracking=${pedido.numero_seguimiento_ues}`, {
+        logService.error(`❌ Fulfillment FALLÓ pedido #${pedido.numero_pedido} | tracking=${pedido.numero_seguimiento_ues}`, {
           mensaje: error.message,
           stack: error.stack,
         });
         resultados.push({
           pedidoId: pedido.id,
           numeroPedido: pedido.numero_pedido,
-          shopifyOrderId: pedido.shopify_order_id || null,
           success: false,
           error: error.message,
         });
@@ -1153,12 +1147,19 @@ app.post('/api/marcar-notificado/:pedidoId', async (req, res) => {
 
     logService.info(`Pedido ${pedidoId} marcado como notificado y enviado (WhatsApp manual)`);
 
-    // Agregar tag DESPACHADO en Shopify (best-effort)
-    if (pedido.shopify_order_id) {
-      shopifyService.agregarTagAOrden(pedido.shopify_order_id, 'DESPACHADO').catch((e) =>
-        logService.warning(`No se pudo agregar tag DESPACHADO a orden ${pedido.shopify_order_id}: ${e.message}`)
-      );
-    }
+    // Agregar tag DESPACHADO en Shopify (best-effort, resolviendo shopify_order_id si es necesario)
+    ;(async () => {
+      try {
+        if (pedido.numero_pedido) {
+          const shopifyOrderId = await shopifyService.obtenerIdPorNumeroPedido(pedido.numero_pedido);
+          if (shopifyOrderId) {
+            await shopifyService.agregarTagAOrden(shopifyOrderId, 'DESPACHADO');
+          }
+        }
+      } catch (e) {
+        logService.warning(`No se pudo agregar tag DESPACHADO al pedido #${pedido.numero_pedido}: ${e.message}`);
+      }
+    })();
 
     res.json({
       success: true,
@@ -1167,6 +1168,51 @@ app.post('/api/marcar-notificado/:pedidoId', async (req, res) => {
     });
   } catch (error) {
     logService.error('Error al marcar pedido como notificado', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Marcar múltiples pedidos como despachados (tag DESPACHADO en Shopify + estado enviado)
+app.post('/api/marcar-despachados-bulk', async (req, res) => {
+  try {
+    const { pedidoIds } = req.body;
+    if (!Array.isArray(pedidoIds) || pedidoIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'pedidoIds requerido' });
+    }
+
+    const ahora = new Date().toISOString();
+    const resultados = await Promise.all(
+      pedidoIds.map(async (pedidoId) => {
+        try {
+          const pedido = await supabaseService.obtenerPedido(pedidoId);
+          if (!pedido) return { pedidoId, success: false, error: 'No encontrado' };
+
+          await supabaseService.actualizarPedido(pedidoId, {
+            estado: 'despachado',
+            notificacion_enviada_at: ahora,
+          });
+
+          // Agregar tag DESPACHADO en Shopify (best-effort)
+          if (pedido.numero_pedido) {
+            shopifyService.obtenerIdPorNumeroPedido(pedido.numero_pedido)
+              .then((shopifyId) => {
+                if (shopifyId) shopifyService.agregarTagAOrden(shopifyId, 'DESPACHADO');
+              })
+              .catch((e) => logService.warning(`Tag DESPACHADO fallido para #${pedido.numero_pedido}: ${e.message}`));
+          }
+
+          return { pedidoId, numeroPedido: pedido.numero_pedido, success: true };
+        } catch (e) {
+          return { pedidoId, success: false, error: e.message };
+        }
+      })
+    );
+
+    const ok = resultados.filter((r) => r.success).length;
+    logService.info(`Marcados como despachados: ${ok}/${pedidoIds.length}`);
+    res.json({ success: true, ok, total: pedidoIds.length, resultados });
+  } catch (error) {
+    logService.error('Error en marcar-despachados-bulk', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1825,6 +1871,16 @@ app.get('/api/reclamos-pendientes', async (req, res) => {
 });
 
 // Obtener pedidos ya procesados/enviados
+app.get('/api/pedidos-despachados', async (req, res) => {
+  try {
+    const pedidos = await supabaseService.obtenerPedidosDespachados();
+    res.json({ success: true, data: pedidos });
+  } catch (error) {
+    logService.error('Error al obtener pedidos despachados', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
 app.get('/api/pedidos-enviados', async (req, res) => {
   try {
     const pedidos = await supabaseService.obtenerPedidosEnviados();
