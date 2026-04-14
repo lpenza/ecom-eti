@@ -141,18 +141,26 @@ function resolveMode(contact) {
   return 'bot_active';
 }
 
+function isCriticalContact(contact) {
+  if (!contact) return false;
+  if (String(contact?.stage || '').toLowerCase() === 'risk') return true;
+  if (getStateMeta(contact?.customer_state).urgent) return true;
+  if (getIntentMeta(contact?.last_intent).urgent) return true;
+  return false;
+}
+
 function isUrgentContact(contact) {
-  return Boolean(contact?.requires_human_last_time)
-    || String(contact?.stage || '').toLowerCase() === 'risk';
+  return Boolean(contact?.requires_human_last_time) || isCriticalContact(contact);
 }
 
 function getStatusPredicates() {
   return {
-    all: () => true,
-    requires_human: (c) => isUrgentContact(c),
-    bot_paused: (c) => resolveMode(c) === 'paused',
-    blacklist: (c) => resolveMode(c) === 'blacklist',
-    bot_active: (c) => resolveMode(c) === 'bot_active' && !Boolean(c.requires_human_last_time),
+    all:            () => true,
+    critical:       (c) => isCriticalContact(c),
+    requires_human: (c) => Boolean(c?.requires_human_last_time) && !isCriticalContact(c),
+    bot_paused:     (c) => resolveMode(c) === 'paused',
+    blacklist:      (c) => resolveMode(c) === 'blacklist',
+    bot_active:     (c) => resolveMode(c) === 'bot_active' && !Boolean(c.requires_human_last_time),
   };
 }
 
@@ -310,10 +318,11 @@ export default function BotControlPanel({ mostrarToast }) {
   }, [history, historyMsgFilter]);
 
   const statusPredicates = useMemo(() => getStatusPredicates(), []);
-  const urgentCount = contacts.filter(statusPredicates.requires_human).length;
+  const criticalCount    = contacts.filter(statusPredicates.critical).length;
+  const urgentCount      = contacts.filter(statusPredicates.requires_human).length;
   const blacklistedCount = contacts.filter(statusPredicates.blacklist).length;
-  const pausedCount = contacts.filter(statusPredicates.bot_paused).length;
-  const botActiveCount = contacts.filter(statusPredicates.bot_active).length;
+  const pausedCount      = contacts.filter(statusPredicates.bot_paused).length;
+  const botActiveCount   = contacts.filter(statusPredicates.bot_active).length;
   const recommendation = getRecommendedAction(selected);
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -332,16 +341,17 @@ export default function BotControlPanel({ mostrarToast }) {
 
         <div className="bot-primary-tabs">
           {[
-            { k: 'all', label: `Inbox (${contacts.length})` },
-            { k: 'requires_human', label: `Requiere humano (${urgentCount})`, urgent: true },
-            { k: 'bot_paused', label: `Pausados (${pausedCount})` },
+            { k: 'all',            label: `Inbox (${contacts.length})` },
+            { k: 'critical',        label: `Críticos (${criticalCount})`,         critical: true },
+            { k: 'requires_human',  label: `Requiere humano (${urgentCount})`,    urgent: true },
+            { k: 'bot_paused',      label: `Pausados (${pausedCount})` },
             { k: 'blacklist', label: `Lista negra (${blacklistedCount})` },
             { k: 'bot_active', label: `Bot activo (${botActiveCount})`, ok: true },
-          ].map(({ k, label, urgent, ok }) => (
+          ].map(({ k, label, urgent, critical, ok }) => (
             <button
               key={k}
               type="button"
-              className={`bot-filter-pill ${filterStatus === k ? 'active' : ''} ${urgent ? 'urgent' : ''} ${ok ? 'ok' : ''}`}
+              className={`bot-filter-pill ${filterStatus === k ? 'active' : ''} ${critical ? 'critical' : ''} ${urgent ? 'urgent' : ''} ${ok ? 'ok' : ''}`}
               onClick={() => setFilterStatus(k)}
             >
               {label}

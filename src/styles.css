@@ -3429,6 +3429,18 @@ body {
   color: #991b1b;
 }
 
+.bot-filter-pill.critical {
+  color: #b91c1c;
+  border-color: #fca5a5;
+}
+
+.bot-filter-pill.critical.active {
+  background: #fef2f2;
+  border-color: #ef4444;
+  color: #7f1d1d;
+  font-weight: 700;
+}
+
 .bot-filter-pill.ok.active {
   background: #ecfdf3;
   border-color: #86efac;
