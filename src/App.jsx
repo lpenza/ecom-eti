@@ -27,7 +27,10 @@ import {
   obtenerPedidosEnviados,
   marcarEtiquetaImpresa,
   marcarDespachados,
+  obtenerPedidosPickup,
+  obtenerPedidosRecibilo,
 } from './services/api';
+import DeliveryEspecialTable from './components/DeliveryEspecialTable';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
 
@@ -108,6 +111,9 @@ function App() {
   const [pedidosEnviadosList, setPedidosEnviadosList] = useState([]);
   const [pedidosEnviadosLoaded, setPedidosEnviadosLoaded] = useState(false);
   const [pedidosEnviadosLoading, setPedidosEnviadosLoading] = useState(false);
+  const [searchEnviados, setSearchEnviados] = useState('');
+  const [pickupList,    setPickupList]    = useState([]);
+  const [recibiloList,  setRecibiloList]  = useState([]);
   const [templates, setTemplates] = useState([]);
   const [activeTemplateId, setActiveTemplateId] = useState('');
   const [activeTrackingTemplateId, setActiveTrackingTemplateId] = useState('');
@@ -220,6 +226,8 @@ function App() {
     revisionManual: pedidosRevisionManual.length,
     despachados: pedidosDespachadosList.length,
     enviados: pedidosEnviadosList.length,
+    pickup: pickupList.length,
+    recibilo: recibiloList.length,
     trackingAlert: hayDescuadreTracking || pedidosRevisionManual.length > 0,
     trackingBreakdown: {
       total: pedidosConEtiqueta.length,
@@ -240,7 +248,15 @@ function App() {
     if (tableFilter === 'pendientesFulfillment') return pedidosListosFulfillment;
     if (tableFilter === 'revisionManual') return pedidosRevisionManual;
     if (tableFilter === 'despachados') return pedidosDespachadosList;
-    if (tableFilter === 'enviados') return pedidosEnviadosList;
+    if (tableFilter === 'enviados') {
+      const q = searchEnviados.trim().toLowerCase();
+      if (!q) return pedidosEnviadosList;
+      return pedidosEnviadosList.filter((p) =>
+        String(p.numero_pedido || '').toLowerCase().includes(q) ||
+        String(p.cliente_nombre || '').toLowerCase().includes(q)
+      );
+    }
+    // Pickup y Recibilo tienen su propia vista (no usan pedidosFiltradosPorCard)
     return pedidosPendientesValidables;
   })();
 
@@ -453,10 +469,30 @@ function App() {
     }
   }, []);
 
+  const cargarPedidosPickup = useCallback(async () => {
+    try {
+      const data = await obtenerPedidosPickup();
+      setPickupList(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('❌ Error cargando pedidos pickup:', error);
+    }
+  }, []);
+
+  const cargarPedidosRecibilo = useCallback(async () => {
+    try {
+      const data = await obtenerPedidosRecibilo();
+      setRecibiloList(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('❌ Error cargando pedidos recibilo:', error);
+    }
+  }, []);
+
   useEffect(() => {
     cargarPedidosDespachados();
     cargarPedidosEnviados();
-  }, [cargarPedidosDespachados, cargarPedidosEnviados]);
+    cargarPedidosPickup();
+    cargarPedidosRecibilo();
+  }, [cargarPedidosDespachados, cargarPedidosEnviados, cargarPedidosPickup, cargarPedidosRecibilo]);
 
   // Confirmación desde modal (uno o múltiples pedidos)
   const handleConfirmarGeneracion = async (items) => {
@@ -1372,6 +1408,29 @@ function App() {
     }
   };
 
+  // ── Handlers Pick-UP / Recibilo ─────────────────────────────────────────────
+  const handleMarcarDespachadoEspecial = async (pedidoId, tipoEnvio) => {
+    try {
+      const resultado = await marcarDespachados([pedidoId]);
+      if (!resultado.success) { mostrarToast(resultado.error || 'Error al despachar', 'error'); return; }
+      mostrarToast('✅ Pedido marcado como despachado', 'success');
+      if (tipoEnvio === 'pickup_local') cargarPedidosPickup();
+      else cargarPedidosRecibilo();
+      cargarPedidosDespachados();
+    } catch { mostrarToast('Error al marcar como despachado', 'error'); }
+  };
+
+  const handleFulfillmentEspecial = async (pedidoId, tipoEnvio) => {
+    try {
+      const resultado = await ejecutarFulfillmentShopify([pedidoId]);
+      if (!resultado.success) { mostrarToast(resultado.error || 'Error en fulfillment', 'error'); return; }
+      mostrarToast('✅ Fulfillment enviado a Shopify', 'success');
+      if (tipoEnvio === 'pickup_local') cargarPedidosPickup();
+      else cargarPedidosRecibilo();
+      cargarPedidosEnviados();
+    } catch { mostrarToast('Error al ejecutar fulfillment', 'error'); }
+  };
+
   return (
     <div className="app app-shell">
       <aside className="side-nav">
@@ -1603,6 +1662,30 @@ function App() {
             </div>
           )}
 
+          {/* Barra de búsqueda para Procesados */}
+          {tableFilter === 'enviados' && (
+            <div className="section-action-bar">
+              <div className="enviados-search-wrap">
+                <span className="enviados-search-icon">🔍</span>
+                <input
+                  type="text"
+                  className="enviados-search-input"
+                  placeholder="Buscar por N° orden o cliente…"
+                  value={searchEnviados}
+                  onChange={(e) => setSearchEnviados(e.target.value)}
+                />
+                {searchEnviados && (
+                  <button type="button" className="enviados-search-clear" onClick={() => setSearchEnviados('')}>✕</button>
+                )}
+              </div>
+              <span className="enviados-search-count">
+                {searchEnviados
+                  ? `${pedidosFiltradosPorCard.length} resultado(s) de ${pedidosEnviadosList.length}`
+                  : `${pedidosEnviadosList.length} pedido(s) procesados`}
+              </span>
+            </div>
+          )}
+
           {/* Filtro de canal para etiquetas generadas */}
           {tableFilter === 'etiquetasGeneradas' && (
             <div className="notif-preview-chips" style={{ padding: '0 1rem 0.5rem' }}>
@@ -1711,8 +1794,36 @@ function App() {
             </div>
           )}
 
+          {/* ── Pick-UP ─────────────────────────────────────────────────── */}
+          {tableFilter === 'pickup' && (
+            <div className="main-content">
+              <DeliveryEspecialTable
+                pedidos={pickupList}
+                tipo="pickup_local"
+                onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'pickup_local')}
+                onFulfillment={(id) => handleFulfillmentEspecial(id, 'pickup_local')}
+                onActualizar={cargarPedidosPickup}
+                mostrarToast={mostrarToast}
+              />
+            </div>
+          )}
+
+          {/* ── Recibilo Hoy ─────────────────────────────────────────────── */}
+          {tableFilter === 'recibilo' && (
+            <div className="main-content">
+              <DeliveryEspecialTable
+                pedidos={recibiloList}
+                tipo="recibilo_hoy"
+                onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'recibilo_hoy')}
+                onFulfillment={(id) => handleFulfillmentEspecial(id, 'recibilo_hoy')}
+                onActualizar={cargarPedidosRecibilo}
+                mostrarToast={mostrarToast}
+              />
+            </div>
+          )}
+
           {/* Tabla de pedidos */}
-          {tableFilter !== 'reclamosPendientes' && (
+          {tableFilter !== 'reclamosPendientes' && tableFilter !== 'pickup' && tableFilter !== 'recibilo' && (
           <div className="main-content">
             <PedidosTable
               pedidos={fulfillmentPreviewIds !== null
@@ -1740,6 +1851,7 @@ function App() {
               activeTrackingTemplate={templatesWhatsapp.find((t) => t.id === activeTrackingTemplateId)}
               activeContactTemplate={templatesWhatsapp.find((t) => t.id === activeTrackingTemplateId)}
               modoPendienteContacto={tableFilter === 'pendientesContacto'}
+              allowRedownload={tableFilter === 'enviados'}
             />
           </div>
           )}

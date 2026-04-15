@@ -271,6 +271,14 @@ body {
   background: linear-gradient(180deg, #f0f4ff 0%, #dce5ff 100%);
 }
 
+.stat-card-pickup {
+  background: linear-gradient(180deg, #fff7ed 0%, #ffedd5 100%);
+}
+
+.stat-card-recibilo {
+  background: linear-gradient(180deg, #fefce8 0%, #fef08a 40%, #fde047 100%);
+}
+
 .stat-card-success {
   background: linear-gradient(180deg, #f4fbf6 0%, #e7f7ec 100%);
 }
@@ -2709,6 +2717,137 @@ body {
   color: var(--brand-text-soft);
   margin-top: 0.15rem;
 }
+
+/* ── Procesados search bar ── */
+.enviados-search-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--brand-bg);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.65rem;
+  min-width: 260px;
+}
+.enviados-search-icon { font-size: 0.85rem; opacity: 0.55; }
+.enviados-search-input {
+  border: none;
+  background: transparent;
+  font-size: 0.87rem;
+  color: var(--brand-text);
+  outline: none;
+  flex: 1;
+}
+.enviados-search-input::placeholder { color: var(--brand-text-soft); }
+.enviados-search-clear {
+  border: none;
+  background: transparent;
+  color: var(--brand-text-soft);
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0;
+}
+.enviados-search-clear:hover { color: var(--brand-text); }
+.enviados-search-count {
+  font-size: 0.82rem;
+  color: var(--brand-text-soft);
+  white-space: nowrap;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   DELIVERY ESPECIAL (Pick-UP / Recibilo Hoy)
+   ═══════════════════════════════════════════════════════════════ */
+
+.de-wrapper {
+  padding: 0.75rem 1rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.de-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  padding: 3rem 2rem;
+  color: var(--brand-text-soft);
+  text-align: center;
+}
+
+.de-table th:nth-child(6),
+.de-table td:nth-child(6) {
+  min-width: 160px;
+}
+
+.de-etiqueta-cell {
+  vertical-align: middle;
+}
+
+.de-drive-fallback {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--brand-primary);
+  margin-top: 0.3rem;
+  text-decoration: underline;
+}
+
+/* Modal de preview de etiqueta */
+.de-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.de-modal {
+  background: #fff;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+  width: min(860px, 96vw);
+  height: min(720px, 90vh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.de-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--brand-border);
+  background: var(--brand-bg-soft);
+  font-weight: 600;
+  font-size: 0.95rem;
+  gap: 0.75rem;
+  flex-shrink: 0;
+}
+
+.de-modal-iframe {
+  flex: 1;
+  width: 100%;
+  border: none;
+}
+
+.de-modal-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brand-text-soft);
+}
+
+/* Estado badges reutilizados */
+.de-estado-pendiente  { background: var(--warning-bg);  color: var(--warning-text); border-color: #fde68a; }
+.de-estado-etiqueta   { background: var(--info-bg);     color: var(--info-text);    border-color: #93c5fd; }
+.de-estado-despachado { background: #eff6ff;             color: #1d4ed8;             border-color: #93c5fd; }
+.de-estado-enviado    { background: var(--success-bg);  color: var(--success-text); border-color: #86efac; }
 
 .reclamo-actions {
   display: flex;

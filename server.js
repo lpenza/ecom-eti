@@ -1891,6 +1891,86 @@ app.get('/api/pedidos-enviados', async (req, res) => {
   }
 });
 
+// ── Pedidos Pick-UP ──────────────────────────────────────────────────────────
+app.get('/api/pedidos-pickup', async (req, res) => {
+  try {
+    const pedidos = await supabaseService.obtenerPedidosPickup();
+    res.json({ success: true, data: pedidos });
+  } catch (error) {
+    logService.error('Error al obtener pedidos pickup', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+// ── Pedidos Recibilo Hoy ─────────────────────────────────────────────────────
+app.get('/api/pedidos-recibilo', async (req, res) => {
+  try {
+    const pedidos = await supabaseService.obtenerPedidosRecibilo();
+    res.json({ success: true, data: pedidos });
+  } catch (error) {
+    logService.error('Error al obtener pedidos recibilo', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+// ── Buscar etiqueta en Google Drive por número de pedido ────────────────────
+const DRIVE_FOLDER_ID = process.env.DRIVE_ETIQUETAS_FOLDER_ID || '1lp7dpwdCg49nvqbGhW0efvXGV49q2lWQ';
+
+app.get('/api/drive-etiqueta/:numeroPedido', async (req, res) => {
+  const { numeroPedido } = req.params;
+  const apiKey = process.env.GOOGLE_API_KEY;
+
+  if (!apiKey) {
+    // Sin API key: devolver URL de carpeta para apertura manual
+    const folderUrl = `https://drive.google.com/drive/folders/${DRIVE_FOLDER_ID}`;
+    return res.json({ success: false, fallbackUrl: folderUrl, error: 'GOOGLE_API_KEY no configurada' });
+  }
+
+  try {
+    const query = `'${DRIVE_FOLDER_ID}' in parents and name contains '${numeroPedido}' and trashed = false`;
+    const response = await axios.get('https://www.googleapis.com/drive/v3/files', {
+      params: {
+        q: query,
+        key: apiKey,
+        fields: 'files(id,name,webViewLink,webContentLink,mimeType)',
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        pageSize: 5,
+      },
+    });
+
+    const files = response.data.files || [];
+    if (files.length === 0) {
+      const folderUrl = `https://drive.google.com/drive/folders/${DRIVE_FOLDER_ID}`;
+      return res.json({ success: false, fallbackUrl: folderUrl, error: `No se encontró etiqueta para pedido ${numeroPedido}` });
+    }
+
+    // Preferir PDF si hay varios
+    const pdf = files.find((f) => f.mimeType === 'application/pdf') || files[0];
+    const previewUrl = `https://drive.google.com/file/d/${pdf.id}/preview`;
+    const downloadUrl = `https://drive.google.com/uc?export=download&id=${pdf.id}`;
+
+    res.json({ success: true, fileId: pdf.id, name: pdf.name, previewUrl, downloadUrl, webViewLink: pdf.webViewLink });
+  } catch (error) {
+    logService.error(`Error buscando etiqueta Drive para pedido ${numeroPedido}`, error);
+    const folderUrl = `https://drive.google.com/drive/folders/${DRIVE_FOLDER_ID}`;
+    res.json({ success: false, fallbackUrl: folderUrl, error: error.message });
+  }
+});
+
+// ── Guardar link de Drive en pedido ─────────────────────────────────────────
+app.post('/api/pedidos/:pedidoId/guardar-link-drive', async (req, res) => {
+  const { pedidoId } = req.params;
+  const { linkDrive } = req.body;
+  try {
+    const updated = await supabaseService.guardarLinkDrivePedido(pedidoId, linkDrive);
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    logService.error(`Error guardando link Drive en pedido ${pedidoId}`, error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Generar etiqueta para colaboracion (sin pedido Shopify)
 app.post('/api/colaboraciones/generar-etiqueta', async (req, res) => {
   try {

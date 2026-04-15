@@ -392,6 +392,29 @@ export async function obtenerReclamosPendientes() {
   return Array.isArray(data?.data) ? data.data : [];
 }
 
+// ==================== PICK-UP / RECIBILO HOY ====================
+
+export async function obtenerPedidosPickup() {
+  const data = await fetchAPI('/pedidos-pickup', { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+export async function obtenerPedidosRecibilo() {
+  const data = await fetchAPI('/pedidos-recibilo', { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+export async function buscarEtiquetaDrive(numeroPedido) {
+  return await fetchAPI(`/drive-etiqueta/${encodeURIComponent(numeroPedido)}`, { method: 'GET' });
+}
+
+export async function guardarLinkDriveEnPedido(pedidoId, linkDrive) {
+  return await fetchAPI(`/pedidos/${pedidoId}/guardar-link-drive`, {
+    method: 'POST',
+    body: JSON.stringify({ linkDrive }),
+  });
+}
+
 // ==================== BOT WHATSAPP ====================
 
 export async function obtenerBotContacts(params = {}) {

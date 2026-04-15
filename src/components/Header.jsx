@@ -6,7 +6,7 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
       <div className="header-top">
         <div className="logo">
           <p>Sistema de Gestión de Envíos</p>
-          <p className="header-flow">Flujo: Sincronizar → Validar → Enviar Tracking</p>
+          <p className="header-flow">Flujo: Sincronizar → Validar → Crear etiquetas → Marcar despchado → Enviar Fulfillment</p>
         </div>
         <div className="header-actions">
           <button className="btn btn-secondary header-btn" onClick={onActualizar}>
@@ -56,6 +56,22 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
           <div className="stat-label">Pendientes Contacto</div>
         </button>
         <button
+          className={`stat-card stat-card-pickup ${activeFilter === 'pickup' ? 'stat-card-active' : ''}`}
+          onClick={() => onFilterChange?.('pickup')}
+          type="button"
+        >
+          <div className="stat-value">{stats.pickup || 0}</div>
+          <div className="stat-label">🏪 Pick-UP</div>
+        </button>
+        <button
+          className={`stat-card stat-card-recibilo ${activeFilter === 'recibilo' ? 'stat-card-active' : ''}`}
+          onClick={() => onFilterChange?.('recibilo')}
+          type="button"
+        >
+          <div className="stat-value">{stats.recibilo || 0}</div>
+          <div className="stat-label">⚡ Recibilo Hoy</div>
+        </button>
+        <button
           className={`stat-card stat-card-neutral ${activeFilter === 'etiquetasGeneradas' ? 'stat-card-active' : ''}`}
           onClick={() => onFilterChange?.('etiquetasGeneradas')}
           type="button"
@@ -71,6 +87,7 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
           <div className="stat-value">{stats.revisionManual || 0}</div>
           <div className="stat-label">Revision Manual</div>
         </button>
+        
         <button
           className={`stat-card stat-card-despachado ${activeFilter === 'despachados' ? 'stat-card-active' : ''}`}
           onClick={() => onFilterChange?.('despachados')}

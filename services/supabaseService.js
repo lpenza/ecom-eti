@@ -475,6 +475,8 @@ class SupabaseService {
         .neq('estado', 'despachado')
         .neq('es_envio_express', true)
         .neq('es_reclamo', true)
+        // Excluir tipos especiales que tienen su propio flujo
+        .or('tipo_envio.is.null,tipo_envio.eq.estandar')
         .order('created_at', { ascending: true });
 
       if (error) throw error;
@@ -483,6 +485,54 @@ class SupabaseService {
       console.error('❌ Error en obtenerPedidosActivos:', error);
       throw error;
     }
+  }
+
+  // Obtener pedidos Pick-UP (pendientes de despacho)
+  async obtenerPedidosPickup() {
+    try {
+      const { data, error } = await supabase
+        .from('pedidos')
+        .select('*')
+        .eq('tipo_envio', 'pickup_local')
+        .not('estado', 'in', '("enviado","despachado")')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return data || [];
+    } catch (error) {
+      console.error('❌ Error en obtenerPedidosPickup:', error);
+      throw error;
+    }
+  }
+
+  // Obtener pedidos Recibilo Hoy (pendientes de despacho)
+  async obtenerPedidosRecibilo() {
+    try {
+      const { data, error } = await supabase
+        .from('pedidos')
+        .select('*')
+        .eq('tipo_envio', 'recibilo_hoy')
+        .not('estado', 'in', '("enviado","despachado")')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return data || [];
+    } catch (error) {
+      console.error('❌ Error en obtenerPedidosRecibilo:', error);
+      throw error;
+    }
+  }
+
+  // Guardar link de Drive en un pedido
+  async guardarLinkDrivePedido(pedidoId, linkDrive) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .update({ link_etiqueta_drive: linkDrive, etiqueta_generada: true, updated_at: new Date().toISOString() })
+      .eq('id', pedidoId)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
   }
 
   // Obtener pedidos listos para fulfillment en Shopify
@@ -736,8 +786,17 @@ class SupabaseService {
           .eq('numero_pedido', numeroPedido)
           .single();
 
+        // Detectar tipo de envío desde Shopify shipping_lines
+        const shippingTitle = String(orden.shipping_lines?.[0]?.title || '').toLowerCase();
+        let tipoEnvio = 'estandar';
+        if (shippingTitle.includes('pick-up') || shippingTitle.includes('pick up') || shippingTitle.includes('pickup')) {
+          tipoEnvio = 'pickup_local';
+        } else if (shippingTitle.includes('recibilo')) {
+          tipoEnvio = 'recibilo_hoy';
+        }
+
         if (existente) {
-          // Actualizar
+          // Actualizar (solo estado; no pisar tipo_envio si ya fue seteado)
           const { data } = await supabase
             .from('pedidos')
             .update({
@@ -762,6 +821,7 @@ class SupabaseService {
               direccion_departamento: orden.shipping_address?.province || '',
               direccion_codigo_postal: orden.shipping_address?.zip || '',
               estado: 'pendiente',
+              tipo_envio: tipoEnvio,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString()
             })
