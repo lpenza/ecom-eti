@@ -1,24 +1,45 @@
-import React from 'react';
+import React, { useState } from 'react';
 
-function PedidosTable({ 
-  pedidos, 
-  selectedPedidos, 
-  onToggleSelect, 
+// Extrae file ID de un link de Drive y devuelve URLs de preview y descarga.
+// Funciona con /file/d/{id}/view, /file/d/{id}/edit, webViewLink, etc.
+function getDriveUrls(link) {
+  if (!link) return null;
+  const match = String(link).match(/\/d\/([^/?#]+)/);
+  if (match) {
+    const id = match[1];
+    return {
+      previewUrl: `https://drive.google.com/file/d/${id}/preview`,
+      downloadUrl: `https://drive.google.com/uc?export=download&id=${id}`,
+    };
+  }
+  // fallback: usar el link tal cual
+  return { previewUrl: link, downloadUrl: link };
+}
+
+function PedidosTable({
+  pedidos,
+  selectedPedidos,
+  onToggleSelect,
   onToggleSelectAll,
   onReenviarNotificacion,
   onContactarPendiente,
   onMarcarNotificado,
   onDescargarEtiqueta,
   onDescartarEtiqueta,
+  onProcesarDirecto,
   fulfillmentPreview,
   channelPriority = 'email',
   showNotifyColumn = true,
   showTrackingColumn = true,
+  showProcesarButton = false,
   activeTrackingTemplate,
   activeContactTemplate,
   modoPendienteContacto = false,
+  allowRedownload = false,
 }) {
-  const allSelected = pedidos.length > 0 && selectedPedidos.length === pedidos.length;
+  const [previewPedido, setPreviewPedido] = useState(null);
+  // allSelected: true solo si TODOS los de la vista filtrada están seleccionados
+  const allSelected = pedidos.length > 0 && pedidos.every(p => selectedPedidos.includes(p.id));
 
   const pedidosOrdenados = [...pedidos].sort((a, b) => {
     const numA = parseInt(String(a.numero_pedido || '').replace(/\D/g, ''), 10) || 0;
@@ -26,8 +47,43 @@ function PedidosTable({
     return numB - numA;
   });
 
+  const previewUrls = previewPedido ? getDriveUrls(previewPedido.link_etiqueta_drive) : null;
+
   return (
     <div className="table-container">
+      {/* Modal de preview PDF */}
+      {previewPedido && (
+        <div className="de-modal-overlay" onClick={() => setPreviewPedido(null)}>
+          <div className="de-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="de-modal-header">
+              <span>📄 Etiqueta — Pedido #{previewPedido.numero_pedido}</span>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                {previewUrls?.downloadUrl && (
+                  <a
+                    href={previewUrls.downloadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-primary btn-sm"
+                  >
+                    ⬇️ Descargar PDF
+                  </a>
+                )}
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setPreviewPedido(null)}
+                >
+                  ✕ Cerrar
+                </button>
+              </div>
+            </div>
+            {previewUrls?.previewUrl
+              ? <iframe src={previewUrls.previewUrl} className="de-modal-iframe" title="Etiqueta PDF" />
+              : <p className="de-modal-empty">No hay URL de previsualización disponible.</p>
+            }
+          </div>
+        </div>
+      )}
+
       {fulfillmentPreview && (
         <div className="fulfillment-preview-banner">
           📨 Mostrando {pedidos.length} pedido(s) para enviar tracking — confirmá o cancelá arriba
@@ -38,10 +94,11 @@ function PedidosTable({
           <thead>
             <tr>
               <th>
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   checked={allSelected}
-                  onChange={onToggleSelectAll}
+                  onChange={() => onToggleSelectAll(pedidos)}
+                  title={allSelected ? 'Deseleccionar todos' : 'Seleccionar todos los visibles'}
                 />
               </th>
               <th>N° Orden</th>
@@ -50,12 +107,13 @@ function PedidosTable({
               <th>Estado</th>
               {showTrackingColumn && <th>Seguimiento</th>}
               {showNotifyColumn && <th>Notificar</th>}
+              {showProcesarButton && <th>Acción</th>}
             </tr>
           </thead>
           <tbody>
             {pedidosOrdenados.length === 0 ? (
               <tr>
-                <td colSpan={5 + (showTrackingColumn ? 1 : 0) + (showNotifyColumn ? 1 : 0)} className="table-empty-state">
+                <td colSpan={5 + (showTrackingColumn ? 1 : 0) + (showNotifyColumn ? 1 : 0) + (showProcesarButton ? 1 : 0)} className="table-empty-state">
                   No hay pedidos para mostrar
                 </td>
               </tr>
@@ -71,13 +129,17 @@ function PedidosTable({
                   onMarcarNotificado={onMarcarNotificado}
                   onDescargarEtiqueta={onDescargarEtiqueta}
                   onDescartarEtiqueta={onDescartarEtiqueta}
+                  onPreviewEtiqueta={setPreviewPedido}
+                  onProcesarDirecto={onProcesarDirecto}
                   fulfillmentPreview={fulfillmentPreview}
                   channelPriority={channelPriority}
                   showNotifyColumn={showNotifyColumn}
                   showTrackingColumn={showTrackingColumn}
+                  showProcesarButton={showProcesarButton}
                   activeTrackingTemplate={activeTrackingTemplate}
                   activeContactTemplate={activeContactTemplate}
                   modoPendienteContacto={modoPendienteContacto}
+                  allowRedownload={allowRedownload}
                 />
               ))
             )}
@@ -88,30 +150,51 @@ function PedidosTable({
   );
 }
 
-function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion, onContactarPendiente, onMarcarNotificado, onDescargarEtiqueta, onDescartarEtiqueta, fulfillmentPreview = false, channelPriority = 'email', showNotifyColumn = true, showTrackingColumn = true, activeTrackingTemplate, activeContactTemplate, modoPendienteContacto = false }) {
+function PedidoRow({
+  pedido,
+  isSelected,
+  onToggleSelect,
+  onReenviarNotificacion,
+  onContactarPendiente,
+  onMarcarNotificado,
+  onDescargarEtiqueta,
+  onDescartarEtiqueta,
+  onPreviewEtiqueta,
+  onProcesarDirecto,
+  fulfillmentPreview = false,
+  channelPriority = 'email',
+  showNotifyColumn = true,
+  showTrackingColumn = true,
+  showProcesarButton = false,
+  activeTrackingTemplate,
+  activeContactTemplate,
+  modoPendienteContacto = false,
+  allowRedownload = false,
+}) {
   const estadoClass = pedido.estado === 'procesado' ? 'badge-success' : 'badge-warning';
   const tieneRevisionContacto = Boolean(pedido.revision_contacto_pendiente);
-  const estadoText = pedido.estado === 'procesado' ? 'Procesado' : 
-                     pedido.estado === 'etiqueta_generada' ? 'Etiqueta Generada' : 
+  const estadoText = pedido.estado === 'procesado' ? 'Procesado' :
+                     pedido.estado === 'etiqueta_generada' ? 'Etiqueta Generada' :
                      pedido.estado === 'enviado' ? 'Enviado' :
                      'Pendiente';
 
   const fueNotificado = Boolean(pedido.notificacion_enviada_at);
   const puedeDescartarEtiqueta = Boolean(pedido.etiqueta_generada) && !fueNotificado;
-  const puedeDescargarEtiqueta = Boolean(String(pedido.link_etiqueta_drive || '').trim());
+  const driveLink = String(pedido.link_etiqueta_drive || '').trim();
+  const tieneEtiquetaDrive = Boolean(driveLink);
   const ultimoContactoAt = pedido.revision_contacto_ultimo_contacto_at || null;
 
-  // Detectar si es pedido de WhatsApp en base a la prioridad configurada
+  // Mostrar botones de etiqueta si: tiene etiqueta activa O se permite re-descarga
+  const mostrarBotonesEtiqueta = (puedeDescartarEtiqueta || allowRedownload) && !fulfillmentPreview;
+
   const tieneEmail = Boolean(String(pedido?.cliente_email || '').trim());
   const tienePhone = Boolean(String(pedido?.cliente_telefono || '').trim());
   const sinCanal = !tieneEmail && !tienePhone;
-  
+
   let esWhatsApp = false;
   if (channelPriority === 'whatsapp') {
-    // Prioridad WhatsApp: si tiene phone, usa wpp aunque tenga email
     esWhatsApp = tienePhone;
   } else {
-    // Prioridad Email (default): solo usa wpp si NO tiene email
     esWhatsApp = !tieneEmail && tienePhone;
   }
 
@@ -119,24 +202,21 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
     if (esWhatsApp) {
       console.log('🔵 Botón WhatsApp clickeado, pedido ID:', pedido.id);
       console.log('🔵 onMarcarNotificado disponible?', !!onMarcarNotificado);
-      
-      // Abrir WhatsApp con la plantilla activa de tracking
+
       const phoneNormalized = String(pedido.cliente_telefono || '')
         .replace(/\D/g, '')
         .replace(/^0+/, '');
-      
-      const phone = phoneNormalized.startsWith('598') 
-        ? phoneNormalized 
+
+      const phone = phoneNormalized.startsWith('598')
+        ? phoneNormalized
         : `598${phoneNormalized}`;
 
-      // Usar la plantilla activa de tracking
       const nombreCompleto = pedido.cliente_nombre || '';
       const primerNombre = nombreCompleto.trim().split(/\s+/)[0] || '';
       const trackingNumber = pedido.numero_seguimiento_ues || '';
       const trackingUrl = 'https://ues.com.uy/rastreo_paquete.html';
 
-      // Renderizar la plantilla con las variables
-      let mensaje = activeTrackingTemplate?.content || 
+      let mensaje = activeTrackingTemplate?.content ||
         `Hola ${primerNombre}!\n\nTu pedido ya está en camino.\n\n📦 Tracking: ${trackingNumber}\n🔗 ${trackingUrl}`;
 
       mensaje = mensaje
@@ -144,11 +224,10 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
         .replace(/\{\{numero_pedido\}\}/g, pedido.numero_pedido || '')
         .replace(/\{\{tracking\}\}/g, trackingNumber)
         .replace(/\{\{tracking_url\}\}/g, trackingUrl);
-      
+
       const whatsappUrl = `https://api.whatsapp.com/send?phone=${phone}&text=${encodeURIComponent(mensaje)}`;
       window.open(whatsappUrl, '_blank');
-      
-      // Marcar como notificado
+
       if (onMarcarNotificado) {
         console.log('🔵 Llamando a onMarcarNotificado...');
         try {
@@ -161,7 +240,6 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
         console.warn('⚠️ onMarcarNotificado no está definido');
       }
     } else {
-      // Comportamiento normal: llamar API
       onReenviarNotificacion?.(pedido.id);
     }
   };
@@ -208,7 +286,9 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
       <td>{pedido.cliente_nombre || 'Sin nombre'}</td>
       <td>{pedido.direccion_envio || 'Sin dirección'}</td>
       <td>
-        <span className={`badge ${tieneRevisionContacto ? 'badge-danger' : estadoClass}`}>{tieneRevisionContacto ? 'Pendiente Contacto' : estadoText}</span>
+        <span className={`badge ${tieneRevisionContacto ? 'badge-danger' : estadoClass}`}>
+          {tieneRevisionContacto ? 'Pendiente Contacto' : estadoText}
+        </span>
       </td>
       {showTrackingColumn && <td>{pedido.numero_seguimiento_ues || '-'}</td>}
       {showNotifyColumn && (
@@ -258,16 +338,39 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
                 📧 Shopify notifica
               </span>
             )}
-            {puedeDescartarEtiqueta && !fulfillmentPreview && (
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => onDescargarEtiqueta?.(pedido.id)}
-                disabled={!puedeDescargarEtiqueta}
-                title={puedeDescargarEtiqueta ? 'Descargar etiqueta generada' : 'Esta etiqueta no tiene PDF disponible'}
-              >
-                📄 Descargar
-              </button>
+
+            {/* Botones de etiqueta PDF */}
+            {mostrarBotonesEtiqueta && (
+              <>
+                {tieneEtiquetaDrive ? (
+                  <div style={{ display: 'flex', gap: '0.3rem' }}>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => onPreviewEtiqueta?.(pedido)}
+                      title="Ver etiqueta PDF en pantalla"
+                    >
+                      👁 Ver PDF
+                    </button>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => onDescargarEtiqueta?.(pedido.id)}
+                      title="Descargar etiqueta PDF"
+                    >
+                      ⬇️
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    disabled
+                    title="Esta etiqueta no tiene PDF disponible"
+                  >
+                    📄 Sin PDF
+                  </button>
+                )}
+              </>
             )}
+
             {puedeDescartarEtiqueta && !fulfillmentPreview && (
               <button
                 className="btn btn-outline-danger btn-sm"
@@ -277,7 +380,24 @@ function PedidoRow({ pedido, isSelected, onToggleSelect, onReenviarNotificacion,
                 ↩️ Descartar
               </button>
             )}
+
           </div>
+        </td>
+      )}
+
+      {/* Columna Acción — solo en vista despachados */}
+      {showProcesarButton && (
+        <td>
+          <button
+            className="btn btn-success btn-sm"
+            onClick={async () => {
+              try { await onProcesarDirecto?.(pedido.id); }
+              catch (e) { console.error('Error procesando pedido', pedido.id, e); }
+            }}
+            title="Marcar como procesado (fulfillment ya hecho en Shopify)"
+          >
+            ✅ Procesar
+          </button>
         </td>
       )}
     </tr>

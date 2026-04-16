@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   agregarNotaCliente,
   actualizarEstadoCliente,
+  marcarFollowupEnviado,
   obtenerNotasCliente,
   obtenerPedidosFollowUp,
 } from '../services/api';
@@ -164,9 +165,15 @@ function FollowUpPanel({
     pedidoPrioritario,
   }), [days, fromDate, toDate, estadoFiltro, pedidoPrioritario]);
 
-  const isPedidoSent = (pedidoId) => Boolean(taskStatus[`${taskScopeKey}:${pedidoId}`]);
+  // La DB es la fuente de verdad; localStorage actúa como caché visual offline
+  const isPedidoSent = useCallback((pedidoId) => {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (pedido?.followup_enviado_at) return true;
+    return Boolean(taskStatus[`${taskScopeKey}:${pedidoId}`]);
+  }, [pedidos, taskStatus, taskScopeKey]);
 
-  const marcarEstadoPedido = (pedidoId, sent) => {
+  const marcarEstadoPedido = useCallback(async (pedidoId, sent) => {
+    // 1. Actualizar localStorage inmediatamente (UX optimista)
     const key = `${taskScopeKey}:${pedidoId}`;
     setTaskStatus((prev) => {
       if (!sent) {
@@ -174,12 +181,25 @@ function FollowUpPanel({
         delete next[key];
         return next;
       }
-      return {
-        ...prev,
-        [key]: new Date().toISOString(),
-      };
+      return { ...prev, [key]: new Date().toISOString() };
     });
-  };
+
+    // 2. Persistir en Supabase si se está marcando como enviado
+    if (sent) {
+      try {
+        await marcarFollowupEnviado(pedidoId);
+        // Actualizar el pedido en el estado local para que isPedidoSent lo lea de DB
+        setPedidos((prev) => prev.map((p) =>
+          p.id === pedidoId
+            ? { ...p, followup_enviado_at: new Date().toISOString() }
+            : p
+        ));
+      } catch (err) {
+        console.error('Error guardando follow-up en DB:', err);
+        // El localStorage ya lo marcó — no bloquear al usuario
+      }
+    }
+  }, [taskScopeKey]);
 
   const tareasDelDia = useMemo(() => {
     return [...pedidos]
@@ -384,7 +404,7 @@ function FollowUpPanel({
     cargarGrupo();
   }, []);
 
-  const abrirWhatsApp = (pedido) => {
+  const abrirWhatsApp = async (pedido) => {
     const waNumber = normalizePhoneForWa(pedido.cliente_telefono);
     if (!waNumber) {
       mostrarToast?.('Pedido sin telefono valido para WhatsApp', 'warning');
@@ -392,26 +412,49 @@ function FollowUpPanel({
     }
 
     const message = renderTemplate(activeTemplate?.content, pedido);
-    const url = `https://wa.me/${waNumber}?text=${encodeURIComponent(message)}`;
+
+    // Mismo formato que notificationService.js (que ya funciona con emojis)
+    const url = `https://api.whatsapp.com/send?phone=${waNumber}&text=${encodeURIComponent(message)}`;
     window.open(url, '_blank', 'noopener,noreferrer');
-    marcarEstadoPedido(pedido.id, true);
+    await marcarEstadoPedido(pedido.id, true);
   };
 
-  const marcarVisiblesComoEnviados = () => {
-    if (pedidosFiltradosLista.length === 0) {
-      mostrarToast?.('No hay tareas visibles para marcar', 'warning');
+  const marcarVisiblesComoEnviados = async () => {
+    const pendientes = pedidosFiltradosLista.filter((p) => !isPedidoSent(p.id));
+    if (pendientes.length === 0) {
+      mostrarToast?.('No hay pendientes visibles para marcar', 'warning');
       return;
     }
 
     const now = new Date().toISOString();
+
+    // Actualizar localStorage de forma optimista
     setTaskStatus((prev) => {
       const next = { ...prev };
-      pedidosFiltradosLista.forEach((pedido) => {
-        next[`${taskScopeKey}:${pedido.id}`] = now;
-      });
+      pendientes.forEach((p) => { next[`${taskScopeKey}:${p.id}`] = now; });
       return next;
     });
-    mostrarToast?.(`✅ Marcados ${pedidosFiltradosLista.length} pedido(s) como enviados`, 'success');
+
+    // Persistir en DB en paralelo (best-effort, no bloquea UX)
+    const resultados = await Promise.allSettled(
+      pendientes.map((p) => marcarFollowupEnviado(p.id))
+    );
+    const ok = resultados.filter((r) => r.status === 'fulfilled').length;
+    const fail = resultados.length - ok;
+
+    // Actualizar estado local de los que se guardaron bien en DB
+    setPedidos((prev) => prev.map((p) =>
+      pendientes.some((x) => x.id === p.id)
+        ? { ...p, followup_enviado_at: now }
+        : p
+    ));
+
+    mostrarToast?.(
+      fail > 0
+        ? `✅ ${ok} marcados. ${fail} no pudieron guardarse en DB (pero quedan en caché local)`
+        : `✅ ${ok} pedido(s) marcados como enviados y guardados`,
+      fail > 0 ? 'warning' : 'success'
+    );
   };
 
   const limpiarSeguimientoActual = () => {
@@ -592,9 +635,9 @@ function FollowUpPanel({
               rows={5}
               value={activeTemplate?.content || ''}
               onChange={(e) => {
-                const nextBody = e.target.value;
+                const nextContent = e.target.value;
                 if (!activeTemplate?.id) return;
-                onUpdateTemplate?.(activeTemplate.id, { body: nextBody });
+                onUpdateTemplate?.(activeTemplate.id, { content: nextContent });
               }}
             />
             <div className="followup-char-counter">{(activeTemplate?.content || '').length} caracteres</div>

@@ -27,8 +27,10 @@ import {
   obtenerPedidosEnviados,
   marcarEtiquetaImpresa,
   marcarDespachados,
+  marcarProcesados,
   obtenerPedidosPickup,
   obtenerPedidosRecibilo,
+  reprocesarPedidoShopify,
 } from './services/api';
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
 
@@ -102,6 +104,13 @@ function App() {
   const [reclamoPedidoId, setReclamoPedidoId] = useState('');
   const [reclamoBusqueda, setReclamoBusqueda] = useState('');
   const [reclamoNotas, setReclamoNotas] = useState('');
+  // ⚠️ TEMPORAL: panel para reprocesar pedidos que no entraron por webhook
+  // Cuando ya no se necesite, cambiar REPROCESS_ENABLED a false
+  const REPROCESS_ENABLED = true;
+  const [reprocessOrderNumber, setReprocessOrderNumber] = useState('');
+  const [reprocessLoading, setReprocessLoading] = useState(false);
+  const [reprocessDone, setReprocessDone] = useState(false);
+
   const [pedidosFinalizados, setPedidosFinalizados] = useState([]);
   const [pedidosFinalizadosLoaded, setPedidosFinalizadosLoaded] = useState(false);
   const [previewMode, setPreviewMode] = useState('normal'); // 'normal' | 'reclamo'
@@ -975,6 +984,33 @@ function App() {
     }
   };
 
+  // ⚠️ TEMPORAL: reprocesar pedido que no entró por webhook
+  const handleReprocesarPedido = async () => {
+    const num = reprocessOrderNumber.trim();
+    if (!num) {
+      mostrarToast('Ingresa el número de pedido', 'warning');
+      return;
+    }
+    const confirmado = window.confirm(`Reprocesar pedido #${num} desde Shopify y crearlo en la base de datos?`);
+    if (!confirmado) return;
+
+    setReprocessLoading(true);
+    try {
+      const resultado = await reprocesarPedidoShopify(num);
+      if (resultado.success) {
+        mostrarToast(`✅ Pedido #${num} creado exitosamente`, 'success');
+        setReprocessDone(true);
+        cargarPedidos();
+      } else {
+        mostrarToast(resultado.error || `Error al reprocesar pedido #${num}`, 'error');
+      }
+    } catch (error) {
+      mostrarToast(error.message || `Error al reprocesar pedido #${num}`, 'error');
+    } finally {
+      setReprocessLoading(false);
+    }
+  };
+
   const handleDescartarEtiqueta = async (pedidoId) => {
     const pedido = pedidos.find((p) => p.id === pedidoId);
     const numeroPedido = pedido?.numero_pedido || pedidoId;
@@ -1114,7 +1150,17 @@ function App() {
       return;
     }
 
-    mostrarToast(`✅ ${resultado.ok}/${resultado.total} pedidos marcados como despachados`, 'success');
+    const sinTracking = (resultado.resultados || []).filter((r) => r.sinTracking);
+    if (sinTracking.length > 0) {
+      const nums = sinTracking.map((r) => `#${r.numeroPedido || r.pedidoId}`).join(', ');
+      mostrarToast(
+        `⚠️ ${sinTracking.length} pedido(s) sin etiqueta — no se despacharon: ${nums}`,
+        'warning'
+      );
+    }
+    if (resultado.ok > 0) {
+      mostrarToast(`✅ ${resultado.ok}/${resultado.total} pedidos marcados como despachados`, 'success');
+    }
     limpiarSeleccion();
     await cargarPedidos();
     cargarPedidosDespachados();
@@ -1400,6 +1446,11 @@ function App() {
         mostrarToast(resultado.error || 'Error al marcar como despachado', 'error');
         return;
       }
+      const sinTracking = (resultado.resultados || []).find((r) => r.sinTracking);
+      if (sinTracking) {
+        mostrarToast(`⚠️ Reclamo #${reclamo.numero_pedido || reclamo.id} sin etiqueta — generá la etiqueta primero`, 'warning');
+        return;
+      }
       setReclamosPendientes((prev) => prev.filter((r) => r.id !== reclamo.id));
       cargarPedidosDespachados();
       mostrarToast(`✅ Reclamo #${reclamo.numero_pedido || reclamo.id} marcado como despachado`, 'success');
@@ -1413,11 +1464,39 @@ function App() {
     try {
       const resultado = await marcarDespachados([pedidoId]);
       if (!resultado.success) { mostrarToast(resultado.error || 'Error al despachar', 'error'); return; }
+      const r = (resultado.resultados || [])[0];
+      if (r?.sinTracking) {
+        mostrarToast(`⚠️ Pedido #${r.numeroPedido || pedidoId} sin tracking — generá la etiqueta primero`, 'error');
+        return;
+      }
+      if (r && !r.success) {
+        mostrarToast(`❌ Error: ${r.error || 'No se pudo despachar'}`, 'error');
+        return;
+      }
       mostrarToast('✅ Pedido marcado como despachado', 'success');
       if (tipoEnvio === 'pickup_local') cargarPedidosPickup();
       else cargarPedidosRecibilo();
       cargarPedidosDespachados();
-    } catch { mostrarToast('Error al marcar como despachado', 'error'); }
+    } catch (err) { mostrarToast(`Error: ${err.message}`, 'error'); }
+  };
+
+  const handleMarcarDespachadosBulkEspecial = async (pedidoIds, tipoEnvio) => {
+    try {
+      const resultado = await marcarDespachados(pedidoIds);
+      if (!resultado.success) { mostrarToast(resultado.error || 'Error al despachar', 'error'); return; }
+      const sinTracking = (resultado.resultados || []).filter((r) => r.sinTracking);
+      const despachados = (resultado.resultados || []).filter((r) => r.success && !r.sinTracking);
+      if (sinTracking.length > 0) {
+        const nums = sinTracking.map((r) => `#${r.numeroPedido || r.pedidoId}`).join(', ');
+        mostrarToast(`⚠️ ${sinTracking.length} sin etiqueta (no despachados): ${nums}`, 'warning');
+      }
+      if (despachados.length > 0) {
+        mostrarToast(`✅ ${despachados.length} pedido(s) despachados`, 'success');
+        if (tipoEnvio === 'pickup_local') cargarPedidosPickup();
+        else cargarPedidosRecibilo();
+        cargarPedidosDespachados();
+      }
+    } catch { mostrarToast('Error al marcar como despachados', 'error'); }
   };
 
   const handleFulfillmentEspecial = async (pedidoId, tipoEnvio) => {
@@ -1429,6 +1508,30 @@ function App() {
       else cargarPedidosRecibilo();
       cargarPedidosEnviados();
     } catch { mostrarToast('Error al ejecutar fulfillment', 'error'); }
+  };
+
+  // Procesar sin Shopify fulfillment (pickup / recibilo)
+  const handleProcesarEspecial = async (pedidoId, tipoEnvio) => {
+    try {
+      const resultado = await marcarProcesados([pedidoId]);
+      if (!resultado.success) { mostrarToast(resultado.error || 'Error al procesar', 'error'); return; }
+      mostrarToast('✅ Pedido marcado como procesado', 'success');
+      if (tipoEnvio === 'pickup_local') cargarPedidosPickup();
+      else cargarPedidosRecibilo();
+      cargarPedidosEnviados();
+    } catch { mostrarToast('Error al procesar pedido', 'error'); }
+  };
+
+  const handleProcesarBulkEspecial = async (pedidoIds, tipoEnvio) => {
+    try {
+      const resultado = await marcarProcesados(pedidoIds);
+      if (!resultado.success) { mostrarToast(resultado.error || 'Error al procesar', 'error'); return; }
+      const ok = resultado.ok ?? resultado.resultados?.filter((r) => r.success).length ?? 0;
+      mostrarToast(`✅ ${ok} pedido(s) marcados como procesados`, 'success');
+      if (tipoEnvio === 'pickup_local') cargarPedidosPickup();
+      else cargarPedidosRecibilo();
+      cargarPedidosEnviados();
+    } catch { mostrarToast('Error al procesar pedidos', 'error'); }
   };
 
   return (
@@ -1634,8 +1737,9 @@ function App() {
               <span>
                 {selectedPedidos.length > 0
                   ? `Seleccionados: ${selectedPedidos.length}`
-                  : `${pedidosDespachadosList.length} pedido(s) despachados sin fulfillment`}
+                  : `${pedidosDespachadosList.length} pedido(s) despachados`}
               </span>
+              {/* Fulfillment Shopify — para pedidos que necesitan notificar al courier */}
               <button
                 className="btn btn-primary btn-sm"
                 onClick={async () => {
@@ -1658,6 +1762,31 @@ function App() {
                 title="Enviar fulfillment a Shopify para los despachados seleccionados"
               >
                 📨 Enviar Fulfillment ({selectedPedidos.length > 0 ? selectedPedidos.length : pedidosDespachadosList.length})
+              </button>
+              {/* Procesado directo — para despachados con fulfillment ya hecho en Shopify */}
+              <button
+                className="btn btn-success btn-sm"
+                onClick={async () => {
+                  try {
+                    const ids = selectedPedidos.length > 0
+                      ? selectedPedidos.filter((id) => pedidosDespachadosList.some((p) => p.id === id))
+                      : pedidosDespachadosList.map((p) => p.id);
+                    if (ids.length === 0) { mostrarToast('No hay pedidos para marcar', 'warning'); return; }
+                    const resultado = await marcarProcesados(ids);
+                    if (!resultado.success) { mostrarToast(resultado.error || 'Error al procesar', 'error'); return; }
+                    mostrarToast(`✅ ${resultado.ok} pedido(s) marcados como procesados`, 'success');
+                    limpiarSeleccion();
+                    cargarPedidosDespachados();
+                    cargarPedidosEnviados();
+                  } catch (err) {
+                    console.error('Error al marcar como procesados:', err);
+                    mostrarToast(`Error al procesar: ${err.message}`, 'error');
+                  }
+                }}
+                disabled={pedidosDespachadosList.length === 0}
+                title="Marcar como procesados sin re-hacer fulfillment (ya fue hecho en Shopify)"
+              >
+                ✅ Ya procesados ({selectedPedidos.length > 0 ? selectedPedidos.length : pedidosDespachadosList.length})
               </button>
             </div>
           )}
@@ -1801,7 +1930,9 @@ function App() {
                 pedidos={pickupList}
                 tipo="pickup_local"
                 onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'pickup_local')}
-                onFulfillment={(id) => handleFulfillmentEspecial(id, 'pickup_local')}
+                onMarcarDespachadosBulk={(ids) => handleMarcarDespachadosBulkEspecial(ids, 'pickup_local')}
+                onProcesar={(id) => handleProcesarEspecial(id, 'pickup_local')}
+                onProcesarBulk={(ids) => handleProcesarBulkEspecial(ids, 'pickup_local')}
                 onActualizar={cargarPedidosPickup}
                 mostrarToast={mostrarToast}
               />
@@ -1815,10 +1946,43 @@ function App() {
                 pedidos={recibiloList}
                 tipo="recibilo_hoy"
                 onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'recibilo_hoy')}
-                onFulfillment={(id) => handleFulfillmentEspecial(id, 'recibilo_hoy')}
+                onMarcarDespachadosBulk={(ids) => handleMarcarDespachadosBulkEspecial(ids, 'recibilo_hoy')}
+                onProcesar={(id) => handleProcesarEspecial(id, 'recibilo_hoy')}
+                onProcesarBulk={(ids) => handleProcesarBulkEspecial(ids, 'recibilo_hoy')}
                 onActualizar={cargarPedidosRecibilo}
                 mostrarToast={mostrarToast}
               />
+            </div>
+          )}
+
+          {/* ⚠️ TEMPORAL: Panel para reprocesar pedidos que no entraron por webhook.
+               Cuando ya no se necesite, cambiar REPROCESS_ENABLED = false arriba */}
+          {REPROCESS_ENABLED && (
+            <div style={{ margin: '12px 16px', padding: '12px 16px', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 600, fontSize: 13 }}>⚠️ Reprocesar pedido Shopify</span>
+              <input
+                type="text"
+                placeholder="Número de pedido (ej: 1234)"
+                value={reprocessOrderNumber}
+                onChange={(e) => setReprocessOrderNumber(e.target.value)}
+                disabled={reprocessLoading || reprocessDone}
+                style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc', fontSize: 13, width: 200 }}
+              />
+              <button
+                onClick={handleReprocesarPedido}
+                disabled={reprocessLoading || reprocessDone || !reprocessOrderNumber.trim()}
+                style={{ padding: '4px 12px', borderRadius: 4, background: reprocessDone ? '#28a745' : '#ffc107', border: 'none', fontWeight: 600, fontSize: 13, cursor: reprocessLoading || reprocessDone ? 'default' : 'pointer' }}
+              >
+                {reprocessLoading ? 'Procesando...' : reprocessDone ? '✅ Listo' : 'Crear en BD'}
+              </button>
+              {reprocessDone && (
+                <button
+                  onClick={() => { setReprocessDone(false); setReprocessOrderNumber(''); }}
+                  style={{ padding: '4px 10px', borderRadius: 4, background: '#6c757d', color: '#fff', border: 'none', fontSize: 12, cursor: 'pointer' }}
+                >
+                  Otro pedido
+                </button>
+              )}
             </div>
           )}
 
@@ -1838,16 +2002,29 @@ function App() {
               }
               selectedPedidos={selectedPedidos}
               onToggleSelect={toggleSelectPedido}
-              onToggleSelectAll={toggleSelectAll}
+              onToggleSelectAll={(lista) => toggleSelectAll(lista)}
               onReenviarNotificacion={handleReenviarNotificacion}
               onContactarPendiente={handleContactarPendienteRapido}
               onMarcarNotificado={async (pedidoId) => { await marcarPedidoNotificado(pedidoId); cargarPedidosEnviados(); cargarPedidosDespachados(); }}
               onDescargarEtiqueta={handleDescargarEtiqueta}
               onDescartarEtiqueta={handleDescartarEtiqueta}
+              onProcesarDirecto={async (pedidoId) => {
+                try {
+                  const resultado = await marcarProcesados([pedidoId]);
+                  if (!resultado.success) { mostrarToast(resultado.error || 'Error al procesar', 'error'); return; }
+                  mostrarToast('✅ Pedido marcado como procesado', 'success');
+                  cargarPedidosDespachados();
+                  cargarPedidosEnviados();
+                } catch (err) {
+                  console.error('Error en onProcesarDirecto:', err);
+                  mostrarToast(`Error al procesar: ${err.message}`, 'error');
+                }
+              }}
               fulfillmentPreview={fulfillmentPreviewIds !== null}
               channelPriority={channelPriority}
               showNotifyColumn={tableFilter !== 'porValidar'}
               showTrackingColumn={tableFilter !== 'porValidar'}
+              showProcesarButton={tableFilter === 'despachados'}
               activeTrackingTemplate={templatesWhatsapp.find((t) => t.id === activeTrackingTemplateId)}
               activeContactTemplate={templatesWhatsapp.find((t) => t.id === activeTrackingTemplateId)}
               modoPendienteContacto={tableFilter === 'pendientesContacto'}

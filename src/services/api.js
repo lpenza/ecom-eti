@@ -78,6 +78,17 @@ export async function sincronizarShopify() {
 }
 
 /**
+ * ⚠️ TEMPORAL: Reprocesar pedido de Shopify que no entró por webhook
+ * Cuando ya no se necesite, eliminar esta función y el panel en App.jsx
+ */
+export async function reprocesarPedidoShopify(orderNumber) {
+  return await fetchAPI('/reprocess-shopify-order', {
+    method: 'POST',
+    body: JSON.stringify({ orderNumber }),
+  });
+}
+
+/**
  * Ejecutar fulfillment Shopify para pedidos con etiqueta generada
  */
 export async function ejecutarFulfillmentShopify(pedidoIds = null, trackingTemplate = null) {
@@ -200,6 +211,10 @@ export async function obtenerPedidosFollowUp({ days = 15, from = '', to = '', es
   if (pedido) params.set('pedido', pedido);
 
   return await fetchAPI(`/followup/pedidos?${params.toString()}`, { method: 'GET' });
+}
+
+export async function marcarFollowupEnviado(pedidoId) {
+  return await fetchAPI(`/pedidos/${pedidoId}/marcar-followup`, { method: 'POST' });
 }
 
 export async function actualizarEstadoCliente(customerId, state) {
@@ -355,10 +370,21 @@ export async function inicializarPlantillas() {
 // ==================== MARCAR DESPACHADOS BULK ====================
 
 /**
- * Marcar múltiples pedidos como despachados (estado enviado + tag DESPACHADO en Shopify)
+ * Marcar múltiples pedidos como despachados (estado despachado + tag en Shopify)
  */
 export async function marcarDespachados(pedidoIds) {
   return await fetchAPI('/marcar-despachados-bulk', {
+    method: 'POST',
+    body: JSON.stringify({ pedidoIds }),
+  });
+}
+
+/**
+ * Marcar pedidos como procesados SIN hacer fulfillment en Shopify.
+ * Usado para pickup_local, recibilo_hoy, o despachados con fulfillment ya hecho.
+ */
+export async function marcarProcesados(pedidoIds) {
+  return await fetchAPI('/marcar-procesados-bulk', {
     method: 'POST',
     body: JSON.stringify({ pedidoIds }),
   });
@@ -413,6 +439,24 @@ export async function guardarLinkDriveEnPedido(pedidoId, linkDrive) {
     method: 'POST',
     body: JSON.stringify({ linkDrive }),
   });
+}
+
+/**
+ * Descarga varios PDFs de Drive y los devuelve como un único Blob PDF.
+ * @param {string[]} links - Array de links de Google Drive
+ */
+export async function mergePedidosPDF(links) {
+  const response = await fetch(`${API_BASE}/drive-etiquetas/merge-pdf`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ links }),
+  });
+  if (!response.ok) {
+    let msg = 'Error al generar PDF unificado';
+    try { const j = await response.json(); msg = j.error || msg; } catch (_) {}
+    throw new Error(msg);
+  }
+  return response.blob();
 }
 
 // ==================== BOT WHATSAPP ====================

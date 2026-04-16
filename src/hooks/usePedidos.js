@@ -416,12 +416,18 @@ export function usePedidos() {
     });
   }, []);
 
-  // Toggle seleccionar todos
-  const toggleSelectAll = useCallback(() => {
-    if (selectedPedidos.length === pedidos.length) {
-      setSelectedPedidos([]);
+  // Toggle seleccionar todos — acepta una lista explícita de pedidos (vista filtrada)
+  // Si no se pasa lista, usa todos los pedidos del hook (comportamiento legado)
+  const toggleSelectAll = useCallback((listaVisible = null) => {
+    const lista = listaVisible ?? pedidos;
+    const ids   = lista.map(p => p.id);
+    const todosSeleccionados = ids.length > 0 && ids.every(id => selectedPedidos.includes(id));
+    if (todosSeleccionados) {
+      // Deseleccionar solo los de la vista actual (mantener otros si los hubiera)
+      setSelectedPedidos(prev => prev.filter(id => !ids.includes(id)));
     } else {
-      setSelectedPedidos(pedidos.map(p => p.id));
+      // Agregar los de la vista actual a la selección existente
+      setSelectedPedidos(prev => [...new Set([...prev, ...ids])]);
     }
   }, [pedidos, selectedPedidos]);
 

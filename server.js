@@ -4,7 +4,26 @@ const bodyParser = require('body-parser');
 const path = require('path');
 const fs = require('fs').promises;
 const axios = require('axios');
+const { google } = require('googleapis');
 require('dotenv').config();
+
+// ── Google Drive helper (Service Account) ───────────────────────────────────
+function buildDriveClient() {
+  const saKey = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+  if (!saKey) return null;
+  try {
+    const credentials = JSON.parse(saKey);
+    const auth = new google.auth.GoogleAuth({
+      credentials,
+      scopes: ['https://www.googleapis.com/auth/drive.readonly'],
+    });
+    return google.drive({ version: 'v3', auth });
+  } catch (e) {
+    console.error('[Drive] Error parseando GOOGLE_SERVICE_ACCOUNT_KEY:', e.message);
+    return null;
+  }
+}
+const driveClient = buildDriveClient();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -910,6 +929,39 @@ app.post('/api/ues/regenerar-cache', async (req, res) => {
   }
 });
 
+// ⚠️ TEMPORAL: Reprocesar pedido de Shopify que no entró por webhook (ej: transferencia bancaria)
+// Cuando ya no se necesite, comentar o eliminar este endpoint
+app.post('/api/reprocess-shopify-order', async (req, res) => {
+  try {
+    const { orderNumber } = req.body || {};
+    if (!orderNumber) {
+      return res.status(400).json({ success: false, error: 'Se requiere orderNumber' });
+    }
+
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      return res.status(500).json({ success: false, error: 'SUPABASE_URL o SUPABASE_KEY no configurados' });
+    }
+
+    const response = await fetch(`${supabaseUrl}/functions/v1/shopify-proxy`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${supabaseKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ action: 'reprocessOrder', orderNumber: String(orderNumber) }),
+    });
+
+    const data = await response.json();
+    res.status(response.ok ? 200 : 500).json(data);
+  } catch (error) {
+    logService.error('Error al reprocesar pedido Shopify', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Sincronizar con Shopify (alias para React)
 app.post('/api/sync-shopify', async (req, res) => {
   try {
@@ -1187,6 +1239,19 @@ app.post('/api/marcar-despachados-bulk', async (req, res) => {
           const pedido = await supabaseService.obtenerPedido(pedidoId);
           if (!pedido) return { pedidoId, success: false, error: 'No encontrado' };
 
+          // Pickup y recibilo no usan tracking UES — pueden despacharse sin él
+          const esEspecial = pedido.tipo_envio === 'pickup_local' || pedido.tipo_envio === 'recibilo_hoy';
+
+          if (!esEspecial && (!pedido.numero_seguimiento_ues || !String(pedido.numero_seguimiento_ues).trim())) {
+            return {
+              pedidoId,
+              numeroPedido: pedido.numero_pedido,
+              success: false,
+              error: 'Sin número de seguimiento — generá la etiqueta antes de despachar',
+              sinTracking: true,
+            };
+          }
+
           await supabaseService.actualizarPedido(pedidoId, {
             estado: 'despachado',
             notificacion_enviada_at: ahora,
@@ -1213,6 +1278,36 @@ app.post('/api/marcar-despachados-bulk', async (req, res) => {
     res.json({ success: true, ok, total: pedidoIds.length, resultados });
   } catch (error) {
     logService.error('Error en marcar-despachados-bulk', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Marcar pedidos como procesados SIN hacer fulfillment en Shopify
+// Usado para pickup_local y recibilo_hoy, o despachados que ya tienen fulfillment hecho
+app.post('/api/marcar-procesados-bulk', async (req, res) => {
+  try {
+    const { pedidoIds } = req.body;
+    if (!Array.isArray(pedidoIds) || pedidoIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'pedidoIds requerido' });
+    }
+
+    const resultados = await Promise.all(
+      pedidoIds.map(async (pedidoId) => {
+        try {
+          await supabaseService.actualizarPedido(pedidoId, { estado: 'enviado' });
+          return { pedidoId, success: true };
+        } catch (err) {
+          logService.warning(`No se pudo marcar como procesado pedido ${pedidoId}: ${err.message}`);
+          return { pedidoId, success: false, error: err.message };
+        }
+      })
+    );
+
+    const ok = resultados.filter((r) => r.success).length;
+    logService.info(`Marcados como procesados (sin fulfillment): ${ok}/${pedidoIds.length}`);
+    res.json({ success: true, ok, total: pedidoIds.length, resultados });
+  } catch (error) {
+    logService.error('Error en marcar-procesados-bulk', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1352,6 +1447,21 @@ app.post('/api/customers/:customerId/notes', async (req, res) => {
     return res.status(201).json({ success: true, data: note });
   } catch (error) {
     logService.error('Error agregando nota de cliente', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Marcar follow-up como enviado (persiste en DB)
+app.post('/api/pedidos/:pedidoId/marcar-followup', async (req, res) => {
+  try {
+    const { pedidoId } = req.params;
+    if (!pedidoId) {
+      return res.status(400).json({ success: false, error: 'pedidoId requerido' });
+    }
+    const data = await supabaseService.marcarFollowupEnviado(pedidoId);
+    return res.json({ success: true, data });
+  } catch (error) {
+    logService.error('Error marcando follow-up como enviado', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -1918,11 +2028,38 @@ const DRIVE_FOLDER_ID = process.env.DRIVE_ETIQUETAS_FOLDER_ID || '1lp7dpwdCg49nv
 
 app.get('/api/drive-etiqueta/:numeroPedido', async (req, res) => {
   const { numeroPedido } = req.params;
-  const apiKey = process.env.GOOGLE_API_KEY;
+  const folderUrl = `https://drive.google.com/drive/folders/${DRIVE_FOLDER_ID}`;
 
+  // ── Opción A: Service Account (accede a carpetas privadas) ─────────────────
+  if (driveClient) {
+    try {
+      const query = `'${DRIVE_FOLDER_ID}' in parents and name contains '${numeroPedido}' and trashed = false`;
+      const response = await driveClient.files.list({
+        q: query,
+        fields: 'files(id,name,webViewLink,webContentLink,mimeType)',
+        supportsAllDrives: true,
+        includeItemsFromAllDrives: true,
+        pageSize: 5,
+      });
+
+      const files = response.data.files || [];
+      if (files.length === 0) {
+        return res.json({ success: false, fallbackUrl: folderUrl, error: `No se encontró etiqueta para pedido ${numeroPedido}` });
+      }
+
+      const pdf = files.find((f) => f.mimeType === 'application/pdf') || files[0];
+      const previewUrl  = `https://drive.google.com/file/d/${pdf.id}/preview`;
+      const downloadUrl = `https://drive.google.com/uc?export=download&id=${pdf.id}`;
+      return res.json({ success: true, fileId: pdf.id, name: pdf.name, previewUrl, downloadUrl, webViewLink: pdf.webViewLink });
+    } catch (error) {
+      logService.error(`[Drive SA] Error buscando etiqueta para pedido ${numeroPedido}`, error);
+      return res.json({ success: false, fallbackUrl: folderUrl, error: error.message });
+    }
+  }
+
+  // ── Opción B: API Key pública (solo funciona si la carpeta es pública) ─────
+  const apiKey = process.env.GOOGLE_API_KEY;
   if (!apiKey) {
-    // Sin API key: devolver URL de carpeta para apertura manual
-    const folderUrl = `https://drive.google.com/drive/folders/${DRIVE_FOLDER_ID}`;
     return res.json({ success: false, fallbackUrl: folderUrl, error: 'GOOGLE_API_KEY no configurada' });
   }
 
@@ -1941,20 +2078,74 @@ app.get('/api/drive-etiqueta/:numeroPedido', async (req, res) => {
 
     const files = response.data.files || [];
     if (files.length === 0) {
-      const folderUrl = `https://drive.google.com/drive/folders/${DRIVE_FOLDER_ID}`;
       return res.json({ success: false, fallbackUrl: folderUrl, error: `No se encontró etiqueta para pedido ${numeroPedido}` });
     }
 
-    // Preferir PDF si hay varios
     const pdf = files.find((f) => f.mimeType === 'application/pdf') || files[0];
-    const previewUrl = `https://drive.google.com/file/d/${pdf.id}/preview`;
+    const previewUrl  = `https://drive.google.com/file/d/${pdf.id}/preview`;
     const downloadUrl = `https://drive.google.com/uc?export=download&id=${pdf.id}`;
-
-    res.json({ success: true, fileId: pdf.id, name: pdf.name, previewUrl, downloadUrl, webViewLink: pdf.webViewLink });
+    return res.json({ success: true, fileId: pdf.id, name: pdf.name, previewUrl, downloadUrl, webViewLink: pdf.webViewLink });
   } catch (error) {
-    logService.error(`Error buscando etiqueta Drive para pedido ${numeroPedido}`, error);
-    const folderUrl = `https://drive.google.com/drive/folders/${DRIVE_FOLDER_ID}`;
-    res.json({ success: false, fallbackUrl: folderUrl, error: error.message });
+    logService.error(`[Drive API Key] Error buscando etiqueta para pedido ${numeroPedido}`, error);
+    return res.json({ success: false, fallbackUrl: folderUrl, error: error.message });
+  }
+});
+
+// ── Merge PDF: descarga y une varios PDFs de Drive en uno solo ──────────────
+app.post('/api/drive-etiquetas/merge-pdf', async (req, res) => {
+  const { links } = req.body;
+  if (!Array.isArray(links) || links.length === 0) {
+    return res.status(400).json({ success: false, error: 'No se enviaron links' });
+  }
+  if (!driveClient) {
+    return res.status(503).json({ success: false, error: 'Drive Service Account no configurado' });
+  }
+
+  const { PDFDocument } = require('pdf-lib');
+
+  function extractFileId(url) {
+    if (!url) return null;
+    const m1 = String(url).match(/\/d\/([^/?#]+)/);
+    if (m1) return m1[1];
+    const m2 = String(url).match(/[?&]id=([^&]+)/);
+    return m2 ? m2[1] : null;
+  }
+
+  try {
+    const mergedPdf = await PDFDocument.create();
+    let merged = 0;
+
+    for (const link of links) {
+      const fileId = extractFileId(link);
+      if (!fileId) { logService.warning(`[MergePDF] Link inválido: ${link}`); continue; }
+
+      try {
+        const resp = await driveClient.files.get(
+          { fileId, alt: 'media' },
+          { responseType: 'arraybuffer' }
+        );
+        const pdfDoc = await PDFDocument.load(Buffer.from(resp.data), { ignoreEncryption: true });
+        const pages  = await mergedPdf.copyPagesFrom(pdfDoc, pdfDoc.getPageIndices());
+        pages.forEach((p) => mergedPdf.addPage(p));
+        merged++;
+      } catch (err) {
+        logService.warning(`[MergePDF] No se pudo descargar fileId ${fileId}: ${err.message}`);
+      }
+    }
+
+    if (merged === 0) {
+      return res.status(404).json({ success: false, error: 'No se pudo descargar ningún PDF de Drive' });
+    }
+
+    const bytes = await mergedPdf.save();
+    const filename = `etiquetas-${new Date().toISOString().slice(0,10)}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Length', bytes.length);
+    res.send(Buffer.from(bytes));
+  } catch (error) {
+    logService.error('[MergePDF] Error generando PDF unificado', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

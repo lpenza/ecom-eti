@@ -527,7 +527,7 @@ class SupabaseService {
   async guardarLinkDrivePedido(pedidoId, linkDrive) {
     const { data, error } = await supabase
       .from('pedidos')
-      .update({ link_etiqueta_drive: linkDrive, etiqueta_generada: true, updated_at: new Date().toISOString() })
+      .update({ link_etiqueta_drive: linkDrive, etiqueta_generada: true })
       .eq('id', pedidoId)
       .select()
       .single();
@@ -752,6 +752,18 @@ class SupabaseService {
     return data;
   }
 
+  async marcarFollowupEnviado(pedidoId) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .update({ followup_enviado_at: new Date().toISOString() })
+      .eq('id', pedidoId)
+      .select('id, followup_enviado_at')
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
   // Actualizar pedido
   async actualizarPedido(pedidoId, datos) {
     console.log('📝 Actualizando pedido:', pedidoId, 'con datos:', datos);
@@ -891,12 +903,10 @@ class SupabaseService {
 
   // Función auxiliar para asegurar UTF-8 válido
   ensureUtf8(text) {
+    // Supabase/PostgreSQL already uses UTF-8 — just return the string as-is.
+    // The previous Buffer round-trip could replace lone surrogates (emoji) with '?'.
     if (!text) return text;
-    try {
-      return Buffer.from(text, 'utf8').toString('utf8');
-    } catch (e) {
-      return text;
-    }
+    return String(text);
   }
 
   // Obtener todas las plantillas

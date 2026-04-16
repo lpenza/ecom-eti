@@ -1,13 +1,13 @@
-import React, { useState } from 'react';
-import { buscarEtiquetaDrive, guardarLinkDriveEnPedido } from '../services/api';
+import React, { useState, useCallback } from 'react';
+import { buscarEtiquetaDrive, guardarLinkDriveEnPedido, mergePedidosPDF } from '../services/api';
 
 const DRIVE_FOLDER_URL = 'https://drive.google.com/drive/folders/1lp7dpwdCg49nvqbGhW0efvXGV49q2lWQ';
 
 const ESTADO_LABELS = {
-  pendiente:        { label: 'Pendiente',       cls: 'de-estado-pendiente',   icon: '🕐' },
-  etiqueta_generada:{ label: 'Etiqueta lista',  cls: 'de-estado-etiqueta',    icon: '📄' },
-  despachado:       { label: 'Despachado',       cls: 'de-estado-despachado',  icon: '🚀' },
-  enviado:          { label: 'Procesado',        cls: 'de-estado-enviado',     icon: '✅' },
+  pendiente:         { label: 'Pendiente',      cls: 'de-estado-pendiente',  icon: '🕐' },
+  etiqueta_generada: { label: 'Etiqueta lista', cls: 'de-estado-etiqueta',   icon: '📄' },
+  despachado:        { label: 'Despachado',      cls: 'de-estado-despachado', icon: '🚀' },
+  enviado:           { label: 'Procesado',       cls: 'de-estado-enviado',    icon: '✅' },
 };
 
 function fmtDate(iso) {
@@ -15,16 +15,36 @@ function fmtDate(iso) {
   return new Date(iso).toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit' });
 }
 
+function extractDriveFileId(url) {
+  if (!url) return null;
+  const match = String(url).match(/\/d\/([^/?#]+)/);
+  if (match) return match[1];
+  const idMatch = String(url).match(/[?&]id=([^&]+)/);
+  return idMatch ? idMatch[1] : null;
+}
+
+function buildDriveUrls(fileId) {
+  return {
+    previewUrl:  `https://drive.google.com/file/d/${fileId}/preview`,
+    downloadUrl: `https://drive.google.com/uc?export=download&id=${fileId}`,
+    webViewLink: `https://drive.google.com/file/d/${fileId}/view`,
+  };
+}
+
 export default function DeliveryEspecialTable({
   pedidos = [],
-  tipo,                   // 'pickup_local' | 'recibilo_hoy'
-  onMarcarDespachado,     // (pedidoId) => Promise
-  onFulfillment,          // (pedidoId) => Promise
-  onActualizar,           // () => void
+  tipo,
+  onMarcarDespachado,
+  onMarcarDespachadosBulk,
+  onProcesar,
+  onProcesarBulk,
+  onActualizar,
   mostrarToast,
 }) {
-  const [driveState, setDriveState] = useState({}); // { [pedidoId]: { loading, previewUrl, downloadUrl, webViewLink, fallbackUrl, error } }
+  const [driveState, setDriveState]       = useState({});
   const [previewPedidoId, setPreviewPedidoId] = useState(null);
+  const [selectedIds, setSelectedIds]     = useState(new Set());
+  const [bulkLoading, setBulkLoading]     = useState(false);
 
   const tipoLabel = tipo === 'pickup_local' ? 'Pick-UP' : 'Recibilo Hoy';
   const tipoIcon  = tipo === 'pickup_local' ? '🏪' : '⚡';
@@ -35,13 +55,52 @@ export default function DeliveryEspecialTable({
     return nb - na;
   });
 
+  // ── Selección ───────────────────────────────────────────────────────────────
+  const allSelected = pedidosOrdenados.length > 0 && selectedIds.size === pedidosOrdenados.length;
+  const someSelected = selectedIds.size > 0;
+
+  const toggleSelect = useCallback((id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
+
+  const toggleAll = useCallback(() => {
+    setSelectedIds((prev) =>
+      prev.size === pedidosOrdenados.length
+        ? new Set()
+        : new Set(pedidosOrdenados.map((p) => p.id))
+    );
+  }, [pedidosOrdenados]);
+
+  // ── Etiqueta helpers ────────────────────────────────────────────────────────
+  const getEtiquetaUrl = (pedido) => {
+    const local = driveState[pedido.id];
+    if (local?.previewUrl) return { previewUrl: local.previewUrl, downloadUrl: local.downloadUrl };
+    if (pedido.link_etiqueta_drive) {
+      const fileId = extractDriveFileId(pedido.link_etiqueta_drive);
+      if (fileId) return buildDriveUrls(fileId);
+      return { previewUrl: pedido.link_etiqueta_drive, downloadUrl: pedido.link_etiqueta_drive };
+    }
+    return null;
+  };
+
+  const getDriveLink = (pedido) => {
+    const local = driveState[pedido.id];
+    if (local?.webViewLink) return local.webViewLink;
+    if (pedido.link_etiqueta_drive) return pedido.link_etiqueta_drive;
+    return null;
+  };
+
+  // ── Buscar etiqueta individual ──────────────────────────────────────────────
   const buscarEtiqueta = async (pedido) => {
     const id = pedido.id;
-    setDriveState((s) => ({ ...s, [id]: { ...s[id], loading: true, error: null } }));
+    setDriveState((s) => ({ ...s, [id]: { ...s[id], loading: true, error: null, showManualInput: false } }));
     try {
       const result = await buscarEtiquetaDrive(pedido.numero_pedido);
       if (result.success) {
-        // Guardar link en DB para no buscar de nuevo
         await guardarLinkDriveEnPedido(id, result.webViewLink);
         setDriveState((s) => ({
           ...s,
@@ -50,33 +109,105 @@ export default function DeliveryEspecialTable({
         mostrarToast?.(`✅ Etiqueta encontrada: ${result.name}`, 'success');
         onActualizar?.();
       } else {
-        setDriveState((s) => ({ ...s, [id]: { loading: false, fallbackUrl: result.fallbackUrl, error: result.error } }));
-        mostrarToast?.(`⚠️ ${result.error || 'No encontrada'}. Abriendo carpeta Drive…`, 'warning');
-        window.open(result.fallbackUrl || DRIVE_FOLDER_URL, '_blank');
+        setDriveState((s) => ({
+          ...s,
+          [id]: { loading: false, fallbackUrl: result.fallbackUrl, error: result.error, showManualInput: true, manualLink: '' },
+        }));
+        mostrarToast?.(
+          result.error?.includes('GOOGLE_API_KEY')
+            ? '⚠️ API de Drive no configurada — pegá el link manualmente'
+            : '⚠️ No se encontró en Drive — pegá el link manualmente',
+          'warning'
+        );
       }
     } catch (err) {
-      setDriveState((s) => ({ ...s, [id]: { loading: false, error: err.message } }));
-      mostrarToast?.('Error buscando etiqueta en Drive', 'error');
+      setDriveState((s) => ({
+        ...s,
+        [id]: { loading: false, error: err.message, showManualInput: true, manualLink: '' },
+      }));
+      mostrarToast?.('Error buscando en Drive — pegá el link manualmente', 'warning');
     }
   };
 
-  const getEtiquetaUrl = (pedido) => {
-    // Prioridad: estado local → link en DB
-    const local = driveState[pedido.id];
-    if (local?.previewUrl) return { previewUrl: local.previewUrl, downloadUrl: local.downloadUrl };
-    if (pedido.link_etiqueta_drive) {
-      const match = pedido.link_etiqueta_drive.match(/\/d\/([^/]+)\//);
-      if (match) {
-        return {
-          previewUrl: `https://drive.google.com/file/d/${match[1]}/preview`,
-          downloadUrl: `https://drive.google.com/uc?export=download&id=${match[1]}`,
-        };
-      }
-      return { previewUrl: pedido.link_etiqueta_drive, downloadUrl: pedido.link_etiqueta_drive };
+  // ── Link manual ─────────────────────────────────────────────────────────────
+  const handleManualLink = async (pedido, rawLink) => {
+    const id = pedido.id;
+    const fileId = extractDriveFileId(rawLink);
+    if (!fileId) {
+      mostrarToast?.('El link no parece un link de Google Drive válido', 'error');
+      return;
     }
-    return null;
+    const urls = buildDriveUrls(fileId);
+    try {
+      await guardarLinkDriveEnPedido(id, urls.webViewLink);
+      setDriveState((s) => ({ ...s, [id]: { loading: false, ...urls, showManualInput: false } }));
+      mostrarToast?.('✅ Etiqueta vinculada correctamente', 'success');
+      onActualizar?.();
+    } catch (_) {
+      setDriveState((s) => ({ ...s, [id]: { loading: false, ...urls, showManualInput: false } }));
+      mostrarToast?.('PDF cargado (no se pudo guardar en DB)', 'warning');
+    }
   };
 
+  // ── Descargar PDFs unidos (bulk) ────────────────────────────────────────────
+  const handleDescargarPDFsBulk = useCallback(async () => {
+    const pedidosSel = pedidosOrdenados.filter((p) => selectedIds.has(p.id));
+    const links = pedidosSel.map((p) => getDriveLink(p)).filter(Boolean);
+
+    if (links.length === 0) {
+      mostrarToast?.('Los pedidos seleccionados no tienen etiqueta asignada', 'warning');
+      return;
+    }
+    if (links.length < pedidosSel.length) {
+      mostrarToast?.(`⚠️ Solo ${links.length} de ${pedidosSel.length} pedidos tienen etiqueta`, 'warning');
+    }
+
+    setBulkLoading(true);
+    try {
+      const blob = await mergePedidosPDF(links);
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `etiquetas-${tipo}-${new Date().toISOString().slice(0, 10)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      mostrarToast?.(`✅ PDF con ${links.length} etiqueta(s) descargado`, 'success');
+    } catch (err) {
+      mostrarToast?.(`Error generando PDF: ${err.message}`, 'error');
+    } finally {
+      setBulkLoading(false);
+    }
+  }, [pedidosOrdenados, selectedIds, tipo, mostrarToast]);
+
+  // ── Marcar despachados (bulk) ───────────────────────────────────────────────
+  const handleDespacharBulk = useCallback(async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setBulkLoading(true);
+    try {
+      await onMarcarDespachadosBulk?.(ids);
+      setSelectedIds(new Set());
+    } finally {
+      setBulkLoading(false);
+    }
+  }, [selectedIds, onMarcarDespachadosBulk]);
+
+  // ── Procesar en bulk (sin Shopify fulfillment) ──────────────────────────────
+  const handleProcesarBulk = useCallback(async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setBulkLoading(true);
+    try {
+      await onProcesarBulk?.(ids);
+      setSelectedIds(new Set());
+    } finally {
+      setBulkLoading(false);
+    }
+  }, [selectedIds, onProcesarBulk]);
+
+  // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="de-wrapper">
 
@@ -106,6 +237,42 @@ export default function DeliveryEspecialTable({
         );
       })()}
 
+      {/* Barra de acciones bulk */}
+      {someSelected && (
+        <div className="de-bulk-bar">
+          <span className="de-bulk-count">{selectedIds.size} seleccionado{selectedIds.size !== 1 ? 's' : ''}</span>
+          <div className="de-bulk-actions">
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={handleDescargarPDFsBulk}
+              disabled={bulkLoading}
+              title="Descargar todos los PDFs seleccionados en un único archivo">
+              {bulkLoading ? '⏳ Generando…' : '⬇️ Descargar PDFs'}
+            </button>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={handleDespacharBulk}
+              disabled={bulkLoading}
+              title="Marcar todos los seleccionados como despachados">
+              🚀 Despachar todos
+            </button>
+            <button
+              className="btn btn-success btn-sm"
+              onClick={handleProcesarBulk}
+              disabled={bulkLoading}
+              title="Marcar todos los seleccionados como procesados (sin fulfillment Shopify)">
+              ✅ Procesar todos
+            </button>
+            <button
+              className="btn btn-outline btn-sm"
+              onClick={() => setSelectedIds(new Set())}
+              disabled={bulkLoading}>
+              ✕ Limpiar
+            </button>
+          </div>
+        </div>
+      )}
+
       {pedidosOrdenados.length === 0 ? (
         <div className="de-empty">
           <span style={{ fontSize: '2rem' }}>{tipoIcon}</span>
@@ -116,6 +283,14 @@ export default function DeliveryEspecialTable({
           <table className="reclamos-table de-table">
             <thead>
               <tr>
+                <th style={{ width: '2.5rem' }}>
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleAll}
+                    title={allSelected ? 'Deseleccionar todos' : 'Seleccionar todos'}
+                  />
+                </th>
                 <th>N° Orden</th>
                 <th>Cliente</th>
                 <th>Teléfono</th>
@@ -132,9 +307,17 @@ export default function DeliveryEspecialTable({
                 const estado  = pedido.estado || 'pendiente';
                 const eLabel  = ESTADO_LABELS[estado] || { label: estado, cls: '', icon: '🔹' };
                 const isDespachado = estado === 'despachado' || estado === 'enviado';
+                const isSelected   = selectedIds.has(pedido.id);
 
                 return (
-                  <tr key={pedido.id}>
+                  <tr key={pedido.id} className={isSelected ? 'de-row-selected' : ''}>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => toggleSelect(pedido.id)}
+                      />
+                    </td>
                     <td><strong>#{pedido.numero_pedido}</strong></td>
                     <td>{pedido.cliente_nombre || '—'}</td>
                     <td>{pedido.cliente_telefono || pedido.cliente_email || '—'}</td>
@@ -159,6 +342,49 @@ export default function DeliveryEspecialTable({
                             ⬇️ PDF
                           </a>
                         </div>
+                      ) : ds.showManualInput ? (
+                        <div className="de-manual-link-wrap">
+                          <p className="de-manual-link-hint">
+                            {ds.error?.includes('GOOGLE_API_KEY')
+                              ? '⚠️ Drive API no configurada'
+                              : '⚠️ No encontrado automáticamente'}
+                          </p>
+                          <div className="de-manual-link-row">
+                            <input
+                              className="de-manual-link-input"
+                              type="text"
+                              placeholder="Pegá el link de Drive aquí…"
+                              value={ds.manualLink || ''}
+                              onChange={(e) => setDriveState((s) => ({
+                                ...s,
+                                [pedido.id]: { ...s[pedido.id], manualLink: e.target.value },
+                              }))}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && ds.manualLink?.trim()) {
+                                  handleManualLink(pedido, ds.manualLink.trim());
+                                }
+                              }}
+                            />
+                            <button
+                              className="btn btn-primary btn-sm"
+                              disabled={!ds.manualLink?.trim()}
+                              onClick={() => handleManualLink(pedido, ds.manualLink.trim())}
+                              title="Vincular este link de Drive al pedido">
+                              ✓
+                            </button>
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.3rem' }}>
+                            <button className="btn btn-secondary btn-sm"
+                              onClick={() => buscarEtiqueta(pedido)}
+                              disabled={ds.loading}>
+                              🔄 Reintentar
+                            </button>
+                            <a href={ds.fallbackUrl || DRIVE_FOLDER_URL} target="_blank"
+                              rel="noopener noreferrer" className="de-drive-fallback">
+                              📁 Abrir carpeta
+                            </a>
+                          </div>
+                        </div>
                       ) : (
                         <button className="btn btn-primary btn-sm"
                           onClick={() => buscarEtiqueta(pedido)}
@@ -167,13 +393,9 @@ export default function DeliveryEspecialTable({
                           {ds.loading ? '⏳ Buscando…' : '🔍 Buscar en Drive'}
                         </button>
                       )}
-                      {ds.error && !urls && (
-                        <a href={ds.fallbackUrl || DRIVE_FOLDER_URL} target="_blank" rel="noopener noreferrer"
-                          className="de-drive-fallback">📁 Abrir carpeta</a>
-                      )}
                     </td>
 
-                    {/* Acciones */}
+                    {/* Acciones individuales */}
                     <td className="reclamo-actions">
                       <button className={`btn btn-sm ${isDespachado ? 'btn-secondary' : 'btn-primary'}`}
                         disabled={isDespachado}
@@ -181,11 +403,16 @@ export default function DeliveryEspecialTable({
                         onClick={() => onMarcarDespachado?.(pedido.id)}>
                         🚀 Despachar
                       </button>
-                      <button className={`btn btn-sm ${estado === 'enviado' ? 'btn-secondary' : 'btn-primary'}`}
-                        disabled={estado === 'enviado'}
-                        title={estado === 'enviado' ? 'Fulfillment ya enviado' : 'Enviar fulfillment a Shopify'}
-                        onClick={() => onFulfillment?.(pedido.id)}>
-                        🏪 Shopify
+                      <button
+                        className={`btn btn-sm ${estado === 'enviado' ? 'btn-secondary' : 'btn-success'}`}
+                        disabled={estado === 'enviado' || !urls}
+                        title={
+                          estado === 'enviado' ? 'Ya procesado'
+                          : !urls ? 'Necesita etiqueta Drive para procesar'
+                          : 'Marcar como procesado (sin fulfillment Shopify)'
+                        }
+                        onClick={() => onProcesar?.(pedido.id)}>
+                        ✅ Procesar
                       </button>
                     </td>
                   </tr>
