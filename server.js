@@ -1194,10 +1194,10 @@ app.post('/api/marcar-notificado/:pedidoId', async (req, res) => {
 
     await supabaseService.actualizarPedido(pedidoId, {
       notificacion_enviada_at: new Date().toISOString(),
-      estado: 'enviado',
+      estado: 'despachado',
     });
 
-    logService.info(`Pedido ${pedidoId} marcado como notificado y enviado (WhatsApp manual)`);
+    logService.info(`Pedido ${pedidoId} marcado como notificado y despachado (WhatsApp manual)`);
 
     // Agregar tag DESPACHADO en Shopify (best-effort, resolviendo shopify_order_id si es necesario)
     ;(async () => {
