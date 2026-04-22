@@ -690,6 +690,26 @@ class SupabaseService {
     return byId;
   }
 
+  async obtenerPedidosFeedbackCampana({ from = '', to = '' } = {}) {
+    let query = supabase
+      .from('pedidos')
+      .select('id, cliente_nombre, cliente_email, cliente_telefono, followup_enviado_at')
+      .not('followup_enviado_at', 'is', null)
+      .order('followup_enviado_at', { ascending: false })
+      .limit(5000);
+
+    if (from) {
+      query = query.gte('followup_enviado_at', from);
+    }
+    if (to) {
+      query = query.lte('followup_enviado_at', to);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+  }
+
   async guardarEstadoCliente(customerId, state) {
     const now = new Date().toISOString();
     const payload = {

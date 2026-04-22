@@ -1564,6 +1564,417 @@ app.get('/api/followup/pedidos', async (req, res) => {
   }
 });
 
+function normalizePhoneKey(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (!digits) return '';
+  return digits.length >= 8 ? digits.slice(-8) : digits;
+}
+
+function classifyFeedbackState(rawState) {
+  const state = String(rawState || '').trim().toLowerCase();
+  const positive = new Set(['happy', 'satisfied', 'feliz', 'ok']);
+  const negative = new Set(['issue', 'repeat', 'upset', 'frustrated', 'anxious', 'molesta']);
+
+  if (positive.has(state)) return 'positive';
+  if (negative.has(state)) return 'negative';
+  return 'neutral';
+}
+
+function mapToTopList(counterMap, limit = 8) {
+  return Object.entries(counterMap)
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
+}
+
+function normalizeLabel(raw) {
+  const value = String(raw || '').trim().toLowerCase();
+  if (!value) return 'sin_clasificar';
+  if (['null', 'undefined', 'none', 'n/a', 'na', '-'].includes(value)) return 'sin_clasificar';
+  return value;
+}
+
+function classifyPendingAction(rawAction) {
+  const action = normalizeLabel(rawAction);
+  if (!action || action === 'sin_clasificar') return null;
+
+  if (action.includes('precio') || action.includes('price')) return 'objecion_precio';
+  if (action.includes('envio') || action.includes('entrega') || action.includes('delivery')) return 'friccion_envio';
+  if (action.includes('calidad') || action.includes('quality')) return 'objecion_calidad';
+  return action;
+}
+
+const LABEL_DICTIONARY = {
+  general: { label: 'Consulta general', action: 'Revisar FAQ inicial y bienvenida' },
+  greeting: { label: 'Saludo inicial', action: 'Responder con menu guiado corto' },
+  purchase_intent: { label: 'Intención de compra', action: 'Priorizar cierre y oferta activa' },
+  colors_designs: { label: 'Dudas por colores/diseños', action: 'Mostrar comparativa de tonos y packs' },
+  shipping_question: { label: 'Duda de envío', action: 'Aclarar plazos por zona y costo final' },
+  order_status: { label: 'Seguimiento de pedido', action: 'Automatizar status con tracking claro' },
+  post_purchase_support: { label: 'Soporte post compra', action: 'Escalar casos de uso complejos' },
+  payment_issue: { label: 'Problema de pago', action: 'Verificar pasarela y confirmacion manual' },
+  complaint: { label: 'Reclamo', action: 'Activar protocolo de recuperacion' },
+  delivery_delay: { label: 'Demora de entrega', action: 'Comunicacion proactiva de demora' },
+  returns: { label: 'Cambio/devolución', action: 'Ofrecer ruta de solucion y tiempos' },
+  wants_multiple_colors: { label: 'Quiere varios colores', action: 'Empujar bundle multicolor' },
+  payment_confirmed_but_not_order: { label: 'Pago confirmado sin orden', action: 'Caso crítico: revisar checkout y conciliacion' },
+  does_not_understand_product: { label: 'No entiende el producto', action: 'Agregar demo rápida de uso' },
+  product_expectation_mismatch: { label: 'Expectativa de producto no cumplida', action: 'Alinear promesa comercial y contenido' },
+  color_durability_issue: { label: 'Problema de durabilidad del color', action: 'Auditar calidad y guia de aplicacion' },
+  uv_lamp_safety: { label: 'Duda sobre seguridad lampara UV', action: 'Publicar respuesta tecnica simple' },
+  missing_items: { label: 'Faltan items en pedido', action: 'Abrir reposicion inmediata' },
+  missing_item: { label: 'Falta un item en pedido', action: 'Abrir reposicion inmediata' },
+  follow_up: { label: 'Seguimiento pendiente', action: 'Disparar secuencia de re-contacto' },
+  objection: { label: 'Objeción de compra', action: 'Responder con prueba social y oferta' },
+  product_inquiry: { label: 'Consulta de producto', action: 'Mostrar ficha tecnica completa' },
+  tracking_request: { label: 'Solicitud de rastreo', action: 'Proporcionar link de tracking en tiempo real' },
+};
+
+function computeInsights(tops, hotOverview) {
+  const insights = [];
+
+  // Analizar quejas, dolores, acciones pendientes para calcular impacto
+  const queju_count = (tops.quejas || []).reduce((sum, item) => sum + item.count, 0);
+  const dolor_count = (tops.dolores || []).reduce((sum, item) => sum + item.count, 0);
+  const pendiente_count = (tops.pendientes || []).reduce((sum, item) => sum + item.count, 0);
+
+  const requires_human = hotOverview.requiresHuman || 0;
+
+  // Si hay quejas/dolores, agregarlos como insights con impacto ponderado
+  if (queju_count > 0) {
+    insights.push({
+      label: 'Quejas activas detectadas',
+      count: queju_count,
+      severity: queju_count >= 10 ? 'Alta' : queju_count >= 5 ? 'Media' : 'Baja',
+      action: 'Revisar lista de quejas y activar protocolo de recuperacion',
+    });
+  }
+
+  if (dolor_count > 0) {
+    insights.push({
+      label: 'Puntos de dolor frecuentes',
+      count: dolor_count,
+      severity: dolor_count >= 15 ? 'Alta' : dolor_count >= 8 ? 'Media' : 'Baja',
+      action: 'Anadir puntos de dolor a FAQ y mejorar respuestas automaticas',
+    });
+  }
+
+  if (requires_human > 0 && (requires_human / hotOverview.contacts) > 0.3) {
+    insights.push({
+      label: 'Alto requerimiento de intervención humana',
+      count: requires_human,
+      severity: 'Alta',
+      action: 'Revisar limites de automatizacion y escalar training del bot',
+    });
+  }
+
+  if (pendiente_count > 0) {
+    insights.push({
+      label: 'Acciones pendientes sin resolver',
+      count: pendiente_count,
+      severity: pendiente_count >= 20 ? 'Alta' : pendiente_count >= 10 ? 'Media' : 'Baja',
+      action: 'Crear plan de resolucion con timeline y dueño',
+    });
+  }
+
+  // Limitar a Top 4 insights ordenados por severidad (Alta > Media > Baja) y luego por count desc
+  const severityOrder = { Alta: 0, Media: 1, Baja: 2 };
+  return insights
+    .sort((a, b) => {
+      const severityDiff = severityOrder[a.severity] - severityOrder[b.severity];
+      return severityDiff !== 0 ? severityDiff : b.count - a.count;
+    })
+    .slice(0, 4);
+}
+
+app.get('/api/feedback/dashboard', async (req, res) => {
+  try {
+    const now = new Date();
+    const requestedDays = Math.max(parseInt(req.query.days || '30', 10) || 30, 1);
+    const fromParam = String(req.query.from || '').trim();
+    const toParam = String(req.query.to || '').trim();
+
+    const fromDate = fromParam
+      ? new Date(`${fromParam}T00:00:00`)
+      : new Date(now.getTime() - (requestedDays * 24 * 60 * 60 * 1000));
+    const toDate = toParam
+      ? new Date(`${toParam}T23:59:59`)
+      : now;
+
+    const fromIso = fromDate.toISOString();
+    const toIso = toDate.toISOString();
+
+    const pedidosCampana = await supabaseService.obtenerPedidosFeedbackCampana({
+      from: fromIso,
+      to: toIso,
+    });
+
+    const customerIds = Array.from(new Set(
+      pedidosCampana
+        .map((p) => supabaseService.buildCustomerKey(p))
+        .filter(Boolean)
+    ));
+    const statesByCustomer = await supabaseService.obtenerEstadosClientes(customerIds);
+
+    let botContacts = [];
+    let redisWarning = null;
+    try {
+      botContacts = await loadBotContactsFromRedis();
+    } catch (error) {
+      redisWarning = error.message || 'No se pudo leer Redis';
+      botContacts = [];
+    }
+
+    const contactByPhone = new Map();
+    for (const contact of botContacts) {
+      const key = normalizePhoneKey(contact.phone_number || contact.phone || contact.id);
+      if (!key) continue;
+
+      const currentTs = new Date(contact.last_message_at || 0).getTime() || 0;
+      const prev = contactByPhone.get(key);
+      const prevTs = prev ? (new Date(prev.last_message_at || 0).getTime() || 0) : 0;
+      if (!prev || currentTs >= prevTs) {
+        contactByPhone.set(key, contact);
+      }
+    }
+
+    const timelineByDate = {};
+    const campaign = {
+      sent: 0,
+      responded: 0,
+      ok: 0,
+      notOk: 0,
+      noResponse: 0,
+    };
+
+    for (const pedido of pedidosCampana) {
+      const sentAt = new Date(pedido.followup_enviado_at || 0);
+      if (Number.isNaN(sentAt.getTime())) continue;
+
+      const dayKey = sentAt.toISOString().slice(0, 10);
+      if (!timelineByDate[dayKey]) {
+        timelineByDate[dayKey] = {
+          date: dayKey,
+          sent: 0,
+          responded: 0,
+          ok: 0,
+          notOk: 0,
+          noResponse: 0,
+        };
+      }
+
+      const pedidoCustomerId = supabaseService.buildCustomerKey(pedido);
+      const stateRecord = statesByCustomer[pedidoCustomerId] || null;
+      const stateFromDb = stateRecord?.state || 'neutral';
+      const phoneKey = normalizePhoneKey(pedido.cliente_telefono);
+      const matchedContact = phoneKey ? contactByPhone.get(phoneKey) : null;
+      const lastMessageAt = new Date(matchedContact?.last_message_at || 0);
+      const respondedByRedis = !Number.isNaN(lastMessageAt.getTime()) && lastMessageAt.getTime() >= sentAt.getTime();
+      const stateUpdatedAt = new Date(stateRecord?.updated_at || 0);
+      const respondedByState = !Number.isNaN(stateUpdatedAt.getTime()) && stateUpdatedAt.getTime() >= sentAt.getTime();
+      const responded = respondedByRedis || respondedByState;
+
+      const stateSource = stateFromDb || matchedContact?.customer_state || 'neutral';
+      const classified = classifyFeedbackState(stateSource);
+
+      campaign.sent += 1;
+      timelineByDate[dayKey].sent += 1;
+
+      if (responded) {
+        campaign.responded += 1;
+        timelineByDate[dayKey].responded += 1;
+      } else {
+        campaign.noResponse += 1;
+        timelineByDate[dayKey].noResponse += 1;
+      }
+
+      if (classified === 'positive') {
+        campaign.ok += 1;
+        timelineByDate[dayKey].ok += 1;
+      }
+      if (classified === 'negative') {
+        campaign.notOk += 1;
+        timelineByDate[dayKey].notOk += 1;
+      }
+    }
+
+    const campaignSentiment = {
+      positive: 0,
+      neutral: 0,
+      negative: 0,
+    };
+
+    const hotSentiment = {
+      positive: 0,
+      neutral: 0,
+      negative: 0,
+    };
+
+    const hotOverview = {
+      contacts: botContacts.length,
+      activeLast24h: 0,
+      requiresHuman: 0,
+      paused: 0,
+      blacklisted: 0,
+      botActive: 0,
+    };
+
+    const topIntentsCounter = {};
+    const topSubintentsCounter = {};
+    const stageCounter = {};
+    const pendingActionCounter = {};
+
+    const doubtCounter = {};
+    const complaintCounter = {};
+    const painCounter = {};
+    const reasonCounter = {};
+
+    const doubtIntents = new Set(['product_inquiry', 'tracking_request', 'order_status', 'general', 'post_purchase', 'shipping_question', 'colors_designs']);
+    const complaintIntents = new Set(['complaint', 'delivery_delay', 'returns', 'post_purchase_support', 'payment_issue']);
+    const painIntents = new Set(['objection', 'payment_issue']);
+    const reasonIntents = new Set(['purchase_intent']);
+    const complaintSubintents = new Set([
+      'delivery_delay',
+      'product_expectation_mismatch',
+      'color_durability_issue',
+      'missing_items',
+      'missing_item',
+      'damaged_product',
+      'wrong_product',
+      'payment_confirmed_but_not_order',
+    ]);
+
+    const nowTs = now.getTime();
+    const dayMs = 24 * 60 * 60 * 1000;
+
+    for (const contact of botContacts) {
+      const bucket = classifyFeedbackState(contact?.customer_state);
+      hotSentiment[bucket] += 1;
+
+      const lastMessageAtTs = new Date(contact?.last_message_at || 0).getTime();
+      if (!Number.isNaN(lastMessageAtTs) && lastMessageAtTs > 0 && (nowTs - lastMessageAtTs) <= dayMs) {
+        hotOverview.activeLast24h += 1;
+      }
+
+      if (Boolean(contact?.requires_human_last_time)) hotOverview.requiresHuman += 1;
+
+      const mode = String(contact?.control?.mode || '').toLowerCase();
+      const blacklisted = Boolean(contact?.control?.blacklisted) || mode === 'blacklist';
+      const paused = mode === 'paused';
+
+      if (blacklisted) {
+        hotOverview.blacklisted += 1;
+      } else if (paused) {
+        hotOverview.paused += 1;
+      } else {
+        hotOverview.botActive += 1;
+      }
+
+      const intent = normalizeLabel(contact?.last_intent);
+      const subintent = normalizeLabel(contact?.last_subintent);
+      const stage = normalizeLabel(contact?.stage);
+
+      topIntentsCounter[intent] = (topIntentsCounter[intent] || 0) + 1;
+      if (subintent !== 'sin_clasificar') {
+        topSubintentsCounter[subintent] = (topSubintentsCounter[subintent] || 0) + 1;
+      }
+      stageCounter[stage] = (stageCounter[stage] || 0) + 1;
+
+      const pendingActionClass = classifyPendingAction(contact?.pending_action);
+      if (pendingActionClass) {
+        pendingActionCounter[pendingActionClass] = (pendingActionCounter[pendingActionClass] || 0) + 1;
+      }
+
+      const label = subintent !== 'sin_clasificar' ? subintent : intent;
+
+      if (doubtIntents.has(intent)) {
+        doubtCounter[label] = (doubtCounter[label] || 0) + 1;
+      }
+      if (complaintIntents.has(intent) || complaintSubintents.has(subintent)) {
+        complaintCounter[label] = (complaintCounter[label] || 0) + 1;
+      }
+      if (painIntents.has(intent) || subintent.includes('objection') || complaintSubintents.has(subintent)) {
+        painCounter[label] = (painCounter[label] || 0) + 1;
+      }
+      if (reasonIntents.has(intent) || stage === 'ready_to_buy') {
+        const reasonLabel = String(contact?.interest_product || '').trim() || label;
+        reasonCounter[reasonLabel] = (reasonCounter[reasonLabel] || 0) + 1;
+      }
+    }
+
+    campaignSentiment.positive = campaign.ok;
+    campaignSentiment.negative = campaign.notOk;
+    campaignSentiment.neutral = Math.max(campaign.sent - campaign.ok - campaign.notOk, 0);
+
+    const timeline = Object.values(timelineByDate).sort((a, b) => a.date.localeCompare(b.date));
+
+    // Agregar insights computados
+    const topsList = {
+      intents: mapToTopList(topIntentsCounter),
+      subintents: mapToTopList(topSubintentsCounter),
+      stages: mapToTopList(stageCounter),
+      pendientes: mapToTopList(pendingActionCounter),
+      dudas: mapToTopList(doubtCounter),
+      quejas: mapToTopList(complaintCounter),
+      dolores: mapToTopList(painCounter),
+      razonesCompra: mapToTopList(reasonCounter),
+    };
+
+    const computedInsights = computeInsights(topsList, hotOverview);
+
+    return res.json({
+      success: true,
+      range: {
+        from: fromIso,
+        to: toIso,
+        days: requestedDays,
+      },
+      dictionary: LABEL_DICTIONARY,
+      campaignFeedback: {
+        kpis: campaign,
+        sentiment: campaignSentiment,
+        timeline,
+        criteria: {
+          responded: 'Redis last_message_at >= followup_enviado_at OR customer_states.updated_at >= followup_enviado_at',
+          ok: 'customer_states.state in [happy, satisfied, feliz, ok]',
+          notOk: 'customer_states.state in [issue, repeat, upset, frustrated, anxious, molesta]',
+        },
+      },
+      hotRedis: {
+        overview: hotOverview,
+        sentiment: hotSentiment,
+        insights: computedInsights,
+        tops: topsList,
+        criteria: {
+          dudas: 'last_intent in [product_inquiry, tracking_request, order_status, general, post_purchase, shipping_question, colors_designs]',
+          quejas: 'last_intent in [complaint, delivery_delay, returns, post_purchase_support, payment_issue] OR subintent de reclamo',
+          dolores: 'last_intent in [objection, payment_issue] OR subintent de reclamo/objection OR pending_action clasificada',
+          razonesCompra: 'last_intent = purchase_intent OR stage = ready_to_buy, usando interest_product cuando existe',
+        },
+      },
+      compatibility: {
+        kpis: {
+          campaign,
+          sentiment: hotSentiment,
+          botContacts: botContacts.length,
+        },
+      },
+      tops: {
+        dudas: mapToTopList(doubtCounter),
+        quejas: mapToTopList(complaintCounter),
+        dolores: mapToTopList(painCounter),
+        razonesCompra: mapToTopList(reasonCounter),
+      },
+      warnings: {
+        redis: redisWarning,
+      },
+    });
+  } catch (error) {
+    logService.error('Error generando dashboard de feedback', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 const VALID_CUSTOMER_STATES = new Set(['happy', 'neutral', 'issue', 'repeat']);
 
 app.patch('/api/customers/:customerId/state', async (req, res) => {

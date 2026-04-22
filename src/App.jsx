@@ -13,6 +13,7 @@ import AdminPanel from './components/AdminPanel';
 import MisPedidosPanel from './components/MisPedidosPanel';
 import { useAuth } from './context/AuthContext';
 import BotControlPanel from './components/BotControlPanel';
+import FeedbackDashboardPanel from './components/FeedbackDashboardPanel';
 import { usePedidos } from './hooks/usePedidos';
 import {
   generarLinkWhatsApp,
@@ -120,7 +121,7 @@ function AppContent({ user, logout }) {
   const esAdmin = user.role === 'admin';
   const [tableFilter, setTableFilter] = useState(esAdmin ? 'porValidar' : 'etiquetasGeneradas');
   const [despachadosCanalFilter, setDespachadosCanalFilter] = useState(null); // null | 'whatsapp' | 'email'
-  const [activeView, setActiveView] = useState('pedidos'); // pedidos | especiales | followup | plantillas | bot
+  const [activeView, setActiveView] = useState('pedidos'); // pedidos | especiales | followup | feedback | plantillas | bot | admin | misArmados
   const [notifChannelFilter, setNotifChannelFilter] = useState(null); // null | 'email' | 'whatsapp' | 'noChannel'
   const [etiquetasCanalFilter, setEtiquetasCanalFilter] = useState(esAdmin ? 'whatsapp' : null); // null | 'whatsapp' | 'email'
   const [channelPriority, setChannelPriority] = useState('email'); // 'email' | 'whatsapp'
@@ -1610,6 +1611,14 @@ function AppContent({ user, logout }) {
               </button>
               <button
                 type="button"
+                className={`side-nav-item ${activeView === 'feedback' ? 'side-nav-item-active' : ''}`}
+                onClick={() => setActiveView('feedback')}
+              >
+                <span className="side-nav-icon">📊</span>
+                Dashboard Feedback
+              </button>
+              <button
+                type="button"
                 className={`side-nav-item ${activeView === 'plantillas' ? 'side-nav-item-active' : ''}`}
                 onClick={() => setActiveView('plantillas')}
               >
@@ -2269,6 +2278,10 @@ function AppContent({ user, logout }) {
           onUpdateTemplate={handleActualizarPlantilla}
           onOpenTemplateManager={() => setActiveView('plantillas')}
         />
+      )}
+
+      {activeView === 'feedback' && (
+        <FeedbackDashboardPanel mostrarToast={mostrarToast} />
       )}
 
       {activeView === 'plantillas' && (

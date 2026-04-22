@@ -245,6 +245,15 @@ export async function marcarFollowupEnviado(pedidoId) {
   return await fetchAPI(`/pedidos/${pedidoId}/marcar-followup`, { method: 'POST' });
 }
 
+export async function obtenerFeedbackDashboard({ days = 30, from = '', to = '' } = {}) {
+  const params = new URLSearchParams();
+  params.set('days', String(days));
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+
+  return await fetchAPI(`/feedback/dashboard?${params.toString()}`, { method: 'GET' });
+}
+
 export async function actualizarEstadoCliente(customerId, state) {
   return await fetchAPI(`/customers/${encodeURIComponent(customerId)}/state`, {
     method: 'PATCH',
