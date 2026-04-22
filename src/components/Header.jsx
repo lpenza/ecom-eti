@@ -1,6 +1,6 @@
 import React from 'react';
 
-function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES, onRegenerarCache, uesAuthenticated, currentUser, onLogout }) {
+function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES, uesAuthenticated, currentUser }) {
   const esAdmin = currentUser?.role === 'admin';
   return (
     <header className="header">
@@ -22,27 +22,7 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
               >
                 {uesAuthenticated ? '✅ UES Conectado' : '🔐 Login UES'}
               </button>
-              {uesAuthenticated && onRegenerarCache && (
-                <button
-                  className="btn btn-secondary header-btn"
-                  onClick={onRegenerarCache}
-                  title="Actualizar catálogo de localidades desde UES"
-                >
-                  🔄 Actualizar Catálogo
-                </button>
-              )}
             </>
-          )}
-          {currentUser && (
-            <div className="header-user">
-              <span className="header-user-name" title={currentUser.email}>
-                👤 {currentUser.nombre}
-                {currentUser.role === 'admin' && <span className="header-user-role"> (Admin)</span>}
-              </span>
-              <button className="btn btn-danger header-btn header-btn-logout" onClick={onLogout}>
-                Salir
-              </button>
-            </div>
           )}
         </div>
       </div>

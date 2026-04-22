@@ -83,6 +83,14 @@ export async function obtenerPedidos() {
 }
 
 /**
+ * Obtener cola de pedidos para armado de operario (incluye pickup/express/estandar)
+ */
+export async function obtenerPedidosArmado() {
+  const data = await fetchAPI('/pedidos-armado', { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+/**
  * Obtener pedidos finalizados para reclamos
  */
 export async function obtenerPedidosFinalizados() {
@@ -425,6 +433,23 @@ export async function marcarProcesados(pedidoIds) {
     method: 'POST',
     body: JSON.stringify({ pedidoIds }),
   });
+}
+
+/**
+ * Marcar pedidos como armados (estado intermedio) para que aparezcan en Despachados.
+ */
+export async function marcarArmados(pedidoIds) {
+  return await fetchAPI('/marcar-armados-bulk', {
+    method: 'POST',
+    body: JSON.stringify({ pedidoIds }),
+  });
+}
+
+/**
+ * Obtener line_items de un pedido desde Shopify por su numero_pedido
+ */
+export async function obtenerDetallePedido(numeroPedido) {
+  return await fetchAPI(`/pedido-detalle/${encodeURIComponent(numeroPedido)}`);
 }
 
 // ==================== PEDIDOS DESPACHADOS / PROCESADOS ====================

@@ -86,7 +86,7 @@ export default function MisPedidosPanel({ user }) {
             <tr key={p.id}>
               <td className="mis-col-numero">#{p.numero_pedido || '—'}</td>
               <td>{p.cliente_nombre || '—'}</td>
-              <td className="mis-col-fecha">{formatFecha(p.notificacion_enviada_at)}</td>
+              <td className="mis-col-fecha">{formatFecha(p.armado_at)}</td>
               <td className="mis-col-monto">${Number(montoPorPedido).toFixed(2)}</td>
             </tr>
           ))}

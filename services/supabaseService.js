@@ -523,6 +523,28 @@ class SupabaseService {
     }
   }
 
+  // Obtener pedidos para armado de operario:
+  // incluye estandar, pickup, recibilo, express (siempre que tengan etiqueta y no esten cerrados).
+  async obtenerPedidosParaArmado() {
+    try {
+      const { data, error } = await supabase
+        .from('pedidos')
+        .select('*')
+        .eq('etiqueta_generada', true)
+        .is('notificacion_enviada_at', null)
+        .neq('estado', 'enviado')
+        .neq('estado', 'despachado')
+        .neq('es_reclamo', true)
+        .order('created_at', { ascending: true });
+
+      if (error) throw error;
+      return data || [];
+    } catch (error) {
+      console.error('❌ Error en obtenerPedidosParaArmado:', error);
+      throw error;
+    }
+  }
+
   // Guardar link de Drive en un pedido
   async guardarLinkDrivePedido(pedidoId, linkDrive) {
     const { data, error } = await supabase
@@ -1122,20 +1144,29 @@ class SupabaseService {
   }
 
   async reportePedidosPorUsuario(desde, hasta) {
-    let query = supabase
+    const query = supabase
       .from('pedidos')
-      .select('despachado_por_nombre, notificacion_enviada_at')
+      .select('despachado_por_nombre, armado_at, notificacion_enviada_at, created_at')
       .in('estado', ['despachado', 'enviado'])
       .not('despachado_por_nombre', 'is', null);
-
-    if (desde) query = query.gte('notificacion_enviada_at', desde);
-    if (hasta) query = query.lte('notificacion_enviada_at', hasta + 'T23:59:59');
 
     const { data, error } = await query;
     if (error) throw error;
 
+    const desdeDate = desde ? new Date(`${desde}T00:00:00`) : null;
+    const hastaDate = hasta ? new Date(`${hasta}T23:59:59`) : null;
+
+    const dataFiltrada = (data || []).filter((p) => {
+      const fechaProcesado = p.armado_at || p.notificacion_enviada_at || p.created_at;
+      if (!fechaProcesado) return false;
+      const fecha = new Date(fechaProcesado);
+      if (desdeDate && fecha < desdeDate) return false;
+      if (hastaDate && fecha > hastaDate) return false;
+      return true;
+    });
+
     const porUsuario = {};
-    for (const p of data || []) {
+    for (const p of dataFiltrada) {
       const nombre = p.despachado_por_nombre;
       porUsuario[nombre] = (porUsuario[nombre] || 0) + 1;
     }
@@ -1154,18 +1185,31 @@ class SupabaseService {
   }
 
   async obtenerPedidosArmadosPorUsuario(nombre, desde, hasta) {
-    let query = supabase
+    const query = supabase
       .from('pedidos')
-      .select('id, numero_pedido, cliente_nombre, notificacion_enviada_at, despachado_por_nombre')
+      .select('id, numero_pedido, cliente_nombre, armado_at, notificacion_enviada_at, created_at, despachado_por_nombre')
       .in('estado', ['despachado', 'enviado'])
       .eq('despachado_por_nombre', nombre)
-      .order('notificacion_enviada_at', { ascending: false });
-
-    if (desde) query = query.gte('notificacion_enviada_at', desde);
-    if (hasta) query = query.lte('notificacion_enviada_at', hasta + 'T23:59:59');
+      .order('created_at', { ascending: false });
 
     const { data, error } = await query;
     if (error) throw error;
+
+    const pedidosConFecha = (data || []).map((p) => ({
+      ...p,
+      fecha_procesado: p.armado_at || p.notificacion_enviada_at || p.created_at || null,
+    }));
+
+    const desdeDate = desde ? new Date(`${desde}T00:00:00`) : null;
+    const hastaDate = hasta ? new Date(`${hasta}T23:59:59`) : null;
+
+    const pedidosFiltrados = pedidosConFecha.filter((p) => {
+      if (!p.fecha_procesado) return false;
+      const fecha = new Date(p.fecha_procesado);
+      if (desdeDate && fecha < desdeDate) return false;
+      if (hastaDate && fecha > hastaDate) return false;
+      return true;
+    });
 
     const { data: users } = await supabase
       .from('users')
@@ -1174,7 +1218,7 @@ class SupabaseService {
       .limit(1);
 
     const monto = users?.[0]?.monto_por_pedido || 0;
-    const pedidos = data || [];
+    const pedidos = pedidosFiltrados;
     return {
       pedidos,
       monto_por_pedido: monto,

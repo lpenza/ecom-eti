@@ -18,6 +18,7 @@ import { usePedidos } from './hooks/usePedidos';
 import {
   generarLinkWhatsApp,
   obtenerPedidosFinalizados,
+  obtenerPedidosArmado,
   obtenerPedidosParaReclamo,
   obtenerPlantillas,
   crearPlantilla,
@@ -31,6 +32,7 @@ import {
   obtenerPedidosDespachados,
   obtenerPedidosEnviados,
   marcarEtiquetaImpresa,
+  marcarArmados,
   marcarDespachados,
   marcarProcesados,
   obtenerPedidosPickup,
@@ -38,6 +40,7 @@ import {
   reprocesarPedidoShopify,
 } from './services/api';
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
+import ArmadorPanel from './components/ArmadorPanel';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
 
@@ -123,7 +126,6 @@ function AppContent({ user, logout }) {
   const [despachadosCanalFilter, setDespachadosCanalFilter] = useState(null); // null | 'whatsapp' | 'email'
   const [activeView, setActiveView] = useState('pedidos'); // pedidos | especiales | followup | feedback | plantillas | bot | admin | misArmados
   const [notifChannelFilter, setNotifChannelFilter] = useState(null); // null | 'email' | 'whatsapp' | 'noChannel'
-  const [etiquetasCanalFilter, setEtiquetasCanalFilter] = useState(esAdmin ? 'whatsapp' : null); // null | 'whatsapp' | 'email'
   const [channelPriority, setChannelPriority] = useState('email'); // 'email' | 'whatsapp'
   const [etiquetaMode, setEtiquetaMode] = useState('reclamos'); // reclamos | colaboraciones
   const [reclamoPedidoId, setReclamoPedidoId] = useState('');
@@ -146,6 +148,7 @@ function AppContent({ user, logout }) {
   const [pedidosEnviadosLoaded, setPedidosEnviadosLoaded] = useState(false);
   const [pedidosEnviadosLoading, setPedidosEnviadosLoading] = useState(false);
   const [searchEnviados, setSearchEnviados] = useState('');
+  const [pedidosArmadoOperario, setPedidosArmadoOperario] = useState([]);
   const [pickupList,    setPickupList]    = useState([]);
   const [recibiloList,  setRecibiloList]  = useState([]);
   const [templates, setTemplates] = useState([]);
@@ -275,9 +278,6 @@ function AppContent({ user, logout }) {
   const pedidosFiltradosPorCard = (() => {
     if (tableFilter === 'pendientesContacto') return pedidosPendientesContacto;
     if (tableFilter === 'etiquetasGeneradas') {
-      if (!esAdmin) return pedidosConEtiqueta;
-      if (etiquetasCanalFilter === 'whatsapp') return pedidosConEtiqueta.filter((p) => getCanalNotificacion(p) === 'whatsapp');
-      if (etiquetasCanalFilter === 'email') return pedidosConEtiqueta.filter((p) => getCanalNotificacion(p) === 'email');
       return pedidosConEtiqueta;
     }
     if (tableFilter === 'pendientesFulfillment') return pedidosListosFulfillment;
@@ -526,12 +526,40 @@ function AppContent({ user, logout }) {
     }
   }, []);
 
+  const cargarPedidosArmadoOperario = useCallback(async () => {
+    try {
+      const data = await obtenerPedidosArmado();
+      setPedidosArmadoOperario(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('❌ Error cargando pedidos para armado:', error);
+      setPedidosArmadoOperario([]);
+    }
+  }, []);
+
   useEffect(() => {
     cargarPedidosDespachados();
     cargarPedidosEnviados();
     cargarPedidosPickup();
     cargarPedidosRecibilo();
   }, [cargarPedidosDespachados, cargarPedidosEnviados, cargarPedidosPickup, cargarPedidosRecibilo]);
+
+  useEffect(() => {
+    if (!esAdmin) {
+      cargarPedidosArmadoOperario();
+    }
+  }, [esAdmin, cargarPedidosArmadoOperario]);
+
+  const handleActualizarOperativa = useCallback(async () => {
+    await cargarPedidos();
+    // Mantener sincronizadas las vistas secundarias (Despachados/Enviados/Pickup/Recibilo)
+    // para evitar tablas vacías por cache local desactualizado.
+    await Promise.all([
+      cargarPedidosDespachados(),
+      cargarPedidosEnviados(),
+      cargarPedidosPickup(),
+      cargarPedidosRecibilo(),
+    ]);
+  }, [cargarPedidos, cargarPedidosDespachados, cargarPedidosEnviados, cargarPedidosPickup, cargarPedidosRecibilo]);
 
   // Confirmación desde modal (uno o múltiples pedidos)
   const handleConfirmarGeneracion = async (items) => {
@@ -1644,24 +1672,33 @@ function AppContent({ user, logout }) {
             </>
           )}
         </nav>
+
+        <div className="side-nav-footer">
+          <div className="side-nav-user">{user?.nombre || user?.email || 'Usuario'}</div>
+          <button
+            type="button"
+            className="side-nav-logout"
+            onClick={logout}
+          >
+            Salir
+          </button>
+        </div>
       </aside>
 
       <main className="app-main">
-        {activeView === 'pedidos' && (
+        {activeView === 'pedidos' && esAdmin && (
           <Header
             stats={headerStats}
             activeFilter={tableFilter}
-            onFilterChange={(f) => { setTableFilter(f); setEtiquetasCanalFilter(f === 'etiquetasGeneradas' ? 'whatsapp' : null); }}
-            onActualizar={cargarPedidos}
+            onFilterChange={setTableFilter}
+            onActualizar={handleActualizarOperativa}
             onLoginUES={handleLoginUES}
-            onRegenerarCache={handleRegenerarCacheUES}
             uesAuthenticated={uesAuthenticated}
             currentUser={user}
-            onLogout={logout}
           />
         )}
 
-      {activeView === 'pedidos' && (
+      {activeView === 'pedidos' && esAdmin && (
         <div className="app-main-body">
           {/* Toolbar con acciones (solo admin) */}
           {esAdmin && <Toolbar
@@ -1795,7 +1832,9 @@ function AppContent({ user, logout }) {
           )}
 
           {esAdmin && tableFilter === 'despachados' && (
-            <div className="notif-preview-chips" style={{ padding: '0 1rem 0.5rem' }}>
+            <div className="section-action-bar despachados-filter-bar">
+              <span className="despachados-filter-label">Filtrar canal:</span>
+              <div className="notif-preview-chips">
               <button
                 type="button"
                 className={`notif-chip notif-chip-wpp ${despachadosCanalFilter === 'whatsapp' ? 'notif-chip-active' : ''}`}
@@ -1810,6 +1849,7 @@ function AppContent({ user, logout }) {
               >
                 🏪 Shopify automático ({pedidosDespachadosList.filter((p) => getCanalNotificacion(p) === 'email').length})
               </button>
+              </div>
             </div>
           )}
 
@@ -1893,26 +1933,6 @@ function AppContent({ user, logout }) {
                   ? `${pedidosFiltradosPorCard.length} resultado(s) de ${pedidosEnviadosList.length}`
                   : `${pedidosEnviadosList.length} pedido(s) procesados`}
               </span>
-            </div>
-          )}
-
-          {/* Filtro de canal para etiquetas generadas (solo admin) */}
-          {esAdmin && tableFilter === 'etiquetasGeneradas' && (
-            <div className="notif-preview-chips" style={{ padding: '0 1rem 0.5rem' }}>
-              <button
-                type="button"
-                className={`notif-chip notif-chip-wpp ${etiquetasCanalFilter === 'whatsapp' ? 'notif-chip-active' : ''}`}
-                onClick={() => setEtiquetasCanalFilter(etiquetasCanalFilter === 'whatsapp' ? null : 'whatsapp')}
-              >
-                💬 WhatsApp ({pedidosConEtiqueta.filter((p) => getCanalNotificacion(p) === 'whatsapp').length})
-              </button>
-              <button
-                type="button"
-                className={`notif-chip notif-chip-email ${etiquetasCanalFilter === 'email' ? 'notif-chip-active' : ''}`}
-                onClick={() => setEtiquetasCanalFilter(etiquetasCanalFilter === 'email' ? null : 'email')}
-              >
-                🏪 Shopify automático ({pedidosConEtiqueta.filter((p) => getCanalNotificacion(p) === 'email').length})
-              </button>
             </div>
           )}
 
@@ -2311,6 +2331,20 @@ function AppContent({ user, logout }) {
 
       {activeView === 'misArmados' && !esAdmin && (
         <MisPedidosPanel user={user} />
+      )}
+
+      {activeView === 'pedidos' && !esAdmin && (
+        <ArmadorPanel
+          pedidos={pedidosArmadoOperario}
+          onActualizar={cargarPedidosArmadoOperario}
+          onMarcarArmadoBulk={async (pedidoIds) => {
+            const resultado = await marcarArmados(pedidoIds);
+            if (!resultado.success) { mostrarToast(resultado.error || 'Error al marcar pedidos', 'error'); return; }
+            const ok = resultado.ok ?? resultado.resultados?.filter((r) => r.success).length ?? pedidoIds.length;
+            mostrarToast(`${ok} pedido(s) marcados como armados`, 'success');
+            await Promise.all([cargarPedidosArmadoOperario(), cargarPedidosDespachados()]);
+          }}
+        />
       )}
 
       {/* Modal de vista previa de datos */}

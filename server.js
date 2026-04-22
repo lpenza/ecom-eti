@@ -675,6 +675,17 @@ app.get('/api/pedidos', async (req, res) => {
   }
 });
 
+// Obtener pedidos para armado de operario (con etiqueta generada, sin distinguir tipo de envio)
+app.get('/api/pedidos-armado', requireAuth, async (req, res) => {
+  try {
+    const pedidos = await supabaseService.obtenerPedidosParaArmado();
+    res.json({ success: true, data: pedidos });
+  } catch (error) {
+    logService.error('Error en /api/pedidos-armado', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
 app.post('/api/pedidos/:pedidoId/revision-contacto', async (req, res) => {
   try {
     const { pedidoId } = req.params;
@@ -1450,7 +1461,12 @@ app.post('/api/marcar-procesados-bulk', requireAuth, async (req, res) => {
     const resultados = await Promise.all(
       pedidoIds.map(async (pedidoId) => {
         try {
-          await supabaseService.actualizarPedido(pedidoId, { estado: 'enviado' });
+          // Reutilizamos los campos de trazabilidad existentes para que aparezca en "Mis Pedidos Armados".
+          await supabaseService.actualizarPedido(pedidoId, {
+            estado: 'enviado',
+            despachado_por_nombre: req.user?.nombre || req.user?.email || null,
+            notificacion_enviada_at: new Date().toISOString(),
+          });
           return { pedidoId, success: true };
         } catch (err) {
           logService.warning(`No se pudo marcar como procesado pedido ${pedidoId}: ${err.message}`);
@@ -1464,6 +1480,68 @@ app.post('/api/marcar-procesados-bulk', requireAuth, async (req, res) => {
     res.json({ success: true, ok, total: pedidoIds.length, resultados });
   } catch (error) {
     logService.error('Error en marcar-procesados-bulk', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Marcar pedidos como ARMADOS (estado intermedio) para el flujo de operario.
+// Debe hacer solo lo necesario para que figuren en Despachados, sin efectos extra.
+app.post('/api/marcar-armados-bulk', requireAuth, async (req, res) => {
+  try {
+    const { pedidoIds } = req.body;
+    if (!Array.isArray(pedidoIds) || pedidoIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'pedidoIds requerido' });
+    }
+
+    const despachadorNombre = req.user?.nombre || req.user?.email || null;
+  const armadoAt = new Date().toISOString();
+
+    const resultados = await Promise.all(
+      pedidoIds.map(async (pedidoId) => {
+        try {
+          await supabaseService.actualizarPedido(pedidoId, {
+            estado: 'despachado',
+            despachado_por_nombre: despachadorNombre,
+            armado_at: armadoAt,
+            // Armado es intermedio: no marca notificacion enviada ni toca Shopify.
+            notificacion_enviada_at: null,
+          });
+          return { pedidoId, success: true };
+        } catch (err) {
+          logService.warning(`No se pudo marcar como armado pedido ${pedidoId}: ${err.message}`);
+          return { pedidoId, success: false, error: err.message };
+        }
+      })
+    );
+
+    const ok = resultados.filter((r) => r.success).length;
+    logService.info(`Marcados como armados: ${ok}/${pedidoIds.length}`);
+    res.json({ success: true, ok, total: pedidoIds.length, resultados });
+  } catch (error) {
+    logService.error('Error en marcar-armados-bulk', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Obtener detalle de una orden (line_items) desde Shopify por numero_pedido
+app.get('/api/pedido-detalle/:numeroPedido', requireAuth, async (req, res) => {
+  try {
+    const { numeroPedido } = req.params;
+    const shopifyOrderId = await shopifyService.obtenerIdPorNumeroPedido(numeroPedido);
+    if (!shopifyOrderId) {
+      return res.status(404).json({ success: false, error: `Orden #${numeroPedido} no encontrada en Shopify` });
+    }
+    const orden = await shopifyService.obtenerOrden(shopifyOrderId);
+    const lineItems = (orden.line_items || []).map((item) => ({
+      id: item.id,
+      title: item.title,
+      variant_title: item.variant_title || null,
+      quantity: item.quantity,
+      sku: item.sku || null,
+    }));
+    res.json({ success: true, lineItems });
+  } catch (error) {
+    logService.error('Error obteniendo detalle de pedido', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -2088,6 +2166,10 @@ app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
       link_etiqueta_drive: etiqueta.urlPdf,
       etiqueta_generada: true,
       etiqueta_impresa: false,
+      // Si se regenera etiqueta, debe volver al flujo de "Etiquetas Generadas".
+      notificacion_enviada_at: null,
+      despachado_por_nombre: null,
+      armado_at: null,
     };
 
     // Persistir tipo de entrega elegido (domicilio/pickup) y punto de retiro si aplica.
