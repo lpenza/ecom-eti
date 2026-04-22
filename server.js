@@ -5,7 +5,12 @@ const path = require('path');
 const fs = require('fs').promises;
 const axios = require('axios');
 const { google } = require('googleapis');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
+
+const JWT_SECRET = process.env.JWT_SECRET || 'velinne-jwt-secret-2024';
+const JWT_EXPIRES_IN = '8h';
 
 // ── Google Drive helper (Service Account) ───────────────────────────────────
 function buildDriveClient() {
@@ -32,6 +37,9 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(bodyParser.json({ charset: 'utf-8' }));
 app.use(express.static('public'));
+if (process.env.NODE_ENV === 'production') {
+  app.use(express.static(path.join(__dirname, 'dist')));
+}
 
 // Asegurar respuestas en UTF-8
 app.use((req, res, next) => {
@@ -46,6 +54,151 @@ const shopifyService = require('./services/shopifyService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
 const emailService = require('./services/emailService');
 const logService = require('./services/logService');
+
+// ── Auth Middleware ──────────────────────────────────────────────────────────
+function requireAuth(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ success: false, error: 'No autorizado' });
+  }
+  const token = authHeader.slice(7);
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    req.user = payload;
+    next();
+  } catch {
+    return res.status(401).json({ success: false, error: 'Token inválido o expirado' });
+  }
+}
+
+function requireAdmin(req, res, next) {
+  if (req.user?.role !== 'admin') {
+    return res.status(403).json({ success: false, error: 'Requiere rol administrador' });
+  }
+  next();
+}
+
+// ── Login endpoint ───────────────────────────────────────────────────────────
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ success: false, error: 'Email y contraseña requeridos' });
+    }
+
+    const user = await supabaseService.buscarUsuarioPorEmail(email);
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'Credenciales inválidas' });
+    }
+
+    const passwordOk = await bcrypt.compare(password, user.password_hash);
+    if (!passwordOk) {
+      return res.status(401).json({ success: false, error: 'Credenciales inválidas' });
+    }
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, nombre: user.nombre, role: user.role },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
+    logService.info(`Login exitoso: ${user.email} (${user.role})`);
+    res.json({ success: true, token, user: { id: user.id, email: user.email, nombre: user.nombre, role: user.role } });
+  } catch (err) {
+    logService.error('Error en login', err);
+    res.status(500).json({ success: false, error: 'Error interno' });
+  }
+});
+
+// Verificar token activo
+app.get('/api/auth/me', requireAuth, (req, res) => {
+  res.json({ success: true, user: req.user });
+});
+
+// ── Endpoints Admin ──────────────────────────────────────────────────────────
+
+// Listar usuarios con su monto_por_pedido
+app.get('/api/admin/usuarios', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const usuarios = await supabaseService.listarUsuarios();
+    res.json({ success: true, usuarios });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Crear nuevo usuario
+app.post('/api/admin/usuarios', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { email, nombre, password, role } = req.body;
+    if (!email || !nombre || !password || !role) {
+      return res.status(400).json({ success: false, error: 'email, nombre, contraseña y rol son requeridos' });
+    }
+    if (!['admin', 'user'].includes(role)) {
+      return res.status(400).json({ success: false, error: 'Rol inválido' });
+    }
+    const passwordHash = await bcrypt.hash(password, 10);
+    const usuario = await supabaseService.crearUsuario({ email: email.toLowerCase().trim(), nombre, password_hash: passwordHash, role });
+    logService.info(`Admin ${req.user.email} creó usuario ${email} (${role})`);
+    res.json({ success: true, usuario: { id: usuario.id, email: usuario.email, nombre: usuario.nombre, role: usuario.role } });
+  } catch (err) {
+    const msg = err.message?.includes('duplicate') || err.message?.includes('unique') ? 'Ya existe un usuario con ese email' : err.message;
+    res.status(400).json({ success: false, error: msg });
+  }
+});
+
+// Actualizar monto_por_pedido de un usuario
+app.put('/api/admin/usuarios/:id/monto', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { monto_por_pedido } = req.body;
+    if (monto_por_pedido === undefined || isNaN(Number(monto_por_pedido))) {
+      return res.status(400).json({ success: false, error: 'monto_por_pedido inválido' });
+    }
+    await supabaseService.actualizarMontoPorPedido(id, Number(monto_por_pedido));
+    logService.info(`Admin ${req.user.email} actualizó monto de usuario ${id} a ${monto_por_pedido}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Reporte: pedidos despachados por usuario en un rango de fechas
+app.get('/api/admin/reporte', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { desde, hasta } = req.query;
+    const reporte = await supabaseService.reportePedidosPorUsuario(desde, hasta);
+    res.json({ success: true, reporte });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Inicializar usuarios por defecto ─────────────────────────────────────────
+async function initializeDefaultUsers() {
+  try {
+    const count = await supabaseService.contarUsuarios();
+    if (count > 0) return;
+
+    const adminPass = process.env.ADMIN_PASSWORD || 'admin123';
+    const userPass = process.env.USER_PASSWORD || 'usuario123';
+
+    const [adminHash, userHash] = await Promise.all([
+      bcrypt.hash(adminPass, 10),
+      bcrypt.hash(userPass, 10),
+    ]);
+
+    await supabaseService.insertarUsuarios([
+      { email: 'admin@velinne.com', nombre: 'Administrador', password_hash: adminHash, role: 'admin' },
+      { email: 'usuario@velinne.com', nombre: 'Usuario', password_hash: userHash, role: 'user' },
+    ]);
+
+    logService.info('Usuarios por defecto creados: admin@velinne.com / usuario@velinne.com');
+    console.log('✅ Usuarios por defecto creados (ver .env para contraseñas)');
+  } catch (err) {
+    logService.warning('No se pudieron crear usuarios por defecto (tabla puede no existir aún)', { error: err.message });
+  }
+}
 
 // Estado global para cache UES
 let uesCacheStatus = {
@@ -1183,7 +1336,7 @@ app.post('/api/descartar-etiqueta/:pedidoId', async (req, res) => {
 });
 
 // Marcar pedido como notificado (para envios manuales de WhatsApp)
-app.post('/api/marcar-notificado/:pedidoId', async (req, res) => {
+app.post('/api/marcar-notificado/:pedidoId', requireAuth, async (req, res) => {
   try {
     const { pedidoId } = req.params;
 
@@ -1195,6 +1348,7 @@ app.post('/api/marcar-notificado/:pedidoId', async (req, res) => {
     await supabaseService.actualizarPedido(pedidoId, {
       notificacion_enviada_at: new Date().toISOString(),
       estado: 'despachado',
+      despachado_por_nombre: req.user.nombre,
     });
 
     logService.info(`Pedido ${pedidoId} marcado como notificado y despachado (WhatsApp manual)`);
@@ -1225,7 +1379,7 @@ app.post('/api/marcar-notificado/:pedidoId', async (req, res) => {
 });
 
 // Marcar múltiples pedidos como despachados (tag DESPACHADO en Shopify + estado enviado)
-app.post('/api/marcar-despachados-bulk', async (req, res) => {
+app.post('/api/marcar-despachados-bulk', requireAuth, async (req, res) => {
   try {
     const { pedidoIds } = req.body;
     if (!Array.isArray(pedidoIds) || pedidoIds.length === 0) {
@@ -1233,6 +1387,7 @@ app.post('/api/marcar-despachados-bulk', async (req, res) => {
     }
 
     const ahora = new Date().toISOString();
+    const despachadorNombre = req.user.nombre;
     const resultados = await Promise.all(
       pedidoIds.map(async (pedidoId) => {
         try {
@@ -1255,6 +1410,7 @@ app.post('/api/marcar-despachados-bulk', async (req, res) => {
           await supabaseService.actualizarPedido(pedidoId, {
             estado: 'despachado',
             notificacion_enviada_at: ahora,
+            despachado_por_nombre: despachadorNombre,
           });
 
           // Agregar tag DESPACHADO en Shopify (best-effort)
@@ -1284,7 +1440,7 @@ app.post('/api/marcar-despachados-bulk', async (req, res) => {
 
 // Marcar pedidos como procesados SIN hacer fulfillment en Shopify
 // Usado para pickup_local y recibilo_hoy, o despachados que ya tienen fulfillment hecho
-app.post('/api/marcar-procesados-bulk', async (req, res) => {
+app.post('/api/marcar-procesados-bulk', requireAuth, async (req, res) => {
   try {
     const { pedidoIds } = req.body;
     if (!Array.isArray(pedidoIds) || pedidoIds.length === 0) {
@@ -1304,11 +1460,25 @@ app.post('/api/marcar-procesados-bulk', async (req, res) => {
     );
 
     const ok = resultados.filter((r) => r.success).length;
-    logService.info(`Marcados como procesados (sin fulfillment): ${ok}/${pedidoIds.length}`);
+    logService.info(`Marcados como procesados: ${ok}/${pedidoIds.length}`);
     res.json({ success: true, ok, total: pedidoIds.length, resultados });
   } catch (error) {
     logService.error('Error en marcar-procesados-bulk', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Pedidos armados por el usuario autenticado (para su propia pantalla)
+app.get('/api/mis-pedidos-armados', requireAuth, async (req, res) => {
+  try {
+    const { desde, hasta } = req.query;
+    const resultado = await supabaseService.obtenerPedidosArmadosPorUsuario(
+      req.user.nombre, desde, hasta
+    );
+    res.json({ success: true, ...resultado });
+  } catch (err) {
+    logService.error('Error en mis-pedidos-armados', err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -2495,6 +2665,12 @@ app.post('/api/templates/initialize', async (req, res) => {
   }
 });
 
+if (process.env.NODE_ENV === 'production') {
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+  });
+}
+
 // Iniciar servidor
 app.listen(PORT, async () => {
   console.log(`🚀 VELINNE Server corriendo en http://localhost:${PORT}`);
@@ -2503,6 +2679,11 @@ app.listen(PORT, async () => {
   // Inicializar plantillas por defecto al arrancar el servidor
   supabaseService.inicializarPlantillasDefecto().catch(err => {
     logService.error('Error al inicializar plantillas por defecto', err);
+  });
+
+  // Crear usuarios por defecto si no existen
+  initializeDefaultUsers().catch(err => {
+    logService.error('Error al inicializar usuarios por defecto', err);
   });
 
   // Regenerar caché de UES en background (NO bloquea startup)

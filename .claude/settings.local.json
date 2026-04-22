@@ -2,7 +2,13 @@
   "permissions": {
     "allow": [
       "Bash(npm list:*)",
-      "Bash(npm install:*)"
+      "Bash(npm install:*)",
+      "Bash(openssl rand *)",
+      "Bash(echo \"JWT_SECRET=velinne-jwt-$\\(openssl rand -hex 16\\)\")",
+      "Bash(node --check server.js)",
+      "Bash(node -e ' *)",
+      "Bash(curl -s -X POST http://localhost:5173/api/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"admin@velinne.com\",\"password\":\"admin123\"}')",
+      "Bash(node --check \"/c/Users/braya/Desktop/Veline apps/Velinne Envios/ecom-eti/server.js\")"
     ]
   }
 }

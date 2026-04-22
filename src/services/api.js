@@ -2,6 +2,33 @@
 
 const API_BASE = '/api';
 
+function getAuthHeaders() {
+  const token = localStorage.getItem('velinne_token');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+export async function login(email, password) {
+  const response = await fetch(`${API_BASE}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || 'Error al iniciar sesión');
+  return data;
+}
+
+export async function verifyToken() {
+  const token = localStorage.getItem('velinne_token');
+  if (!token) return null;
+  const response = await fetch(`${API_BASE}/auth/me`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) return null;
+  const data = await response.json();
+  return data.user;
+}
+
 /**
  * Wrapper para fetch con manejo de errores
  */
@@ -10,6 +37,7 @@ async function fetchAPI(url, options = {}) {
     const response = await fetch(`${API_BASE}${url}`, {
       headers: {
         'Content-Type': 'application/json',
+        ...getAuthHeaders(),
         ...options.headers
       },
       ...options
@@ -486,3 +514,10 @@ export async function actualizarBotContactControl(contactId, payload = {}) {
   });
 }
 
+
+export async function obtenerMisPedidosArmados(desde, hasta) {
+  const params = new URLSearchParams();
+  if (desde) params.append('desde', desde);
+  if (hasta) params.append('hasta', hasta);
+  return await fetchAPI(`/mis-pedidos-armados?${params}`);
+}

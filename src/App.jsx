@@ -8,6 +8,10 @@ import LoadingModal from './components/modals/LoadingModal';
 import Toast from './components/Toast';
 import FollowUpPanel from './components/FollowUpPanel';
 import TemplateManagerPanel from './components/TemplateManagerPanel';
+import LoginPage from './components/LoginPage';
+import AdminPanel from './components/AdminPanel';
+import MisPedidosPanel from './components/MisPedidosPanel';
+import { useAuth } from './context/AuthContext';
 import BotControlPanel from './components/BotControlPanel';
 import { usePedidos } from './hooks/usePedidos';
 import {
@@ -62,6 +66,24 @@ function toStoredTemplateName(name, kind = 'whatsapp') {
 }
 
 function App() {
+  const { user, loading: authLoading, logout } = useAuth();
+
+  if (authLoading) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontSize: '1.2rem', color: '#666' }}>
+        Cargando...
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginPage />;
+  }
+
+  return <AppContent user={user} logout={logout} />;
+}
+
+function AppContent({ user, logout }) {
   const {
     pedidos,
     loading,
@@ -95,10 +117,12 @@ function App() {
   const [pdfUrl, setPdfUrl] = useState('');
   const [toast, setToast] = useState({ show: false, message: '', type: '' });
   const [fulfillmentPreviewIds, setFulfillmentPreviewIds] = useState(null); // null = normal, array = preview mode
-  const [tableFilter, setTableFilter] = useState('porValidar');
+  const esAdmin = user.role === 'admin';
+  const [tableFilter, setTableFilter] = useState(esAdmin ? 'porValidar' : 'etiquetasGeneradas');
+  const [despachadosCanalFilter, setDespachadosCanalFilter] = useState(null); // null | 'whatsapp' | 'email'
   const [activeView, setActiveView] = useState('pedidos'); // pedidos | especiales | followup | plantillas | bot
   const [notifChannelFilter, setNotifChannelFilter] = useState(null); // null | 'email' | 'whatsapp' | 'noChannel'
-  const [etiquetasCanalFilter, setEtiquetasCanalFilter] = useState('whatsapp'); // null | 'whatsapp' | 'email'
+  const [etiquetasCanalFilter, setEtiquetasCanalFilter] = useState(esAdmin ? 'whatsapp' : null); // null | 'whatsapp' | 'email'
   const [channelPriority, setChannelPriority] = useState('email'); // 'email' | 'whatsapp'
   const [etiquetaMode, setEtiquetaMode] = useState('reclamos'); // reclamos | colaboraciones
   const [reclamoPedidoId, setReclamoPedidoId] = useState('');
@@ -250,13 +274,18 @@ function App() {
   const pedidosFiltradosPorCard = (() => {
     if (tableFilter === 'pendientesContacto') return pedidosPendientesContacto;
     if (tableFilter === 'etiquetasGeneradas') {
+      if (!esAdmin) return pedidosConEtiqueta;
       if (etiquetasCanalFilter === 'whatsapp') return pedidosConEtiqueta.filter((p) => getCanalNotificacion(p) === 'whatsapp');
       if (etiquetasCanalFilter === 'email') return pedidosConEtiqueta.filter((p) => getCanalNotificacion(p) === 'email');
       return pedidosConEtiqueta;
     }
     if (tableFilter === 'pendientesFulfillment') return pedidosListosFulfillment;
     if (tableFilter === 'revisionManual') return pedidosRevisionManual;
-    if (tableFilter === 'despachados') return pedidosDespachadosList;
+    if (tableFilter === 'despachados') {
+      if (despachadosCanalFilter === 'whatsapp') return pedidosDespachadosList.filter((p) => getCanalNotificacion(p) === 'whatsapp');
+      if (despachadosCanalFilter === 'email') return pedidosDespachadosList.filter((p) => getCanalNotificacion(p) === 'email');
+      return pedidosDespachadosList;
+    }
     if (tableFilter === 'enviados') {
       const q = searchEnviados.trim().toLowerCase();
       if (!q) return pedidosEnviadosList;
@@ -1551,38 +1580,60 @@ function App() {
             <span className="side-nav-icon">📦</span>
             Operativa Pedidos
           </button>
-          <button
-            type="button"
-            className={`side-nav-item ${activeView === 'especiales' ? 'side-nav-item-active' : ''}`}
-            onClick={() => setActiveView('especiales')}
-          >
-            <span className="side-nav-icon">🏷️</span>
-            Etiquetas Especiales
-          </button>
-          <button
-            type="button"
-            className={`side-nav-item ${activeView === 'followup' ? 'side-nav-item-active' : ''}`}
-            onClick={() => setActiveView('followup')}
-          >
-            <span className="side-nav-icon">✈️</span>
-            Follow-Up Diario
-          </button>
-          <button
-            type="button"
-            className={`side-nav-item ${activeView === 'plantillas' ? 'side-nav-item-active' : ''}`}
-            onClick={() => setActiveView('plantillas')}
-          >
-            <span className="side-nav-icon">📝</span>
-            Plantillas
-          </button>
-          <button
-            type="button"
-            className={`side-nav-item ${activeView === 'bot' ? 'side-nav-item-active' : ''}`}
-            onClick={() => setActiveView('bot')}
-          >
-            <span className="side-nav-icon">🤖</span>
-            Bot WhatsApp
-          </button>
+          {!esAdmin && (
+            <button
+              type="button"
+              className={`side-nav-item ${activeView === 'misArmados' ? 'side-nav-item-active' : ''}`}
+              onClick={() => setActiveView('misArmados')}
+            >
+              <span className="side-nav-icon">📋</span>
+              Mis Pedidos Armados
+            </button>
+          )}
+          {user.role === 'admin' && (
+            <>
+              <button
+                type="button"
+                className={`side-nav-item ${activeView === 'especiales' ? 'side-nav-item-active' : ''}`}
+                onClick={() => setActiveView('especiales')}
+              >
+                <span className="side-nav-icon">🏷️</span>
+                Etiquetas Especiales
+              </button>
+              <button
+                type="button"
+                className={`side-nav-item ${activeView === 'followup' ? 'side-nav-item-active' : ''}`}
+                onClick={() => setActiveView('followup')}
+              >
+                <span className="side-nav-icon">✈️</span>
+                Follow-Up Diario
+              </button>
+              <button
+                type="button"
+                className={`side-nav-item ${activeView === 'plantillas' ? 'side-nav-item-active' : ''}`}
+                onClick={() => setActiveView('plantillas')}
+              >
+                <span className="side-nav-icon">📝</span>
+                Plantillas
+              </button>
+              <button
+                type="button"
+                className={`side-nav-item ${activeView === 'bot' ? 'side-nav-item-active' : ''}`}
+                onClick={() => setActiveView('bot')}
+              >
+                <span className="side-nav-icon">🤖</span>
+                Bot WhatsApp
+              </button>
+              <button
+                type="button"
+                className={`side-nav-item ${activeView === 'admin' ? 'side-nav-item-active' : ''}`}
+                onClick={() => setActiveView('admin')}
+              >
+                <span className="side-nav-icon">⚙️</span>
+                Administración
+              </button>
+            </>
+          )}
         </nav>
       </aside>
 
@@ -1596,13 +1647,15 @@ function App() {
             onLoginUES={handleLoginUES}
             onRegenerarCache={handleRegenerarCacheUES}
             uesAuthenticated={uesAuthenticated}
+            currentUser={user}
+            onLogout={logout}
           />
         )}
 
       {activeView === 'pedidos' && (
         <div className="app-main-body">
-          {/* Toolbar con acciones */}
-          <Toolbar
+          {/* Toolbar con acciones (solo admin) */}
+          {esAdmin && <Toolbar
             onSincronizar={handleSincronizarShopify}
             onValidar={handleValidarSeleccionados}
             onFulfillment={handleFulfillmentShopify}
@@ -1621,10 +1674,10 @@ function App() {
             activeTrackingTemplate={templatesWhatsapp.find(t => t.id === activeTrackingTemplateId)}
             templates={templatesWhatsapp}
             onTrackingTemplateChange={setActiveTrackingTemplateId}
-          />
+          />}
 
           {/* Barra de accion email masivo (solo en pendientes contacto) */}
-          {tableFilter === 'pendientesContacto' && (
+          {esAdmin && tableFilter === 'pendientesContacto' && (
             <div className="section-action-bar">
               {pedidosPendientesContacto.some((p) => tienePhone(p)) && templatesWhatsapp.length > 0 && (
                 <div className="active-template-selector">
@@ -1706,7 +1759,7 @@ function App() {
             </div>
           )}
 
-          {tableFilter === 'revisionManual' && (
+          {esAdmin && tableFilter === 'revisionManual' && (
             <div className="section-action-bar">
               <span>
                 {selectedPedidos.length > 0
@@ -1732,20 +1785,39 @@ function App() {
             </div>
           )}
 
-          {tableFilter === 'despachados' && (
+          {esAdmin && tableFilter === 'despachados' && (
+            <div className="notif-preview-chips" style={{ padding: '0 1rem 0.5rem' }}>
+              <button
+                type="button"
+                className={`notif-chip notif-chip-wpp ${despachadosCanalFilter === 'whatsapp' ? 'notif-chip-active' : ''}`}
+                onClick={() => setDespachadosCanalFilter(despachadosCanalFilter === 'whatsapp' ? null : 'whatsapp')}
+              >
+                💬 WhatsApp ({pedidosDespachadosList.filter((p) => getCanalNotificacion(p) === 'whatsapp').length})
+              </button>
+              <button
+                type="button"
+                className={`notif-chip notif-chip-email ${despachadosCanalFilter === 'email' ? 'notif-chip-active' : ''}`}
+                onClick={() => setDespachadosCanalFilter(despachadosCanalFilter === 'email' ? null : 'email')}
+              >
+                🏪 Shopify automático ({pedidosDespachadosList.filter((p) => getCanalNotificacion(p) === 'email').length})
+              </button>
+            </div>
+          )}
+
+          {esAdmin && tableFilter === 'despachados' && (
             <div className="section-action-bar">
               <span>
                 {selectedPedidos.length > 0
                   ? `Seleccionados: ${selectedPedidos.length}`
-                  : `${pedidosDespachadosList.length} pedido(s) despachados`}
+                  : `${pedidosFiltradosPorCard.length} pedido(s)${despachadosCanalFilter ? ' filtrados' : ' despachados'}`}
               </span>
               {/* Fulfillment Shopify — para pedidos que necesitan notificar al courier */}
               <button
                 className="btn btn-primary btn-sm"
                 onClick={async () => {
                   const ids = selectedPedidos.length > 0
-                    ? selectedPedidos.filter((id) => pedidosDespachadosList.some((p) => p.id === id))
-                    : pedidosDespachadosList.map((p) => p.id);
+                    ? selectedPedidos.filter((id) => pedidosFiltradosPorCard.some((p) => p.id === id))
+                    : pedidosFiltradosPorCard.map((p) => p.id);
                   if (ids.length === 0) { mostrarToast('No hay pedidos para procesar', 'warning'); return; }
                   const resultado = await ejecutarFulfillmentShopify(ids);
                   if (!resultado.success) { mostrarToast(resultado.error || 'Error en fulfillment', 'error'); return; }
@@ -1758,10 +1830,10 @@ function App() {
                   cargarPedidosDespachados();
                   cargarPedidosEnviados();
                 }}
-                disabled={pedidosDespachadosList.length === 0}
+                disabled={pedidosFiltradosPorCard.length === 0}
                 title="Enviar fulfillment a Shopify para los despachados seleccionados"
               >
-                📨 Enviar Fulfillment ({selectedPedidos.length > 0 ? selectedPedidos.length : pedidosDespachadosList.length})
+                📨 Enviar Fulfillment ({selectedPedidos.length > 0 ? selectedPedidos.length : pedidosFiltradosPorCard.length})
               </button>
               {/* Procesado directo — para despachados con fulfillment ya hecho en Shopify */}
               <button
@@ -1769,8 +1841,8 @@ function App() {
                 onClick={async () => {
                   try {
                     const ids = selectedPedidos.length > 0
-                      ? selectedPedidos.filter((id) => pedidosDespachadosList.some((p) => p.id === id))
-                      : pedidosDespachadosList.map((p) => p.id);
+                      ? selectedPedidos.filter((id) => pedidosFiltradosPorCard.some((p) => p.id === id))
+                      : pedidosFiltradosPorCard.map((p) => p.id);
                     if (ids.length === 0) { mostrarToast('No hay pedidos para marcar', 'warning'); return; }
                     const resultado = await marcarProcesados(ids);
                     if (!resultado.success) { mostrarToast(resultado.error || 'Error al procesar', 'error'); return; }
@@ -1783,10 +1855,10 @@ function App() {
                     mostrarToast(`Error al procesar: ${err.message}`, 'error');
                   }
                 }}
-                disabled={pedidosDespachadosList.length === 0}
+                disabled={pedidosFiltradosPorCard.length === 0}
                 title="Marcar como procesados sin re-hacer fulfillment (ya fue hecho en Shopify)"
               >
-                ✅ Ya procesados ({selectedPedidos.length > 0 ? selectedPedidos.length : pedidosDespachadosList.length})
+                ✅ Ya procesados ({selectedPedidos.length > 0 ? selectedPedidos.length : pedidosFiltradosPorCard.length})
               </button>
             </div>
           )}
@@ -1815,8 +1887,8 @@ function App() {
             </div>
           )}
 
-          {/* Filtro de canal para etiquetas generadas */}
-          {tableFilter === 'etiquetasGeneradas' && (
+          {/* Filtro de canal para etiquetas generadas (solo admin) */}
+          {esAdmin && tableFilter === 'etiquetasGeneradas' && (
             <div className="notif-preview-chips" style={{ padding: '0 1rem 0.5rem' }}>
               <button
                 type="button"
@@ -1957,7 +2029,7 @@ function App() {
 
           {/* ⚠️ TEMPORAL: Panel para reprocesar pedidos que no entraron por webhook.
                Cuando ya no se necesite, cambiar REPROCESS_ENABLED = false arriba */}
-          {REPROCESS_ENABLED && (
+          {esAdmin && REPROCESS_ENABLED && (
             <div style={{ margin: '12px 16px', padding: '12px 16px', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 600, fontSize: 13 }}>⚠️ Reprocesar pedido Shopify</span>
               <input
@@ -2218,6 +2290,14 @@ function App() {
 
       {activeView === 'bot' && (
         <BotControlPanel mostrarToast={mostrarToast} />
+      )}
+
+      {activeView === 'admin' && user.role === 'admin' && (
+        <AdminPanel />
+      )}
+
+      {activeView === 'misArmados' && !esAdmin && (
+        <MisPedidosPanel user={user} />
       )}
 
       {/* Modal de vista previa de datos */}

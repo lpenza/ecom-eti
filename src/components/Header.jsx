@@ -1,60 +1,80 @@
 import React from 'react';
 
-function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES, onRegenerarCache, uesAuthenticated }) {
+function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES, onRegenerarCache, uesAuthenticated, currentUser, onLogout }) {
+  const esAdmin = currentUser?.role === 'admin';
   return (
     <header className="header">
       <div className="header-top">
         <div className="logo">
           <p>Sistema de Gestión de Envíos</p>
-          <p className="header-flow">Flujo: Sincronizar → Validar → Crear etiquetas → Marcar despchado → Enviar Fulfillment</p>
+          {esAdmin && <p className="header-flow">Flujo: Sincronizar → Validar → Crear etiquetas → Marcar despachado → Enviar Fulfillment</p>}
         </div>
         <div className="header-actions">
           <button className="btn btn-secondary header-btn" onClick={onActualizar}>
             ♻️ Actualizar
           </button>
-          <button 
-            className={`btn header-btn ${uesAuthenticated ? 'btn-success' : 'btn-warning'}`}
-            onClick={onLoginUES}
-            disabled={uesAuthenticated}
-          >
-            {uesAuthenticated ? '✅ UES Conectado' : '🔐 Login UES'}
-          </button>
-          {uesAuthenticated && onRegenerarCache && (
-            <button 
-              className="btn btn-secondary header-btn" 
-              onClick={onRegenerarCache}
-              title="Actualizar catálogo de localidades desde UES"
-            >
-              🔄 Actualizar Catálogo
-            </button>
+          {esAdmin && (
+            <>
+              <button
+                className={`btn header-btn ${uesAuthenticated ? 'btn-success' : 'btn-warning'}`}
+                onClick={onLoginUES}
+                disabled={uesAuthenticated}
+              >
+                {uesAuthenticated ? '✅ UES Conectado' : '🔐 Login UES'}
+              </button>
+              {uesAuthenticated && onRegenerarCache && (
+                <button
+                  className="btn btn-secondary header-btn"
+                  onClick={onRegenerarCache}
+                  title="Actualizar catálogo de localidades desde UES"
+                >
+                  🔄 Actualizar Catálogo
+                </button>
+              )}
+            </>
+          )}
+          {currentUser && (
+            <div className="header-user">
+              <span className="header-user-name" title={currentUser.email}>
+                👤 {currentUser.nombre}
+                {currentUser.role === 'admin' && <span className="header-user-role"> (Admin)</span>}
+              </span>
+              <button className="btn btn-danger header-btn header-btn-logout" onClick={onLogout}>
+                Salir
+              </button>
+            </div>
           )}
         </div>
       </div>
       <div className="stats" id="stats">
-        <button
-          className={`stat-card stat-card-warning ${activeFilter === 'porValidar' ? 'stat-card-active' : ''}`}
-          onClick={() => onFilterChange?.('porValidar')}
-          type="button"
-        >
-          <div className="stat-value">{stats.porValidar}</div>
-          <div className="stat-label">Por Validar</div>
-        </button>
-        <button
-          className={`stat-card stat-card-reclamo ${activeFilter === 'reclamosPendientes' ? 'stat-card-active' : ''}`}
-          onClick={() => onFilterChange?.('reclamosPendientes')}
-          type="button"
-        >
-          <div className="stat-value">{stats.reclamosPendientes || 0}</div>
-          <div className="stat-label">Reclamos Pendientes</div>
-        </button>
-        <button
-          className={`stat-card stat-card-contact ${activeFilter === 'pendientesContacto' ? 'stat-card-active' : ''}`}
-          onClick={() => onFilterChange?.('pendientesContacto')}
-          type="button"
-        >
-          <div className="stat-value">{stats.pendientesContacto || 0}</div>
-          <div className="stat-label">Pendientes Contacto</div>
-        </button>
+        {esAdmin && (
+          <>
+            <button
+              className={`stat-card stat-card-warning ${activeFilter === 'porValidar' ? 'stat-card-active' : ''}`}
+              onClick={() => onFilterChange?.('porValidar')}
+              type="button"
+            >
+              <div className="stat-value">{stats.porValidar}</div>
+              <div className="stat-label">Por Validar</div>
+            </button>
+            <button
+              className={`stat-card stat-card-reclamo ${activeFilter === 'reclamosPendientes' ? 'stat-card-active' : ''}`}
+              onClick={() => onFilterChange?.('reclamosPendientes')}
+              type="button"
+            >
+              <div className="stat-value">{stats.reclamosPendientes || 0}</div>
+              <div className="stat-label">Reclamos Pendientes</div>
+            </button>
+            <button
+              className={`stat-card stat-card-contact ${activeFilter === 'pendientesContacto' ? 'stat-card-active' : ''}`}
+              onClick={() => onFilterChange?.('pendientesContacto')}
+              type="button"
+            >
+              <div className="stat-value">{stats.pendientesContacto || 0}</div>
+              <div className="stat-label">Pendientes Contacto</div>
+            </button>
+          </>
+        )}
         <button
           className={`stat-card stat-card-pickup ${activeFilter === 'pickup' ? 'stat-card-active' : ''}`}
           onClick={() => onFilterChange?.('pickup')}
@@ -79,31 +99,36 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
           <div className="stat-value">{stats.etiquetasGeneradas}</div>
           <div className="stat-label">Etiquetas Generadas</div>
         </button>
-        <button
-          className={`stat-card stat-card-danger ${activeFilter === 'revisionManual' ? 'stat-card-active' : ''}`}
-          onClick={() => onFilterChange?.('revisionManual')}
-          type="button"
-        >
-          <div className="stat-value">{stats.revisionManual || 0}</div>
-          <div className="stat-label">Revision Manual</div>
-        </button>
-        
-        <button
-          className={`stat-card stat-card-despachado ${activeFilter === 'despachados' ? 'stat-card-active' : ''}`}
-          onClick={() => onFilterChange?.('despachados')}
-          type="button"
-        >
-          <div className="stat-value">{stats.despachados || 0}</div>
-          <div className="stat-label">🚀 Despachados</div>
-        </button>
-        <button
-          className={`stat-card stat-card-neutral ${activeFilter === 'enviados' ? 'stat-card-active' : ''}`}
-          onClick={() => onFilterChange?.('enviados')}
-          type="button"
-        >
-          <div className="stat-value">{stats.enviados || 0}</div>
-          <div className="stat-label">✅ Procesados</div>
-        </button>
+        {esAdmin && (
+          <button
+            className={`stat-card stat-card-danger ${activeFilter === 'revisionManual' ? 'stat-card-active' : ''}`}
+            onClick={() => onFilterChange?.('revisionManual')}
+            type="button"
+          >
+            <div className="stat-value">{stats.revisionManual || 0}</div>
+            <div className="stat-label">Revision Manual</div>
+          </button>
+        )}
+        {esAdmin && (
+          <button
+            className={`stat-card stat-card-despachado ${activeFilter === 'despachados' ? 'stat-card-active' : ''}`}
+            onClick={() => onFilterChange?.('despachados')}
+            type="button"
+          >
+            <div className="stat-value">{stats.despachados || 0}</div>
+            <div className="stat-label">🚀 Despachados</div>
+          </button>
+        )}
+        {esAdmin && (
+          <button
+            className={`stat-card stat-card-neutral ${activeFilter === 'enviados' ? 'stat-card-active' : ''}`}
+            onClick={() => onFilterChange?.('enviados')}
+            type="button"
+          >
+            <div className="stat-value">{stats.enviados || 0}</div>
+            <div className="stat-label">✅ Procesados</div>
+          </button>
+        )}
       </div>
       {stats.trackingAlert && (
         <div className={`header-alert ${stats.trackingBreakdown?.descuadre ? 'header-alert-danger' : 'header-alert-warning'}`}>

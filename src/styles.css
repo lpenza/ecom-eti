@@ -4407,3 +4407,489 @@ body {
     border-bottom: 1px solid var(--brand-border);
   }
 }
+
+/* ── Login Page ─────────────────────────────────────────────────────────────── */
+.login-container {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+}
+
+.login-card {
+  background: #fff;
+  border-radius: 12px;
+  padding: 2.5rem 2rem;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+}
+
+.login-logo {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.login-logo h1 {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #0f3460;
+  margin: 0 0 0.25rem;
+}
+
+.login-logo p {
+  font-size: 0.85rem;
+  color: #666;
+  margin: 0;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.login-field label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #444;
+}
+
+.login-field input {
+  padding: 0.6rem 0.8rem;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  transition: border-color 0.2s;
+  outline: none;
+}
+
+.login-field input:focus {
+  border-color: #0f3460;
+  box-shadow: 0 0 0 3px rgba(15,52,96,0.1);
+}
+
+.login-error {
+  background: #fee2e2;
+  color: #dc2626;
+  padding: 0.6rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  border: 1px solid #fecaca;
+}
+
+.login-btn {
+  width: 100%;
+  padding: 0.7rem;
+  font-size: 1rem;
+  font-weight: 600;
+  margin-top: 0.25rem;
+}
+
+/* ── Header user info ───────────────────────────────────────────────────────── */
+.header-user {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: 0.5rem;
+  padding-left: 0.75rem;
+  border-left: 1px solid rgba(255,255,255,0.2);
+}
+
+.header-user-name {
+  font-size: 0.85rem;
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+
+.header-user-role {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.header-btn-logout {
+  font-size: 0.8rem;
+  padding: 0.3rem 0.7rem;
+}
+
+/* ── Admin Panel ─────────────────────────────────────────────────────────────── */
+.admin-panel {
+  padding: 2rem;
+  max-width: 900px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+}
+
+.admin-section {
+  background: #fff;
+  border: 1px solid var(--brand-border, #e2e8f0);
+  border-radius: 10px;
+  padding: 1.5rem;
+}
+
+.admin-section-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin: 0 0 0.3rem;
+}
+
+.admin-section-desc {
+  font-size: 0.85rem;
+  color: #64748b;
+  margin: 0 0 1.25rem;
+}
+
+.admin-users-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.admin-user-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  gap: 1rem;
+}
+
+.admin-user-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  flex: 1;
+}
+
+.admin-user-name {
+  font-weight: 600;
+  color: #1e293b;
+  font-size: 0.95rem;
+}
+
+.admin-user-email {
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+.admin-monto-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.admin-currency {
+  font-weight: 700;
+  color: #475569;
+  font-size: 1rem;
+}
+
+.admin-monto-input {
+  width: 90px;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  text-align: right;
+}
+
+.admin-save-btn {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.85rem;
+}
+
+.admin-reporte-filtros {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  flex-wrap: wrap;
+}
+
+.admin-reporte-filtros label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.admin-reporte-filtros input[type="date"] {
+  padding: 0.35rem 0.6rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.admin-reporte-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.admin-reporte-table th {
+  background: #f1f5f9;
+  padding: 0.6rem 0.8rem;
+  text-align: left;
+  font-weight: 600;
+  color: #475569;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+.admin-reporte-table td {
+  padding: 0.7rem 0.8rem;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: middle;
+}
+
+.admin-rep-nombre {
+  display: block;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.admin-rep-email {
+  display: block;
+  font-size: 0.78rem;
+  color: #94a3b8;
+}
+
+.admin-rep-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-rep-total {
+  text-align: right;
+  font-weight: 600;
+  color: #0f766e;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-rep-total-label {
+  text-align: right;
+  font-weight: 700;
+  color: #475569;
+  background: #f8fafc;
+}
+
+.admin-rep-total-bold {
+  font-size: 1.05rem;
+  background: #f8fafc;
+}
+
+.admin-rep-empty {
+  text-align: center;
+  color: #94a3b8;
+  padding: 1.5rem;
+  font-style: italic;
+}
+
+.admin-toast {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  background: #0f766e;
+  color: #fff;
+  padding: 0.65rem 1.2rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  z-index: 9999;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+/* ── Mis Pedidos Armados ─────────────────────────────────────────────────────── */
+.mis-pedidos-panel {
+  padding: 2rem;
+  max-width: 860px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.mis-pedidos-header { display: flex; align-items: flex-start; justify-content: space-between; }
+
+.mis-pedidos-title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #1e293b;
+  margin: 0 0 0.2rem;
+}
+
+.mis-pedidos-sub { font-size: 0.85rem; color: #64748b; margin: 0; }
+
+.mis-pedidos-filtros {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+}
+
+.mis-pedidos-filtros label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.mis-pedidos-filtros input[type="date"] {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.mis-pedidos-resumen {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+}
+
+.mis-resumen-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 1.1rem 1.25rem;
+  text-align: center;
+}
+
+.mis-resumen-total {
+  background: #f0fdf4;
+  border-color: #86efac;
+}
+
+.mis-resumen-valor {
+  font-size: 1.8rem;
+  font-weight: 800;
+  color: #1e293b;
+  line-height: 1;
+  margin-bottom: 0.3rem;
+}
+
+.mis-resumen-total .mis-resumen-valor { color: #16a34a; }
+
+.mis-resumen-label { font-size: 0.8rem; color: #64748b; font-weight: 500; }
+
+.mis-pedidos-tabla {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 0.9rem;
+}
+
+.mis-pedidos-tabla th {
+  background: #f1f5f9;
+  padding: 0.65rem 1rem;
+  text-align: left;
+  font-weight: 600;
+  color: #475569;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+.mis-pedidos-tabla td {
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid #f1f5f9;
+  color: #334155;
+}
+
+.mis-col-numero { font-weight: 600; color: #1e293b; }
+.mis-col-fecha { font-size: 0.85rem; color: #64748b; }
+.mis-col-monto { text-align: right; font-weight: 600; color: #0f766e; font-variant-numeric: tabular-nums; }
+
+.mis-empty {
+  text-align: center;
+  padding: 2rem;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.mis-total-label {
+  text-align: right;
+  font-weight: 700;
+  color: #475569;
+  background: #f8fafc;
+  padding: 0.7rem 1rem;
+}
+
+.mis-total-bold {
+  font-size: 1.05rem;
+  background: #f0fdf4;
+}
+
+/* ── Admin: formulario nuevo usuario ─────────────────────────────────────────── */
+.admin-nuevo-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.admin-nuevo-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 0.75rem;
+}
+
+.admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.admin-field label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.admin-field input,
+.admin-field select {
+  padding: 0.45rem 0.65rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.admin-field input:focus,
+.admin-field select:focus {
+  border-color: #0f3460;
+  box-shadow: 0 0 0 2px rgba(15,52,96,0.1);
+}
+
+.admin-error {
+  background: #fee2e2;
+  color: #dc2626;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  border: 1px solid #fecaca;
+}
+
+.admin-toast-error {
+  background: #dc2626 !important;
+}

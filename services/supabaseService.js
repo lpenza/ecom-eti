@@ -1049,6 +1049,118 @@ class SupabaseService {
       console.error('Error al inicializar plantillas por defecto:', error);
     }
   }
+
+  // ── Auth helpers ─────────────────────────────────────────────────────────────
+  async buscarUsuarioPorEmail(email) {
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email.toLowerCase().trim())
+      .eq('activo', true)
+      .limit(1);
+    if (error) throw error;
+    return data && data.length > 0 ? data[0] : null;
+  }
+
+  async insertarUsuarios(usuarios) {
+    const { error } = await supabase.from('users').insert(usuarios);
+    if (error) throw error;
+  }
+
+  async contarUsuarios() {
+    const { count, error } = await supabase.from('users').select('id', { count: 'exact', head: true });
+    if (error) throw error;
+    return count || 0;
+  }
+
+  // ── Admin helpers ─────────────────────────────────────────────────────────────
+  async listarUsuarios() {
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, email, nombre, role, activo, monto_por_pedido')
+      .order('nombre');
+    if (error) throw error;
+    return data || [];
+  }
+
+  async crearUsuario({ email, nombre, password_hash, role }) {
+    const { data, error } = await supabase
+      .from('users')
+      .insert({ email, nombre, password_hash, role, activo: true })
+      .select('id, email, nombre, role')
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async actualizarMontoPorPedido(userId, monto) {
+    const { error } = await supabase
+      .from('users')
+      .update({ monto_por_pedido: monto })
+      .eq('id', userId);
+    if (error) throw error;
+  }
+
+  async reportePedidosPorUsuario(desde, hasta) {
+    let query = supabase
+      .from('pedidos')
+      .select('despachado_por_nombre, notificacion_enviada_at')
+      .in('estado', ['despachado', 'enviado'])
+      .not('despachado_por_nombre', 'is', null);
+
+    if (desde) query = query.gte('notificacion_enviada_at', desde);
+    if (hasta) query = query.lte('notificacion_enviada_at', hasta + 'T23:59:59');
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const porUsuario = {};
+    for (const p of data || []) {
+      const nombre = p.despachado_por_nombre;
+      porUsuario[nombre] = (porUsuario[nombre] || 0) + 1;
+    }
+
+    const usuarios = await this.listarUsuarios();
+    return usuarios
+      .filter((u) => u.role === 'user')
+      .map((u) => ({
+        id: u.id,
+        nombre: u.nombre,
+        email: u.email,
+        monto_por_pedido: u.monto_por_pedido || 0,
+        pedidos_armados: porUsuario[u.nombre] || 0,
+        total: (u.monto_por_pedido || 0) * (porUsuario[u.nombre] || 0),
+      }));
+  }
+
+  async obtenerPedidosArmadosPorUsuario(nombre, desde, hasta) {
+    let query = supabase
+      .from('pedidos')
+      .select('id, numero_pedido, cliente_nombre, notificacion_enviada_at, despachado_por_nombre')
+      .in('estado', ['despachado', 'enviado'])
+      .eq('despachado_por_nombre', nombre)
+      .order('notificacion_enviada_at', { ascending: false });
+
+    if (desde) query = query.gte('notificacion_enviada_at', desde);
+    if (hasta) query = query.lte('notificacion_enviada_at', hasta + 'T23:59:59');
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const { data: users } = await supabase
+      .from('users')
+      .select('monto_por_pedido')
+      .eq('nombre', nombre)
+      .limit(1);
+
+    const monto = users?.[0]?.monto_por_pedido || 0;
+    const pedidos = data || [];
+    return {
+      pedidos,
+      monto_por_pedido: monto,
+      total: monto * pedidos.length,
+    };
+  }
 }
 
 module.exports = new SupabaseService();
