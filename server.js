@@ -1464,7 +1464,6 @@ app.post('/api/marcar-procesados-bulk', requireAuth, async (req, res) => {
           // Reutilizamos los campos de trazabilidad existentes para que aparezca en "Mis Pedidos Armados".
           await supabaseService.actualizarPedido(pedidoId, {
             estado: 'enviado',
-            despachado_por_nombre: req.user?.nombre || req.user?.email || null,
             notificacion_enviada_at: new Date().toISOString(),
           });
           return { pedidoId, success: true };
