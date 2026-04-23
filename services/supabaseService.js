@@ -772,6 +772,37 @@ class SupabaseService {
     return data || [];
   }
 
+  async obtenerNotasBatch(customerIds = []) {
+    const ids = Array.from(new Set((customerIds || []).filter(Boolean)));
+    if (ids.length === 0) return {};
+
+    const batchSize = 80;
+    const byCustomer = {};
+
+    for (let i = 0; i < ids.length; i += batchSize) {
+      const chunk = ids.slice(i, i + batchSize);
+      const { data, error } = await supabase
+        .from('customer_notes')
+        .select('id, customer_id, content, created_at')
+        .in('customer_id', chunk)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        if (this.isMissingRelationError(error, 'customer_notes')) {
+          return {};
+        }
+        throw error;
+      }
+
+      for (const note of data || []) {
+        if (!byCustomer[note.customer_id]) byCustomer[note.customer_id] = [];
+        byCustomer[note.customer_id].push(note);
+      }
+    }
+
+    return byCustomer;
+  }
+
   async agregarNotaCliente(customerId, content) {
     const payload = {
       customer_id: String(customerId),

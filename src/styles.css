@@ -5717,6 +5717,16 @@ body {
   gap: 0.7rem;
 }
 
+.fdx-top-lists.fdx-top-lists-2col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.fdx-conv-bottom-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.7rem;
+}
+
 .fdx-list-card {
   padding: 0.72rem;
 }
@@ -5770,6 +5780,531 @@ body {
   border-radius: 10px;
   padding: 0.45rem 0.65rem;
   font-size: 0.82rem;
+}
+
+/* ── Layout KPIs + donut de campaña ── */
+.fdx-campaign-kpi-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.7rem;
+  align-items: start;
+}
+
+.fdx-campaign-sentiment {
+  padding: 0.85rem;
+  min-width: 220px;
+}
+
+.fdx-campaign-sentiment h3 {
+  margin: 0 0 0.2rem;
+  font-size: 0.88rem;
+  color: #3c2b2f;
+}
+
+.fdx-sentiment-note {
+  margin: 0 0 0.7rem;
+  font-size: 0.72rem;
+  color: #9a7880;
+}
+
+/* ── State badges ── */
+.fdx-state-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.18rem 0.5rem;
+  border-radius: 20px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.fdx-state-badge.tone-positive {
+  background: #e9f7e9;
+  color: #2a6e2e;
+}
+
+.fdx-state-badge.tone-neutral {
+  background: #f2f0ec;
+  color: #7a6a58;
+}
+
+.fdx-state-badge.tone-negative {
+  background: #fde8e8;
+  color: #9f2036;
+}
+
+/* ── Lista de contactos de campaña ── */
+.fdx-contacts-card {
+  padding: 0.9rem;
+}
+
+.fdx-contacts-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin-bottom: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.fdx-contacts-toolbar h3 {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #3c2b2f;
+}
+
+.fdx-contacts-total {
+  font-size: 0.75rem;
+  color: #9a7880;
+  font-weight: 400;
+  margin-left: 0.4rem;
+}
+
+.fdx-contacts-search {
+  max-width: 220px;
+  font-size: 0.82rem;
+  padding: 0.3rem 0.55rem;
+}
+
+.fdx-contacts-filters {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.65rem;
+}
+
+.fdx-filter-chip {
+  border: 1px solid #ddd0d0;
+  background: #faf7f7;
+  color: #7a656b;
+  border-radius: 20px;
+  padding: 0.2rem 0.65rem;
+  font-size: 0.76rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  transition: all 0.15s;
+}
+
+.fdx-filter-chip span {
+  background: #ede4e4;
+  border-radius: 10px;
+  padding: 0 0.35rem;
+  font-size: 0.7rem;
+  color: #8a7178;
+}
+
+.fdx-filter-chip.is-active {
+  background: #5b1f30;
+  border-color: #5b1f30;
+  color: #fff;
+}
+
+.fdx-filter-chip.is-active span {
+  background: rgba(255,255,255,0.2);
+  color: #fff;
+}
+
+.fdx-contacts-empty {
+  color: #9a7880;
+  font-size: 0.83rem;
+  text-align: center;
+  padding: 1.5rem;
+  margin: 0;
+}
+
+.fdx-contacts-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.fdx-contact-row {
+  border: 1px solid #ede4e4;
+  border-radius: 10px;
+  overflow: hidden;
+  transition: border-color 0.15s;
+}
+
+.fdx-contact-row.is-open {
+  border-color: #c9aab0;
+}
+
+.fdx-contact-main {
+  width: 100%;
+  background: #faf7f7;
+  border: none;
+  display: grid;
+  grid-template-columns: 1fr 7rem 10rem 7rem 5.5rem;
+  align-items: center;
+  gap: 0.7rem;
+  padding: 0.6rem 0.8rem;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.83rem;
+}
+
+.fdx-contact-row.is-open .fdx-contact-main {
+  background: #f0e9ea;
+}
+
+.fdx-contact-name {
+  color: #3c2b2f;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fdx-contact-phone {
+  color: #8a7178;
+  font-size: 0.76rem;
+  font-family: monospace;
+}
+
+.fdx-contact-state-col {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.fdx-contact-responded {
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.fdx-contact-responded.yes { color: #2a6e2e; }
+.fdx-contact-responded.no  { color: #9a7880; }
+
+.fdx-contact-human {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.fdx-contact-date {
+  font-size: 0.76rem;
+  color: #8a7178;
+  text-align: right;
+}
+
+/* ── Panel expandido ── */
+.fdx-contact-detail {
+  background: #fff;
+  border-top: 1px solid #ede4e4;
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.fdx-contact-nodata {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #9a7880;
+  font-style: italic;
+}
+
+.fdx-contact-summary {
+  font-size: 0.8rem;
+  color: #7a656b;
+}
+
+.fdx-contact-summary summary {
+  cursor: pointer;
+  color: #8a7178;
+  font-size: 0.76rem;
+}
+
+.fdx-contact-summary p {
+  margin: 0.4rem 0 0;
+  font-size: 0.81rem;
+  color: #4d3b3f;
+  line-height: 1.55;
+  padding: 0.5rem;
+  background: #faf7f7;
+  border-radius: 7px;
+  border: 1px solid #ede4e4;
+}
+
+.fdx-contact-dates {
+  display: flex;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+  background: #faf7f7;
+  border: 1px solid #ede4e4;
+  border-radius: 8px;
+  padding: 0.6rem 0.8rem;
+}
+
+.fdx-contact-date-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 8rem;
+}
+
+.fdx-date-label {
+  font-size: 0.68rem;
+  color: #9a7880;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+
+.fdx-date-value {
+  font-size: 0.88rem;
+  color: #3c2b2f;
+  font-weight: 600;
+}
+
+.fdx-source-tag {
+  font-style: normal;
+  font-size: 0.68rem;
+  color: #9a7880;
+  background: #ede4e4;
+  border-radius: 4px;
+  padding: 0.05rem 0.35rem;
+  align-self: flex-start;
+  margin-top: 0.1rem;
+}
+
+.fdx-notes-title {
+  font-size: 0.74rem;
+  color: #8a7178;
+  font-weight: 600;
+  display: block;
+  margin-bottom: 0.3rem;
+}
+
+.fdx-contact-notes ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.fdx-contact-notes li {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+  background: #faf7f7;
+  border: 1px solid #ede4e4;
+  border-radius: 7px;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.81rem;
+  color: #4d3b3f;
+}
+
+.fdx-contact-notes time {
+  font-size: 0.72rem;
+  color: #9a7880;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Separadores de sección ── */
+.fdx-section-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9a7880;
+  padding: 0.55rem 0.1rem 0.2rem;
+  border-top: 1px solid #ede4e4;
+  margin-top: 0.3rem;
+}
+
+/* ── KPI segunda tasa ── */
+.fdx-kpi-second {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin: 0.25rem 0 0;
+  padding: 0.25rem 0.4rem;
+  background: #f8f2f2;
+  border-radius: 6px;
+  font-size: 0.76rem;
+  color: #7f666d;
+}
+
+.fdx-kpi-second strong {
+  font-size: 1rem;
+  color: #5b1f30;
+}
+
+/* ── Bloque Bot Redis consolidado ── */
+.fdx-bot-block {
+  padding: 0.9rem;
+}
+
+.fdx-bot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.fdx-bot-header h3 {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #3c2b2f;
+}
+
+.fdx-bot-health {
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.fdx-bot-grid {
+  display: grid;
+  grid-template-columns: 1.4fr 0.8fr 0.8fr 2fr;
+  gap: 0.7rem;
+  align-items: start;
+}
+
+.fdx-bot-highlight {
+  background: #f4eff0;
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.12rem;
+}
+
+.fdx-bot-highlight span {
+  font-size: 0.72rem;
+  color: #8a7178;
+}
+
+.fdx-bot-highlight strong {
+  font-size: 2.2rem;
+  line-height: 1;
+  color: #5b1f30;
+}
+
+.fdx-bot-highlight em {
+  font-style: normal;
+  font-size: 0.75rem;
+  color: #9a7880;
+}
+
+.fdx-bot-stat {
+  background: #f8f5f5;
+  border: 1px solid #ede4e4;
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.fdx-bot-stat.is-alert {
+  border-color: #f4b9b9;
+  background: #fff5f5;
+}
+
+.fdx-bot-stat span {
+  font-size: 0.72rem;
+  color: #8a7178;
+}
+
+.fdx-bot-stat strong {
+  font-size: 1.6rem;
+  line-height: 1;
+  color: #5b1f30;
+}
+
+.fdx-bot-stat.is-alert strong {
+  color: #b03050;
+}
+
+.fdx-bot-badge {
+  font-style: normal;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #b03050;
+  background: #fde8e8;
+  border-radius: 4px;
+  padding: 0.05rem 0.3rem;
+  align-self: flex-start;
+  margin-top: 0.2rem;
+}
+
+.fdx-bot-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.55rem 0.65rem;
+  background: #f8f5f5;
+  border: 1px solid #ede4e4;
+  border-radius: 10px;
+}
+
+.fdx-bot-modes-title {
+  font-size: 0.72rem;
+  color: #8a7178;
+  font-weight: 600;
+  margin-bottom: 0.1rem;
+}
+
+.fdx-bot-mode-row {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr 4rem;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.76rem;
+  color: #5a474c;
+}
+
+.fdx-bot-mode-bar-wrap {
+  height: 7px;
+  background: #ece4e4;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.fdx-bot-mode-bar {
+  height: 7px;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.fdx-bot-mode-count {
+  text-align: right;
+  color: #7a656b;
+}
+
+/* ── Donut vacío ── */
+.fdx-donut-empty .fdx-donut-hole {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fdx-donut-empty-label {
+  font-size: 0.68rem;
+  color: #9a7880;
+}
+
+/* ── Evolución independiente ── */
+.fdx-evolution-card {
+  padding: 0.85rem;
+}
+
+.fdx-evolution-card h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.88rem;
+  color: #3c2b2f;
 }
 
 @media (max-width: 1250px) {

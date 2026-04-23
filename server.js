@@ -1791,7 +1791,10 @@ app.get('/api/feedback/dashboard', async (req, res) => {
         .map((p) => supabaseService.buildCustomerKey(p))
         .filter(Boolean)
     ));
-    const statesByCustomer = await supabaseService.obtenerEstadosClientes(customerIds);
+    const [statesByCustomer, notesByCustomer] = await Promise.all([
+      supabaseService.obtenerEstadosClientes(customerIds),
+      supabaseService.obtenerNotasBatch(customerIds),
+    ]);
 
     let botContacts = [];
     let redisWarning = null;
@@ -1985,6 +1988,57 @@ app.get('/api/feedback/dashboard', async (req, res) => {
 
     const timeline = Object.values(timelineByDate).sort((a, b) => a.date.localeCompare(b.date));
 
+    // Construir lista de contactos de campaña — deduplicada por customerId
+    // (un cliente puede tener varios pedidos con followup enviado; se conserva el más reciente)
+    const contactMapBuild = new Map();
+    for (const pedido of pedidosCampana) {
+      const customerId = supabaseService.buildCustomerKey(pedido);
+      const stateRecord = statesByCustomer[customerId] || null;
+      const phoneKey = normalizePhoneKey(pedido.cliente_telefono);
+      const matchedContact = phoneKey ? contactByPhone.get(phoneKey) : null;
+
+      const stateFromDb = stateRecord?.state || null;
+      const stateFromRedis = matchedContact?.customer_state || null;
+      const state = stateFromDb || stateFromRedis || 'neutral';
+
+      const sentAt = new Date(pedido.followup_enviado_at || 0);
+      const lastMessageAtTs = new Date(matchedContact?.last_message_at || 0).getTime();
+      const stateUpdatedAtTs = new Date(stateRecord?.updated_at || 0).getTime();
+      const respondedByRedis = !Number.isNaN(lastMessageAtTs) && lastMessageAtTs >= sentAt.getTime();
+      const respondedByState = !Number.isNaN(stateUpdatedAtTs) && stateUpdatedAtTs >= sentAt.getTime();
+
+      const entry = {
+        customerId,
+        name: pedido.cliente_nombre || matchedContact?.customer_name || '—',
+        phone: pedido.cliente_telefono || null,
+        followupSentAt: pedido.followup_enviado_at || null,
+        responded: !!(respondedByRedis || respondedByState),
+        state,
+        stateUpdatedAt: stateRecord?.updated_at || null,
+        stateSource: stateFromDb ? 'db' : stateFromRedis ? 'redis' : null,
+        notes: notesByCustomer[customerId] || [],
+        profileSummary: matchedContact?.profile_summary || null,
+        lastMessageAt: matchedContact?.last_message_at || null,
+        requiresHuman: !!matchedContact?.requires_human_last_time,
+        stage: matchedContact?.stage || null,
+        orderCount: 1,
+      };
+
+      const existing = contactMapBuild.get(customerId);
+      if (!existing) {
+        contactMapBuild.set(customerId, entry);
+      } else {
+        // Conservar el más reciente; acumular orderCount
+        existing.orderCount += 1;
+        const existingTs = new Date(existing.followupSentAt || 0).getTime();
+        const newTs = new Date(entry.followupSentAt || 0).getTime();
+        if (newTs > existingTs) {
+          contactMapBuild.set(customerId, { ...entry, orderCount: existing.orderCount });
+        }
+      }
+    }
+    const campaignContacts = Array.from(contactMapBuild.values());
+
     // Agregar insights computados
     const topsList = {
       intents: mapToTopList(topIntentsCounter),
@@ -2011,6 +2065,7 @@ app.get('/api/feedback/dashboard', async (req, res) => {
         kpis: campaign,
         sentiment: campaignSentiment,
         timeline,
+        contacts: campaignContacts,
         criteria: {
           responded: 'Redis last_message_at >= followup_enviado_at OR customer_states.updated_at >= followup_enviado_at',
           ok: 'customer_states.state in [happy, satisfied, feliz, ok]',
