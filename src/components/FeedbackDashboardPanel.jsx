@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { obtenerFeedbackDashboard } from '../services/api';
+import { obtenerFeedbackDashboard, analizarRazonesCompra } from '../services/api';
 
 function percent(part, total) {
   if (!total) return 0;
@@ -215,6 +215,7 @@ const STATE_META = {
   frustrated:{ label: 'Frustrada', emoji: '😤', tone: 'negative' },
   anxious:   { label: 'Ansiosa',   emoji: '😰', tone: 'negative' },
   molesta:   { label: 'Molesta',    emoji: '😤', tone: 'negative' },
+  no_lo_uso: { label: 'No lo uso aún', emoji: '⏳', tone: 'neutral' },
 };
 
 function StateBadge({ state }) {
@@ -396,11 +397,170 @@ function SectionLabel({ children }) {
   return <div className="fdx-section-label">{children}</div>;
 }
 
+const CATEGORIA_ICONS = {
+  'se come o muerde las uñas': '🪤',
+  'uñas dañadas o débiles': '💔',
+  'cuidado y estética': '✨',
+  'ocasión especial': '🎉',
+  'prolijas para el trabajo': '💼',
+  'curiosidad o exploración': '🔍',
+  'regalo o sorpresa': '🎁',
+  'uñas cortas o que no crecen': '📏',
+  'cambiar hábitos': '🔄',
+  'otro': '💬',
+};
+
+function RazonesDeCompra({ razones, loading, onAnalizar }) {
+  const [subTab, setSubTab] = useState('resumen');
+  const [search, setSearch] = useState('');
+
+  const sortedCategories = useMemo(() => {
+    if (!razones?.categories) return [];
+    return Object.entries(razones.categories)
+      .sort(([, a], [, b]) => b.count - a.count);
+  }, [razones]);
+
+  const maxCatCount = sortedCategories[0]?.[1]?.count || 1;
+
+  const filteredMotivations = useMemo(() => {
+    const list = razones?.motivations || [];
+    const q = search.toLowerCase().trim();
+    if (!q) return list;
+    return list.filter(
+      (m) =>
+        (m.motivation || '').toLowerCase().includes(q) ||
+        (m.name || '').toLowerCase().includes(q) ||
+        (m.categoria || '').toLowerCase().includes(q)
+    );
+  }, [razones, search]);
+
+  return (
+    <section className="fdx-razones-section">
+      <div className="fdx-razones-header">
+        <div>
+          <h3>Motivos de contacto</h3>
+          <p>Por qué los clientes se acercan — clasificado automáticamente por perfil</p>
+        </div>
+        <div className="fdx-razones-actions">
+          {razones && (
+            <span className="fdx-razones-meta">
+              {razones.totalAnalyzed} analizados
+              {razones.newlyAnalyzed > 0 && ` · ${razones.newlyAnalyzed} nuevos`}
+            </span>
+          )}
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => onAnalizar(true)} disabled={loading}>
+            {loading ? 'Analizando...' : razones ? 'Actualizar' : 'Analizar con IA'}
+          </button>
+        </div>
+      </div>
+
+      {loading && (
+        <div className="fdx-razones-loading">
+          <div className="fdx-razones-spinner" />
+          <span>OpenAI analizando perfiles… puede demorar un momento</span>
+        </div>
+      )}
+
+      {!loading && !razones && (
+        <div className="fdx-razones-empty">
+          <p>Hacé clic en <strong>"Analizar con IA"</strong> para que OpenAI identifique el motivo de contacto de cada cliente.<br />Los resultados se guardan y no se reprocesa lo ya analizado.</p>
+        </div>
+      )}
+
+      {!loading && razones && (
+        <>
+          <div className="fdx-razones-subtabs">
+            <button
+              type="button"
+              className={`fdx-razones-subtab ${subTab === 'resumen' ? 'is-active' : ''}`}
+              onClick={() => setSubTab('resumen')}
+            >
+              Resumen por motivo
+            </button>
+            <button
+              type="button"
+              className={`fdx-razones-subtab ${subTab === 'detalle' ? 'is-active' : ''}`}
+              onClick={() => setSubTab('detalle')}
+            >
+              Todos los clientes ({razones.totalAnalyzed})
+            </button>
+          </div>
+
+          {subTab === 'resumen' && (
+            <div className="fdx-razones-top">
+              {sortedCategories.length === 0 ? (
+                <p className="fdx-razones-empty">Sin datos de categorías.</p>
+              ) : (
+                <div className="fdx-razones-block">
+                  {sortedCategories.map(([cat, info]) => (
+                    <div key={cat} className="fdx-bigram-row fdx-cat-row">
+                      <span className="fdx-bigram-label">
+                        {CATEGORIA_ICONS[cat] || '💬'} {cat}
+                      </span>
+                      <div className="fdx-razon-bar-wrap">
+                        <div
+                          className="fdx-razon-bar fdx-razon-bar--teal"
+                          style={{ width: `${Math.round((info.count / maxCatCount) * 100)}%` }}
+                        />
+                      </div>
+                      <span className="fdx-bigram-count">{info.count}</span>
+                      {info.examples?.length > 0 && (
+                        <div className="fdx-cat-examples">
+                          {info.examples.slice(0, 3).map((ex, i) => (
+                            <span key={i} className="fdx-cat-example">"{ex}"</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {subTab === 'detalle' && (
+            <div className="fdx-razones-detalle">
+              <input
+                className="module-input fdx-razones-search"
+                type="text"
+                placeholder="Buscar por nombre, motivo o categoría..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <div className="fdx-summaries-list">
+                {filteredMotivations.length === 0 && (
+                  <p className="fdx-razones-empty">Sin resultados.</p>
+                )}
+                {filteredMotivations.map((m, i) => (
+                  <div key={i} className="fdx-summary-row">
+                    <div className="fdx-summary-meta">
+                      <span className="fdx-summary-name">{m.name || 'Sin nombre'}</span>
+                      {m.stage && <span className="fdx-summary-stage">{m.stage}</span>}
+                      {m.categoria && (
+                        <span className="fdx-summary-product">
+                          {CATEGORIA_ICONS[m.categoria] || '💬'} {m.categoria}
+                        </span>
+                      )}
+                    </div>
+                    <p className="fdx-summary-text">{m.motivation}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 function FeedbackDashboardPanel({ mostrarToast }) {
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
   const [activeTab, setActiveTab] = useState('resumen');
+  const [razones, setRazones] = useState(null);
+  const [loadingRazones, setLoadingRazones] = useState(false);
 
   const loadDashboard = async () => {
     try {
@@ -421,6 +581,22 @@ function FeedbackDashboardPanel({ mostrarToast }) {
   useEffect(() => {
     loadDashboard();
   }, [days]);
+
+  const handleAnalizarRazones = async (force = false) => {
+    try {
+      setLoadingRazones(true);
+      const result = await analizarRazonesCompra(force);
+      if (!result?.success) {
+        mostrarToast?.(result?.error || 'Error analizando razones', 'error');
+        return;
+      }
+      setRazones(result.data);
+    } catch (err) {
+      mostrarToast?.(err.message || 'Error analizando razones', 'error');
+    } finally {
+      setLoadingRazones(false);
+    }
+  };
 
   const campaign = data?.campaignFeedback?.kpis || { sent: 0, responded: 0, ok: 0, notOk: 0, noResponse: 0 };
   const campaignSentiment = data?.campaignFeedback?.sentiment || { positive: 0, neutral: 0, negative: 0 };
@@ -524,6 +700,9 @@ function FeedbackDashboardPanel({ mostrarToast }) {
         </button>
         <button type="button" role="tab" aria-selected={activeTab === 'conversaciones'} className={`fdx-tab ${activeTab === 'conversaciones' ? 'is-active' : ''}`} onClick={() => setActiveTab('conversaciones')}>
           Conversaciones
+        </button>
+        <button type="button" role="tab" aria-selected={activeTab === 'razones'} className={`fdx-tab ${activeTab === 'razones' ? 'is-active' : ''}`} onClick={() => { setActiveTab('razones'); if (!razones) handleAnalizarRazones(); }}>
+          Razones de compra
         </button>
       </div>
 
@@ -827,6 +1006,15 @@ function FeedbackDashboardPanel({ mostrarToast }) {
 
       {data?.warnings?.redis && (
         <div className="fdx-warning">Redis no disponible: {data.warnings.redis}</div>
+      )}
+
+      {/* ── Razones de compra ── */}
+      {activeTab === 'razones' && (
+        <RazonesDeCompra
+          razones={razones}
+          loading={loadingRazones}
+          onAnalizar={handleAnalizarRazones}
+        />
       )}
     </div>
   );

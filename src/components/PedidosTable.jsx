@@ -16,6 +16,36 @@ function getDriveUrls(link) {
   return { previewUrl: link, downloadUrl: link };
 }
 
+function groupPedidosByTracking(pedidos) {
+  const trackingGroups = new Map();
+  for (const p of pedidos) {
+    const tracking = String(p.numero_seguimiento_ues || '').trim();
+    if (!tracking) continue;
+    if (!trackingGroups.has(tracking)) trackingGroups.set(tracking, []);
+    trackingGroups.get(tracking).push(p);
+  }
+  const seen = new Set();
+  const result = [];
+  for (const p of pedidos) {
+    const tracking = String(p.numero_seguimiento_ues || '').trim();
+    if (!tracking) { result.push(p); continue; }
+    if (seen.has(tracking)) continue;
+    seen.add(tracking);
+    const group = trackingGroups.get(tracking);
+    if (group.length === 1) {
+      result.push(p);
+    } else {
+      result.push({
+        ...group[0],
+        numero_pedido: group.map(g => g.numero_pedido).join(' / '),
+        _mergedIds: group.map(g => g.id),
+        _isDuplicateTracking: true,
+      });
+    }
+  }
+  return result;
+}
+
 function PedidosTable({
   pedidos,
   selectedPedidos,
@@ -36,6 +66,7 @@ function PedidosTable({
   activeContactTemplate,
   modoPendienteContacto = false,
   allowRedownload = false,
+  groupByTracking = false,
 }) {
   const [previewPedido, setPreviewPedido] = useState(null);
   // allSelected: true solo si TODOS los de la vista filtrada están seleccionados
@@ -46,6 +77,8 @@ function PedidosTable({
     const numB = parseInt(String(b.numero_pedido || '').replace(/\D/g, ''), 10) || 0;
     return numB - numA;
   });
+
+  const pedidosToRender = groupByTracking ? groupPedidosByTracking(pedidosOrdenados) : pedidosOrdenados;
 
   const previewUrls = previewPedido ? getDriveUrls(previewPedido.link_etiqueta_drive) : null;
 
@@ -111,37 +144,53 @@ function PedidosTable({
             </tr>
           </thead>
           <tbody>
-            {pedidosOrdenados.length === 0 ? (
+            {pedidosToRender.length === 0 ? (
               <tr>
                 <td colSpan={5 + (showTrackingColumn ? 1 : 0) + (showNotifyColumn ? 1 : 0) + (showProcesarButton ? 1 : 0)} className="table-empty-state">
                   No hay pedidos para mostrar
                 </td>
               </tr>
             ) : (
-              pedidosOrdenados.map(pedido => (
-                <PedidoRow
-                  key={pedido.id}
-                  pedido={pedido}
-                  isSelected={selectedPedidos.includes(pedido.id)}
-                  onToggleSelect={() => onToggleSelect(pedido.id)}
-                  onReenviarNotificacion={onReenviarNotificacion}
-                  onContactarPendiente={onContactarPendiente}
-                  onMarcarNotificado={onMarcarNotificado}
-                  onDescargarEtiqueta={onDescargarEtiqueta}
-                  onDescartarEtiqueta={onDescartarEtiqueta}
-                  onPreviewEtiqueta={setPreviewPedido}
-                  onProcesarDirecto={onProcesarDirecto}
-                  fulfillmentPreview={fulfillmentPreview}
-                  channelPriority={channelPriority}
-                  showNotifyColumn={showNotifyColumn}
-                  showTrackingColumn={showTrackingColumn}
-                  showProcesarButton={showProcesarButton}
-                  activeTrackingTemplate={activeTrackingTemplate}
-                  activeContactTemplate={activeContactTemplate}
-                  modoPendienteContacto={modoPendienteContacto}
-                  allowRedownload={allowRedownload}
-                />
-              ))
+              pedidosToRender.map(pedido => {
+                const isMerged = Boolean(pedido._mergedIds);
+                const isSelected = isMerged
+                  ? pedido._mergedIds.every(id => selectedPedidos.includes(id))
+                  : selectedPedidos.includes(pedido.id);
+                const handleToggle = isMerged
+                  ? () => {
+                      const allSel = pedido._mergedIds.every(id => selectedPedidos.includes(id));
+                      pedido._mergedIds.forEach(id => {
+                        const isSel = selectedPedidos.includes(id);
+                        if (allSel && isSel) onToggleSelect(id);
+                        else if (!allSel && !isSel) onToggleSelect(id);
+                      });
+                    }
+                  : () => onToggleSelect(pedido.id);
+                return (
+                  <PedidoRow
+                    key={pedido._mergedIds ? pedido._mergedIds.join('-') : pedido.id}
+                    pedido={pedido}
+                    isSelected={isSelected}
+                    onToggleSelect={handleToggle}
+                    onReenviarNotificacion={onReenviarNotificacion}
+                    onContactarPendiente={onContactarPendiente}
+                    onMarcarNotificado={onMarcarNotificado}
+                    onDescargarEtiqueta={onDescargarEtiqueta}
+                    onDescartarEtiqueta={onDescartarEtiqueta}
+                    onPreviewEtiqueta={setPreviewPedido}
+                    onProcesarDirecto={onProcesarDirecto}
+                    fulfillmentPreview={fulfillmentPreview}
+                    channelPriority={channelPriority}
+                    showNotifyColumn={showNotifyColumn}
+                    showTrackingColumn={showTrackingColumn}
+                    showProcesarButton={showProcesarButton}
+                    activeTrackingTemplate={activeTrackingTemplate}
+                    activeContactTemplate={activeContactTemplate}
+                    modoPendienteContacto={modoPendienteContacto}
+                    allowRedownload={allowRedownload}
+                  />
+                );
+              })
             )}
           </tbody>
         </table>
@@ -261,9 +310,11 @@ function PedidoRow({
   };
 
   const esReclamo = Boolean(pedido.es_reclamo);
+  const esDuplicateTracking = Boolean(pedido._isDuplicateTracking);
   const rowClass = [
     fueNotificado ? 'pedidos-row-notified' : '',
     esReclamo ? 'pedidos-row-reclamo' : '',
+    esDuplicateTracking ? 'pedidos-row-duplicate-tracking' : '',
   ].filter(Boolean).join(' ');
 
   return (
@@ -279,6 +330,11 @@ function PedidoRow({
         <span className="pedido-number-cell">
           {fueNotificado && <span className="pedido-notified-check">✓</span>}
           <span>{pedido.numero_pedido || pedido.id?.substring(0, 8)}</span>
+          {esDuplicateTracking && (
+            <span className="pedido-duplicate-tracking-badge" title="Estos pedidos comparten el mismo número de seguimiento">
+              📦 mismo tracking
+            </span>
+          )}
           {esReclamo && <span className="pedido-reclamo-badge" title="Pedido con reclamo asociado">🔄 Reclamo</span>}
           {pedido.etiqueta_impresa && <span className="pedido-impresa-badge" title="Etiqueta ya impresa">🖨️</span>}
         </span>
@@ -391,10 +447,11 @@ function PedidoRow({
           <button
             className="btn btn-success btn-sm"
             onClick={async () => {
-              try { await onProcesarDirecto?.(pedido.id); }
-              catch (e) { console.error('Error procesando pedido', pedido.id, e); }
+              const ids = pedido._mergedIds || [pedido.id];
+              try { await onProcesarDirecto?.(ids); }
+              catch (e) { console.error('Error procesando pedido', ids, e); }
             }}
-            title="Marcar como procesado (fulfillment ya hecho en Shopify)"
+            title={pedido._mergedIds ? `Marcar ${pedido._mergedIds.length} pedidos como procesados` : 'Marcar como procesado (fulfillment ya hecho en Shopify)'}
           >
             ✅ Procesar
           </button>

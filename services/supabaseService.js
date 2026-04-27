@@ -901,10 +901,10 @@ class SupabaseService {
               cliente_nombre: `${orden.customer?.first_name || ''} ${orden.customer?.last_name || ''}`.trim(),
               cliente_email: orden.customer?.email || '',
               cliente_telefono: orden.customer?.phone || orden.shipping_address?.phone || '',
-              direccion_calle: orden.shipping_address?.address1 || '',
-              direccion_ciudad: orden.shipping_address?.city || '',
-              direccion_departamento: orden.shipping_address?.province || '',
-              direccion_codigo_postal: orden.shipping_address?.zip || '',
+              direccion_envio: orden.shipping_address?.address1 || '',
+              localidad: orden.shipping_address?.city || '',
+              departamento: orden.shipping_address?.province || '',
+              codigo_postal: orden.shipping_address?.zip || '',
               estado: 'pendiente',
               tipo_envio: tipoEnvio,
               created_at: new Date().toISOString(),
@@ -1255,6 +1255,24 @@ class SupabaseService {
       monto_por_pedido: monto,
       total: monto * pedidos.length,
     };
+  }
+
+  // ── contact_motivations ─────────────────────────────────────────────────────
+  async obtenerMotivaciones() {
+    const { data, error } = await supabase
+      .from('contact_motivations')
+      .select('phone, name, motivation, categoria, stage, summary_hash, analyzed_at')
+      .order('analyzed_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  }
+
+  async upsertMotivaciones(rows) {
+    if (!rows || rows.length === 0) return;
+    const { error } = await supabase
+      .from('contact_motivations')
+      .upsert(rows, { onConflict: 'phone' });
+    if (error) throw error;
   }
 }
 

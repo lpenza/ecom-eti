@@ -1487,22 +1487,22 @@ app.post('/api/marcar-procesados-bulk', requireAuth, async (req, res) => {
 // Debe hacer solo lo necesario para que figuren en Despachados, sin efectos extra.
 app.post('/api/marcar-armados-bulk', requireAuth, async (req, res) => {
   try {
-    const { pedidoIds } = req.body;
+    const { pedidoIds, idsSecundarios = [] } = req.body;
     if (!Array.isArray(pedidoIds) || pedidoIds.length === 0) {
       return res.status(400).json({ success: false, error: 'pedidoIds requerido' });
     }
 
     const despachadorNombre = req.user?.nombre || req.user?.email || null;
-  const armadoAt = new Date().toISOString();
+    const armadoAt = new Date().toISOString();
 
-    const resultados = await Promise.all(
+    // Primarios: cuentan para comisión del armador
+    const resultadosPrimarios = await Promise.all(
       pedidoIds.map(async (pedidoId) => {
         try {
           await supabaseService.actualizarPedido(pedidoId, {
             estado: 'despachado',
             despachado_por_nombre: despachadorNombre,
             armado_at: armadoAt,
-            // Armado es intermedio: no marca notificacion enviada ni toca Shopify.
             notificacion_enviada_at: null,
           });
           return { pedidoId, success: true };
@@ -1513,9 +1513,27 @@ app.post('/api/marcar-armados-bulk', requireAuth, async (req, res) => {
       })
     );
 
-    const ok = resultados.filter((r) => r.success).length;
-    logService.info(`Marcados como armados: ${ok}/${pedidoIds.length}`);
-    res.json({ success: true, ok, total: pedidoIds.length, resultados });
+    // Secundarios: mismo tracking que un primario, no cuentan para comisión
+    if (idsSecundarios.length > 0) {
+      await Promise.all(
+        idsSecundarios.map(async (pedidoId) => {
+          try {
+            await supabaseService.actualizarPedido(pedidoId, {
+              estado: 'despachado',
+              despachado_por_nombre: null,
+              armado_at: armadoAt,
+              notificacion_enviada_at: null,
+            });
+          } catch (err) {
+            logService.warning(`No se pudo marcar secundario como armado pedido ${pedidoId}: ${err.message}`);
+          }
+        })
+      );
+    }
+
+    const ok = resultadosPrimarios.filter((r) => r.success).length;
+    logService.info(`Marcados como armados: ${ok}/${pedidoIds.length} (+ ${idsSecundarios.length} secundarios sin comisión)`);
+    res.json({ success: true, ok, total: pedidoIds.length, resultados: resultadosPrimarios });
   } catch (error) {
     logService.error('Error en marcar-armados-bulk', error);
     res.status(500).json({ success: false, error: error.message });
@@ -2107,7 +2125,220 @@ app.get('/api/feedback/dashboard', async (req, res) => {
   }
 });
 
-const VALID_CUSTOMER_STATES = new Set(['happy', 'neutral', 'issue', 'repeat']);
+// ── Razones de compra: clasificación por diccionario (sin API externa) ────────
+
+// Normaliza texto para comparar: minúsculas + sin tildes
+function normalizarParaMatch(str) {
+  return String(str || '')
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Diccionario: cada categoría tiene sus palabras/frases clave
+// Orden importa: las más específicas van primero (mayor prioridad)
+const MOTIVACION_DICT = [
+  {
+    categoria: 'se come o muerde las uñas',
+    keywords: [
+      'come las una', 'muerde las una', 'comerse las una', 'morderse las una',
+      'se come las', 'se muerde las', 'las muerde', 'se come la una',
+      'onicofagia', 'habito de comer', 'deja de comer', 'dejar de comer',
+      'parar de comerse', 'dejar el habito de', 'comido las unas',
+    ],
+  },
+  {
+    categoria: 'cambiar hábitos',
+    keywords: [
+      'cambiar el habito', 'cambiar habito', 'dejar el habito', 'dejar la costumbre',
+      'dejar de morderse', 'dejar de comerse', 'ansiedad', 'nervios', 'estres',
+      'cuando se estresa', 'cuando se pone nerviosa', 'vicio', 'habito nervioso',
+      'habito de ansiedad',
+    ],
+  },
+  {
+    categoria: 'uñas dañadas o débiles',
+    keywords: [
+      'danada', 'daniada', 'debil', 'quebradiz', 'maltratad', 'fragil',
+      'se rompen', 'se quiebran', 'se parten', 'muy blanda', 'amarilla',
+      'daño del gel', 'dano del gel', 'daño por gel', 'dano por gel',
+      'daño del acrilico', 'por el gel anterior', 'mal del gel',
+      'lastimada', 'deteriorada', 'estropeada', 'daño previo',
+    ],
+  },
+  {
+    categoria: 'uñas cortas o que no crecen',
+    keywords: [
+      'no le crecen', 'no crecen', 'no le crece', 'no crece',
+      'quiere alargar', 'alargar las una', 'alargar la una',
+      'mas largas', 'tener largo', 'sin largo', 'extension de una',
+      'extensiones', 'elongar', 'no tiene largo', 'unas cortas',
+    ],
+  },
+  {
+    categoria: 'prolijas para el trabajo',
+    keywords: [
+      'para el trabajo', 'para trabajar', 'laboral', 'para la oficina',
+      'presentacion laboral', 'presentarse bien', 'entorno profesional',
+      'trabajo de', 'para su trabajo', 'manos prolijas para',
+      'veterinaria', 'enfermera', 'medica', 'doctora', 'maestra',
+      'docente', 'administrativa', 'cajera', 'recepcionista',
+    ],
+  },
+  {
+    categoria: 'ocasión especial',
+    keywords: [
+      'casamiento', 'boda', 'quince anos', 'quinceañera', 'quinceanera',
+      'cumpleanos', 'evento', 'fiesta', 'graduacion', 'egresada',
+      'baile', 'prom', 'primera comunion', 'ceremonia', 'fotografia',
+      'sesion de fotos', 'sesion foto', 'viaje', 'vacaciones',
+    ],
+  },
+  {
+    categoria: 'regalo o sorpresa',
+    keywords: [
+      'regalo', 'regalar', 'sorpresa', 'obsequio',
+      'para su mama', 'para mi mama', 'para su hija', 'para mi hija',
+      'para su amiga', 'para mi amiga', 'para su hermana',
+      'dia de la madre', 'navidad', 'san valentin', 'dia de la mujer',
+      'cumple de su', 'cumple de mi',
+    ],
+  },
+  {
+    categoria: 'curiosidad o exploración',
+    keywords: [
+      'curiosidad', 'quiere conocer', 'quiere probar', 'primera vez',
+      'nunca uso', 'nunca habia usado', 'vio en instagram', 'vio en redes',
+      'le recomendaron', 'le comentaron', 'escucho de', 'vio en tiktok',
+      'alguien le dijo', 'le hablo de', 'interesada en conocer',
+    ],
+  },
+  {
+    categoria: 'cuidado y estética',
+    keywords: [
+      'cuidar las unas', 'cuidado de las unas', 'estetica',
+      'diseños', 'disenios', 'colores', 'decoracion', 'esmaltado',
+      'manicura', 'manicure', 'tratamiento', 'fortalecer',
+      'hidratacion', 'aceite de cuticula', 'cuticula',
+      'unas bonitas', 'unas lindas', 'manos bonitas', 'manos lindas',
+      'verse bien', 'lucir bien',
+    ],
+  },
+];
+
+// Extrae la oración del resumen más relevante para la categoría detectada
+function extraerOracion(texto, keywords) {
+  const oraciones = texto.split(/(?<=[.!?])\s+|,\s+(?=[A-ZÁÉÍÓÚ])/);
+  const normalTexto = normalizarParaMatch(texto);
+
+  let mejorOracion = '';
+  let mejorPuntaje = 0;
+
+  for (const oracion of oraciones) {
+    const normOracion = normalizarParaMatch(oracion);
+    const puntaje = keywords.filter((kw) => normOracion.includes(kw)).length;
+    if (puntaje > mejorPuntaje) {
+      mejorPuntaje = puntaje;
+      mejorOracion = oracion.trim();
+    }
+  }
+
+  // Si ninguna oración matcheó, devolver la primera oración del resumen
+  if (!mejorOracion) {
+    mejorOracion = oraciones[0]?.trim() || texto.slice(0, 120);
+  }
+
+  return mejorOracion.length > 140 ? mejorOracion.slice(0, 137) + '…' : mejorOracion;
+}
+
+// Clasifica un contacto usando el diccionario. Sin llamadas externas.
+function clasificarContacto(contact) {
+  const raw = (contact.profile_summary || '').trim();
+  const normalizado = normalizarParaMatch(raw);
+
+  let mejorCategoria = 'otro';
+  let mejorPuntaje = 0;
+  let mejorKeywords = [];
+
+  for (const { categoria, keywords } of MOTIVACION_DICT) {
+    const hits = keywords.filter((kw) => normalizado.includes(kw));
+    if (hits.length > mejorPuntaje) {
+      mejorPuntaje = hits.length;
+      mejorCategoria = categoria;
+      mejorKeywords = hits;
+    }
+  }
+
+  return {
+    categoria: mejorCategoria,
+    motivacion: extraerOracion(raw, mejorKeywords),
+  };
+}
+
+let purchaseReasonsCache = null;
+let purchaseReasonsCacheTime = 0;
+const PURCHASE_REASONS_CACHE_MS = 30 * 60 * 1000;
+
+app.get('/api/feedback/purchase-reasons', async (req, res) => {
+  try {
+    const forceRefresh = req.query.refresh === 'true';
+    const cacheValid =
+      purchaseReasonsCache &&
+      Date.now() - purchaseReasonsCacheTime < PURCHASE_REASONS_CACHE_MS;
+
+    if (!forceRefresh && cacheValid) {
+      return res.json({ success: true, data: purchaseReasonsCache, cached: true });
+    }
+
+    // 1. Cargar contactos desde Redis
+    const botContacts = await loadBotContactsFromRedis();
+    const withSummary = botContacts.filter(
+      (c) => c.profile_summary && c.profile_summary.trim().length > 20
+    );
+
+    if (withSummary.length === 0) {
+      return res.json({
+        success: true,
+        data: { motivations: [], categories: {}, totalAnalyzed: 0 },
+        cached: false,
+      });
+    }
+
+    // 2. Clasificar cada contacto con el diccionario (instantáneo, sin API)
+    const motivations = withSummary.map((c) => {
+      const { categoria, motivacion } = clasificarContacto(c);
+      return {
+        phone: String(c.phone || '').slice(-4),
+        name: c.customer_name || c.name || '',
+        motivation: motivacion,
+        categoria,
+        stage: c.stage || null,
+      };
+    });
+
+    // 3. Agregar por categoría
+    const categories = {};
+    for (const m of motivations) {
+      const cat = m.categoria || 'otro';
+      if (!categories[cat]) categories[cat] = { count: 0, examples: [] };
+      categories[cat].count++;
+      if (categories[cat].examples.length < 5) categories[cat].examples.push(m.motivation);
+    }
+
+    const data = { motivations, categories, totalAnalyzed: motivations.length };
+    purchaseReasonsCache = data;
+    purchaseReasonsCacheTime = Date.now();
+
+    return res.json({ success: true, data, cached: false });
+  } catch (error) {
+    logService.error('Error analizando razones de compra', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+const VALID_CUSTOMER_STATES = new Set(['happy', 'neutral', 'issue', 'repeat', 'no_lo_uso']);
 
 app.patch('/api/customers/:customerId/state', async (req, res) => {
   try {

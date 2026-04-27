@@ -262,6 +262,11 @@ export async function obtenerFeedbackDashboard({ days = 30, from = '', to = '' }
   return await fetchAPI(`/feedback/dashboard?${params.toString()}`, { method: 'GET' });
 }
 
+export async function analizarRazonesCompra(force = false) {
+  const qs = force ? '?refresh=true' : '';
+  return await fetchAPI(`/feedback/purchase-reasons${qs}`, { method: 'GET' });
+}
+
 export async function actualizarEstadoCliente(customerId, state) {
   return await fetchAPI(`/customers/${encodeURIComponent(customerId)}/state`, {
     method: 'PATCH',
@@ -438,10 +443,10 @@ export async function marcarProcesados(pedidoIds) {
 /**
  * Marcar pedidos como armados (estado intermedio) para que aparezcan en Despachados.
  */
-export async function marcarArmados(pedidoIds) {
+export async function marcarArmados(pedidoIds, idsSecundarios = []) {
   return await fetchAPI('/marcar-armados-bulk', {
     method: 'POST',
-    body: JSON.stringify({ pedidoIds }),
+    body: JSON.stringify({ pedidoIds, idsSecundarios }),
   });
 }
 

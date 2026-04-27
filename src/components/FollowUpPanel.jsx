@@ -13,6 +13,7 @@ const CUSTOMER_STATES = [
   { value: 'neutral', label: 'Neutral' },
   { value: 'issue', label: 'Issue' },
   { value: 'repeat', label: 'Repeat' },
+  { value: 'no_lo_uso', label: 'No lo uso aún' },
 ];
 
 const CUSTOMER_STATE_META = {
@@ -20,6 +21,7 @@ const CUSTOMER_STATE_META = {
   neutral: { label: 'Neutral', className: 'state-neutral' },
   issue: { label: 'Problema', className: 'state-issue' },
   repeat: { label: 'Recurrente', className: 'state-repeat' },
+  no_lo_uso: { label: 'No lo uso aún', className: 'state-no-uso' },
 };
 
 function getTodayIso() {
@@ -829,6 +831,7 @@ function FollowUpPanel({
                                   <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleCambiarEstadoCliente(pedido, 'neutral')}>Marcar como Neutral</button>
                                   <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleCambiarEstadoCliente(pedido, 'issue')}>Marcar como Problema</button>
                                   <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleCambiarEstadoCliente(pedido, 'repeat')}>Marcar como Recurrente</button>
+                                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => handleCambiarEstadoCliente(pedido, 'no_lo_uso')}>No lo uso aún</button>
                                   <button type="button" className="btn btn-secondary btn-sm" onClick={() => openNotes(pedido)}>Agregar Nota</button>
                                 </div>
                               </details>

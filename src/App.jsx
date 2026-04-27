@@ -2110,10 +2110,11 @@ function AppContent({ user, logout }) {
               onDescargarEtiqueta={handleDescargarEtiqueta}
               onDescartarEtiqueta={handleDescartarEtiqueta}
               onProcesarDirecto={async (pedidoId) => {
+                const ids = Array.isArray(pedidoId) ? pedidoId : [pedidoId];
                 try {
-                  const resultado = await marcarProcesados([pedidoId]);
+                  const resultado = await marcarProcesados(ids);
                   if (!resultado.success) { mostrarToast(resultado.error || 'Error al procesar', 'error'); return; }
-                  mostrarToast('✅ Pedido marcado como procesado', 'success');
+                  mostrarToast(ids.length > 1 ? `✅ ${ids.length} pedidos marcados como procesados` : '✅ Pedido marcado como procesado', 'success');
                   cargarPedidosDespachados();
                   cargarPedidosEnviados();
                 } catch (err) {
@@ -2126,6 +2127,7 @@ function AppContent({ user, logout }) {
               showNotifyColumn={tableFilter !== 'porValidar'}
               showTrackingColumn={tableFilter !== 'porValidar'}
               showProcesarButton={tableFilter === 'despachados'}
+              groupByTracking={tableFilter === 'etiquetasGeneradas'}
               activeTrackingTemplate={templatesWhatsapp.find((t) => t.id === activeTrackingTemplateId)}
               activeContactTemplate={templatesWhatsapp.find((t) => t.id === activeTrackingTemplateId)}
               modoPendienteContacto={tableFilter === 'pendientesContacto'}
@@ -2337,10 +2339,10 @@ function AppContent({ user, logout }) {
         <ArmadorPanel
           pedidos={pedidosArmadoOperario}
           onActualizar={cargarPedidosArmadoOperario}
-          onMarcarArmadoBulk={async (pedidoIds) => {
-            const resultado = await marcarArmados(pedidoIds);
+          onMarcarArmadoBulk={async (primaryIds, secondaryIds = []) => {
+            const resultado = await marcarArmados(primaryIds, secondaryIds);
             if (!resultado.success) { mostrarToast(resultado.error || 'Error al marcar pedidos', 'error'); return; }
-            const ok = resultado.ok ?? resultado.resultados?.filter((r) => r.success).length ?? pedidoIds.length;
+            const ok = resultado.ok ?? resultado.resultados?.filter((r) => r.success).length ?? primaryIds.length;
             mostrarToast(`${ok} pedido(s) marcados como armados`, 'success');
             await Promise.all([cargarPedidosArmadoOperario(), cargarPedidosDespachados()]);
           }}

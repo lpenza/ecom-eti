@@ -17,9 +17,20 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
     if (lineItemsByPedido[p.id]) return;
     setLoadingId(p.id);
     try {
-      const res = await obtenerDetallePedido(p.numero_pedido);
-      if (!res.success) throw new Error(res.error || 'Error al obtener detalle');
-      setLineItemsByPedido((prev) => ({ ...prev, [p.id]: res.lineItems || [] }));
+      if (p._mergedPedidos) {
+        const allItems = [];
+        for (const mp of p._mergedPedidos) {
+          const res = await obtenerDetallePedido(mp.numero_pedido);
+          if (res.success) {
+            allItems.push(...(res.lineItems || []).map(item => ({ ...item, _fromPedido: mp.numero_pedido })));
+          }
+        }
+        setLineItemsByPedido((prev) => ({ ...prev, [p.id]: allItems }));
+      } else {
+        const res = await obtenerDetallePedido(p.numero_pedido);
+        if (!res.success) throw new Error(res.error || 'Error al obtener detalle');
+        setLineItemsByPedido((prev) => ({ ...prev, [p.id]: res.lineItems || [] }));
+      }
     } catch (e) {
       setErrorByPedido((prev) => ({ ...prev, [p.id]: e.message }));
     } finally {
@@ -36,7 +47,8 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
   const error = pedido ? errorByPedido[pedido.id] : null;
   const isLoading = loadingId === pedido?.id;
   const allChecked = lineItems.length > 0 && lineItems.every((item) => checked.has(item.id));
-  const isConfirmed = pedido ? confirmedIds.has(pedido.id) : false;
+  const allIdsForPedido = (p) => p?._mergedIds || (p ? [p.id] : []);
+  const isConfirmed = pedido ? allIdsForPedido(pedido).every(id => confirmedIds.has(id)) : false;
 
   const toggleItem = (itemId) => {
     const pid = pedido.id;
@@ -57,38 +69,46 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
     }
   };
 
-  const getReadyIds = () => pedidos
-    .filter((p) => {
-      if (confirmedIds.has(p.id) || errorByPedido[p.id]) return false;
+  const getReadyIds = () => {
+    const primaryIds = [];
+    const secondaryIds = [];
+    for (const p of pedidos) {
+      if (errorByPedido[p.id]) continue;
+      if (allIdsForPedido(p).every(id => confirmedIds.has(id))) continue;
       const items = lineItemsByPedido[p.id] || [];
-      if (items.length === 0) return false;
+      if (items.length === 0) continue;
       const checkedSet = checkedByPedido[p.id] || new Set();
-      return checkedSet.size === items.length;
-    })
-    .map((p) => p.id);
+      if (checkedSet.size === items.length) {
+        const ids = allIdsForPedido(p);
+        primaryIds.push(ids[0]);
+        secondaryIds.push(...ids.slice(1));
+      }
+    }
+    return { primaryIds, secondaryIds };
+  };
 
   const handleConfirmar = async () => {
-    const readyIds = getReadyIds();
-    if (readyIds.length === 0) return;
+    const { primaryIds, secondaryIds } = getReadyIds();
+    if (primaryIds.length === 0) return;
 
     setConfirmingId('__batch__');
     try {
-      await onConfirmarListos(readyIds);
+      await onConfirmarListos(primaryIds, secondaryIds);
 
       const nextConfirmed = new Set(confirmedIds);
-      readyIds.forEach((id) => nextConfirmed.add(id));
+      [...primaryIds, ...secondaryIds].forEach((id) => nextConfirmed.add(id));
       setConfirmedIds(nextConfirmed);
       setJustConfirmedId(pedido.id);
 
       // Pequeña pausa para que el operario vea feedback positivo antes de avanzar/cerrar.
       await new Promise((resolve) => setTimeout(resolve, 700));
 
-      const next = pedidos.findIndex((p, i) => i > index && !nextConfirmed.has(p.id));
+      const next = pedidos.findIndex((p, i) => i > index && !allIdsForPedido(p).every(id => nextConfirmed.has(id)));
       if (next >= 0) {
         setJustConfirmedId(null);
         setIndex(next);
       } else {
-        const anyLeft = pedidos.some((p) => !nextConfirmed.has(p.id));
+        const anyLeft = pedidos.some((p) => !allIdsForPedido(p).every(id => nextConfirmed.has(id)));
         if (!anyLeft) onClose();
       }
     } finally {
@@ -96,11 +116,11 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
     }
   };
 
-  const totalConfirmados = confirmedIds.size;
   const totalPedidos = pedidos.length;
+  const totalConfirmados = pedidos.filter(p => allIdsForPedido(p).every(id => confirmedIds.has(id))).length;
 
   const getSidebarStatus = (p) => {
-    if (confirmedIds.has(p.id)) return { label: 'Armado', tone: 'ok' };
+    if (allIdsForPedido(p).every(id => confirmedIds.has(id))) return { label: 'Armado', tone: 'ok' };
     if (errorByPedido[p.id]) return { label: 'Error', tone: 'error' };
     if (loadingId === p.id) return { label: 'Cargando...', tone: 'loading' };
     const items = lineItemsByPedido[p.id];
@@ -113,9 +133,10 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
 
   if (!pedido) return null;
 
-  const readyCount = getReadyIds().length;
+  const { primaryIds: readyPrimaryIds } = getReadyIds();
+  const readyCount = readyPrimaryIds.length;
   const canConfirmar = readyCount > 0 && !confirmingId;
-  const isLast = pedidos.findIndex((p, i) => i > index && !confirmedIds.has(p.id)) < 0;
+  const isLast = pedidos.findIndex((p, i) => i > index && !allIdsForPedido(p).every(id => confirmedIds.has(id))) < 0;
 
   return (
     <div className="modal modal-open">
@@ -217,7 +238,7 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
 
               {/* Contenido: items */}
               <div className="preview-section" style={{ borderLeftColor: '#7b2f4d' }}>
-                <h4>Contenido del pedido</h4>
+                <h4>Contenido del pedido{pedido._isDuplicateTracking ? ` (${pedido._mergedPedidos.length} pedidos con mismo tracking)` : ''}</h4>
 
                 {isLoading && (
                   <div style={{ padding: '1rem', color: '#64748b' }}>Cargando contenido desde Shopify...</div>
@@ -259,6 +280,9 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
                                   )}
                                   {item.sku && (
                                     <span style={{ display: 'block', fontSize: '0.74rem', color: '#94a3b8' }}>SKU: {item.sku}</span>
+                                  )}
+                                  {item._fromPedido && (
+                                    <span style={{ display: 'block', fontSize: '0.72rem', color: '#b45309', fontWeight: 600 }}>Pedido #{item._fromPedido}</span>
                                   )}
                                 </span>
                                 <span style={{ fontWeight: 700, color: '#7b2f4d', whiteSpace: 'nowrap' }}>x{item.quantity}</span>
