@@ -245,16 +245,22 @@ function stateTone(rawState) {
   return STATE_META[String(rawState || '').trim().toLowerCase()]?.tone || 'neutral';
 }
 
+const PER_PAGE = 15;
+
 function CampaignContactsList({ contacts = [], campaignSent = 0 }) {
   const [filter, setFilter] = useState('todos');
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState(null);
+  const [page, setPage] = useState(1);
+
+  const isNoLoUso = (c) => String(c.state || '').toLowerCase() === 'no_lo_uso';
 
   const filtered = contacts.filter((c) => {
     if (filter === 'respondio'     && !c.responded) return false;
     if (filter === 'sin_respuesta' && c.responded)  return false;
     if (filter === 'positivo'      && stateTone(c.state) !== 'positive') return false;
     if (filter === 'negativo'      && stateTone(c.state) !== 'negative') return false;
+    if (filter === 'no_lo_uso'     && !isNoLoUso(c)) return false;
     if (search) {
       const q = search.toLowerCase();
       if (!String(c.name || '').toLowerCase().includes(q) && !String(c.phone || '').includes(q)) return false;
@@ -262,12 +268,34 @@ function CampaignContactsList({ contacts = [], campaignSent = 0 }) {
     return true;
   });
 
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
+  const safePage   = Math.min(page, totalPages);
+  const pageItems  = filtered.slice((safePage - 1) * PER_PAGE, safePage * PER_PAGE);
+
+  const changePage = (next) => {
+    setPage(next);
+    setExpanded(null);
+  };
+
+  const changeFilter = (key) => {
+    setFilter(key);
+    setPage(1);
+    setExpanded(null);
+  };
+
+  const changeSearch = (val) => {
+    setSearch(val);
+    setPage(1);
+    setExpanded(null);
+  };
+
   const counts = {
     todos:         contacts.length,
     respondio:     contacts.filter((c) => c.responded).length,
     sin_respuesta: contacts.filter((c) => !c.responded).length,
     positivo:      contacts.filter((c) => stateTone(c.state) === 'positive').length,
     negativo:      contacts.filter((c) => stateTone(c.state) === 'negative').length,
+    no_lo_uso:     contacts.filter(isNoLoUso).length,
   };
 
   return (
@@ -279,7 +307,7 @@ function CampaignContactsList({ contacts = [], campaignSent = 0 }) {
           className="module-input fdx-contacts-search"
           placeholder="Buscar por nombre o teléfono..."
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => changeSearch(e.target.value)}
         />
       </div>
 
@@ -290,12 +318,13 @@ function CampaignContactsList({ contacts = [], campaignSent = 0 }) {
           { key: 'sin_respuesta', label: 'Sin respuesta' },
           { key: 'positivo',      label: '😊 Positivo' },
           { key: 'negativo',      label: '😤 Negativo' },
+          { key: 'no_lo_uso',     label: '⏳ Aún no lo usan' },
         ].map(({ key, label }) => (
           <button
             key={key}
             type="button"
-            className={`fdx-filter-chip${filter === key ? ' is-active' : ''}`}
-            onClick={() => setFilter(key)}
+            className={`fdx-filter-chip${filter === key ? ' is-active' : ''}${key === 'no_lo_uso' ? ' fdx-filter-chip--nlu' : ''}`}
+            onClick={() => changeFilter(key)}
           >
             {label} <span>{counts[key]}</span>
           </button>
@@ -305,89 +334,134 @@ function CampaignContactsList({ contacts = [], campaignSent = 0 }) {
       {filtered.length === 0 ? (
         <p className="fdx-contacts-empty">No hay resultados para este filtro.</p>
       ) : (
-        <ul className="fdx-contacts-list">
-          {filtered.map((c) => {
-            const isOpen = expanded === c.customerId;
-            return (
-              <li key={c.customerId} className={`fdx-contact-row${isOpen ? ' is-open' : ''}`}>
-                {/* Fila principal — siempre 5 columnas fijas */}
-                <button
-                  type="button"
-                  className="fdx-contact-main"
-                  onClick={() => setExpanded(isOpen ? null : c.customerId)}
-                  aria-expanded={isOpen}
-                >
-                  <span className="fdx-contact-name">{c.name}</span>
-                  <span className="fdx-contact-phone">{maskPhone(c.phone)}</span>
-                  <span className="fdx-contact-state-col">
-                    <StateBadge state={c.state} />
-                    {c.requiresHuman && <span className="fdx-contact-human">👤</span>}
-                  </span>
-                  <span className={`fdx-contact-responded ${c.responded ? 'yes' : 'no'}`}>
-                    {c.responded ? '✓ Respondió' : '✗ Sin resp.'}
-                  </span>
-                  <span className="fdx-contact-date">{formatRelativeDate(c.followupSentAt)}</span>
-                </button>
+        <>
+          <ul className="fdx-contacts-list">
+            {pageItems.map((c) => {
+              const isOpen = expanded === c.customerId;
+              return (
+                <li key={c.customerId} className={`fdx-contact-row${isOpen ? ' is-open' : ''}`}>
+                  <button
+                    type="button"
+                    className="fdx-contact-main"
+                    onClick={() => setExpanded(isOpen ? null : c.customerId)}
+                    aria-expanded={isOpen}
+                  >
+                    <span className="fdx-contact-name">{c.name}</span>
+                    <span className="fdx-contact-phone">{maskPhone(c.phone)}</span>
+                    <span className="fdx-contact-state-col">
+                      <StateBadge state={c.state} />
+                      {c.requiresHuman && <span className="fdx-contact-human">👤</span>}
+                    </span>
+                    <span className={`fdx-contact-responded ${c.responded ? 'yes' : 'no'}`}>
+                      {c.responded ? '✓ Respondió' : '✗ Sin resp.'}
+                    </span>
+                    <span className="fdx-contact-date">{formatRelativeDate(c.followupSentAt)}</span>
+                  </button>
 
-                {/* Panel expandido */}
-                {isOpen && (
-                  <div className="fdx-contact-detail">
-                    <div className="fdx-contact-dates">
-                      <div className="fdx-contact-date-item">
-                        <span className="fdx-date-label">Feedback enviado</span>
-                        <span className="fdx-date-value">{formatRelativeDate(c.followupSentAt)}</span>
-                      </div>
-                      <div className="fdx-contact-date-item">
-                        <span className="fdx-date-label">Estado actualizado</span>
-                        <span className="fdx-date-value">{c.stateUpdatedAt ? formatRelativeDate(c.stateUpdatedAt) : '—'}</span>
-                        {c.stateSource && (
-                          <span className="fdx-source-tag">{c.stateSource === 'db' ? 'Manual' : 'Bot'}</span>
+                  {isOpen && (
+                    <div className="fdx-contact-detail">
+                      <div className="fdx-contact-dates">
+                        <div className="fdx-contact-date-item">
+                          <span className="fdx-date-label">Feedback enviado</span>
+                          <span className="fdx-date-value">{formatRelativeDate(c.followupSentAt)}</span>
+                        </div>
+                        <div className="fdx-contact-date-item">
+                          <span className="fdx-date-label">Estado actualizado</span>
+                          <span className="fdx-date-value">{c.stateUpdatedAt ? formatRelativeDate(c.stateUpdatedAt) : '—'}</span>
+                          {c.stateSource && (
+                            <span className="fdx-source-tag">{c.stateSource === 'db' ? 'Manual' : 'Bot'}</span>
+                          )}
+                        </div>
+                        {c.lastMessageAt && (
+                          <div className="fdx-contact-date-item">
+                            <span className="fdx-date-label">Último WhatsApp</span>
+                            <span className="fdx-date-value">{formatRelativeDate(c.lastMessageAt)}</span>
+                          </div>
+                        )}
+                        {c.orderCount > 1 && (
+                          <div className="fdx-contact-date-item">
+                            <span className="fdx-date-label">Pedidos en período</span>
+                            <span className="fdx-date-value">{c.orderCount}</span>
+                          </div>
                         )}
                       </div>
-                      {c.lastMessageAt && (
-                        <div className="fdx-contact-date-item">
-                          <span className="fdx-date-label">Último WhatsApp</span>
-                          <span className="fdx-date-value">{formatRelativeDate(c.lastMessageAt)}</span>
+
+                      {c.notes && c.notes.length > 0 && (
+                        <div className="fdx-contact-notes">
+                          <span className="fdx-notes-title">Notas ({c.notes.length})</span>
+                          <ul>
+                            {c.notes.map((n) => (
+                              <li key={n.id}>
+                                <span className="fdx-note-content">{n.content}</span>
+                                <time className="fdx-note-date">{formatRelativeDate(n.created_at)}</time>
+                              </li>
+                            ))}
+                          </ul>
                         </div>
                       )}
-                      {c.orderCount > 1 && (
-                        <div className="fdx-contact-date-item">
-                          <span className="fdx-date-label">Pedidos en período</span>
-                          <span className="fdx-date-value">{c.orderCount}</span>
-                        </div>
+
+                      {!c.notes?.length && !c.stateUpdatedAt && (
+                        <p className="fdx-contact-nodata">Sin notas ni estado registrado en base de datos.</p>
+                      )}
+
+                      {c.profileSummary && (
+                        <details className="fdx-contact-summary">
+                          <summary>Ver perfil del bot</summary>
+                          <p>{c.profileSummary}</p>
+                        </details>
                       )}
                     </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
 
-                    {c.notes && c.notes.length > 0 && (
-                      <div className="fdx-contact-notes">
-                        <span className="fdx-notes-title">Notas ({c.notes.length})</span>
-                        <ul>
-                          {c.notes.map((n) => (
-                            <li key={n.id}>
-                              <span className="fdx-note-content">{n.content}</span>
-                              <time className="fdx-note-date">{formatRelativeDate(n.created_at)}</time>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-
-                    {!c.notes?.length && !c.stateUpdatedAt && (
-                      <p className="fdx-contact-nodata">Sin notas ni estado registrado en base de datos.</p>
-                    )}
-
-                    {c.profileSummary && (
-                      <details className="fdx-contact-summary">
-                        <summary>Ver perfil del bot</summary>
-                        <p>{c.profileSummary}</p>
-                      </details>
-                    )}
-                  </div>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+          {totalPages > 1 && (
+            <div className="fdx-pagination">
+              <button
+                type="button"
+                className="fdx-page-btn"
+                onClick={() => changePage(safePage - 1)}
+                disabled={safePage === 1}
+              >
+                ‹ Anterior
+              </button>
+              <div className="fdx-page-numbers">
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter((p) => p === 1 || p === totalPages || Math.abs(p - safePage) <= 1)
+                  .reduce((acc, p, idx, arr) => {
+                    if (idx > 0 && p - arr[idx - 1] > 1) acc.push('…');
+                    acc.push(p);
+                    return acc;
+                  }, [])
+                  .map((p, i) =>
+                    p === '…' ? (
+                      <span key={`ellipsis-${i}`} className="fdx-page-ellipsis">…</span>
+                    ) : (
+                      <button
+                        key={p}
+                        type="button"
+                        className={`fdx-page-btn fdx-page-num${p === safePage ? ' is-active' : ''}`}
+                        onClick={() => changePage(p)}
+                      >
+                        {p}
+                      </button>
+                    )
+                  )}
+              </div>
+              <button
+                type="button"
+                className="fdx-page-btn"
+                onClick={() => changePage(safePage + 1)}
+                disabled={safePage === totalPages}
+              >
+                Siguiente ›
+              </button>
+              <span className="fdx-page-info">{(safePage - 1) * PER_PAGE + 1}–{Math.min(safePage * PER_PAGE, filtered.length)} de {filtered.length}</span>
+            </div>
+          )}
+        </>
       )}
     </article>
   );
@@ -601,6 +675,7 @@ function FeedbackDashboardPanel({ mostrarToast }) {
   const campaign = data?.campaignFeedback?.kpis || { sent: 0, responded: 0, ok: 0, notOk: 0, noResponse: 0 };
   const campaignSentiment = data?.campaignFeedback?.sentiment || { positive: 0, neutral: 0, negative: 0 };
   const campaignContacts = data?.campaignFeedback?.contacts || [];
+  const noLoUsoCount = campaignContacts.filter((c) => String(c.state || '').toLowerCase() === 'no_lo_uso').length;
   const timeline = data?.campaignFeedback?.timeline || [];
   const hotOverview = data?.hotRedis?.overview || { contacts: 0, activeLast24h: 0, requiresHuman: 0, paused: 0, blacklisted: 0, botActive: 0 };
   const hotSentiment = data?.hotRedis?.sentiment || { positive: 0, neutral: 0, negative: 0 };
@@ -751,7 +826,7 @@ function FeedbackDashboardPanel({ mostrarToast }) {
             tooltip="Efectividad = ok / respondidos. Alcance = ok / enviados."
           />
           <KpiCard
-            title="Tasa de fricción"
+            title="Clientes poco satisfechos"
             value={`${frictionRate}%`}
             detail={`${campaign.notOk} / ${campaign.sent} enviadas`}
             delta={frictionTrend.text}
@@ -763,12 +838,18 @@ function FeedbackDashboardPanel({ mostrarToast }) {
 
         {/* Donut sentimiento de campaña */}
         {(() => {
+          const trueNeutral = campaignSentiment.neutral - noLoUsoCount;
           const total = campaignSentiment.positive + campaignSentiment.neutral + campaignSentiment.negative;
+          // 4 segmentos: positivo, neutral puro, no_lo_uso, negativo
+          const pPos   = percent(campaignSentiment.positive, total);
+          const pNeu   = percent(trueNeutral, total);
+          const pNlu   = percent(noLoUsoCount, total);
           const style = total > 0 ? {
             background: `conic-gradient(
-              #67b36a 0 ${percent(campaignSentiment.positive, total)}%,
-              #edc858 ${percent(campaignSentiment.positive, total)}% ${percent(campaignSentiment.positive + campaignSentiment.neutral, total)}%,
-              #de5a67 ${percent(campaignSentiment.positive + campaignSentiment.neutral, total)}% 100%
+              #67b36a 0 ${pPos}%,
+              #edc858 ${pPos}% ${pPos + pNeu}%,
+              #4ab5c4 ${pPos + pNeu}% ${pPos + pNeu + pNlu}%,
+              #de5a67 ${pPos + pNeu + pNlu}% 100%
             )`,
           } : { background: '#ede8e8' };
           return (
@@ -783,8 +864,11 @@ function FeedbackDashboardPanel({ mostrarToast }) {
                 </div>
                 <ul className="fdx-sentiment-list">
                   <li><span className="dot positive" />Positivo<strong>{campaignSentiment.positive} ({formatPct(campaignSentiment.positive, total)})</strong></li>
-                  <li><span className="dot neutral" />Neutral<strong>{campaignSentiment.neutral} ({formatPct(campaignSentiment.neutral, total)})</strong></li>
-                  <li><span className="dot negative" />Negativo<strong>{campaignSentiment.negative} ({formatPct(campaignSentiment.negative, total)})</strong></li>
+                  <li><span className="dot neutral" />Neutral<strong>{trueNeutral} ({formatPct(trueNeutral, total)})</strong></li>
+                  {noLoUsoCount > 0 && (
+                    <li><span className="dot nlu" />Aún no lo usan<strong>{noLoUsoCount} ({formatPct(noLoUsoCount, total)})</strong></li>
+                  )}
+                  <li><span className="dot negative" />Poco satisfechos<strong>{campaignSentiment.negative} ({formatPct(campaignSentiment.negative, total)})</strong></li>
                 </ul>
               </div>
             </article>
@@ -967,7 +1051,7 @@ function FeedbackDashboardPanel({ mostrarToast }) {
             </article>
 
             <article className="fdx-card">
-              <h3>Puntos de dolor y fricción</h3>
+              <h3>Puntos de dolor — clientes poco satisfechos</h3>
               <ol className="fdx-loss-list">
                 {(hotTops.dolores || []).slice(0, 6).map((item) => (
                   <li key={item.label}>
@@ -990,7 +1074,7 @@ function FeedbackDashboardPanel({ mostrarToast }) {
           <h3>Evolución últimos {recentTimeline.length} días</h3>
           <div className="fdx-lines-legend">
             <span className="respuestas">Respuestas</span>
-            <span className="fricciones">Fricciones</span>
+            <span className="fricciones">Poco satisfechos</span>
             <span className="conversiones">Conversiones</span>
           </div>
           <svg className="fdx-lines" viewBox="0 0 420 95" aria-hidden="true" focusable="false">

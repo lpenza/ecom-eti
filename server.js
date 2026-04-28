@@ -1359,7 +1359,6 @@ app.post('/api/marcar-notificado/:pedidoId', requireAuth, async (req, res) => {
     await supabaseService.actualizarPedido(pedidoId, {
       notificacion_enviada_at: new Date().toISOString(),
       estado: 'despachado',
-      despachado_por_nombre: req.user.nombre,
     });
 
     logService.info(`Pedido ${pedidoId} marcado como notificado y despachado (WhatsApp manual)`);

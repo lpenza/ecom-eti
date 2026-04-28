@@ -5639,9 +5639,23 @@ body {
   border-radius: 50%;
 }
 
-.fdx-sentiment-list .dot.positive { background: #67b36a; }
-.fdx-sentiment-list .dot.neutral { background: #edc858; }
-.fdx-sentiment-list .dot.negative { background: #de5a67; }
+.fdx-sentiment-list .dot.positive  { background: #67b36a; }
+.fdx-sentiment-list .dot.neutral   { background: #edc858; }
+.fdx-sentiment-list .dot.negative  { background: #de5a67; }
+.fdx-sentiment-list .dot.nlu       { background: #4ab5c4; }
+
+.fdx-sentiment-sub {
+  grid-template-columns: auto 1fr auto !important;
+  padding-left: 1.4rem !important;
+  font-size: 0.72rem;
+  color: #9a8a8e;
+  gap: 0.35rem !important;
+}
+.fdx-sentiment-sub-arrow {
+  color: #bca;
+  font-size: 0.7rem;
+  line-height: 1;
+}
 
 .fdx-alert-box {
   margin-top: 0.65rem;
@@ -5936,6 +5950,20 @@ body {
   color: #fff;
 }
 
+.fdx-filter-chip--nlu {
+  border-color: #a8dde3;
+  color: #1f7a88;
+}
+.fdx-filter-chip--nlu span {
+  background: #d4f0f4;
+  color: #1f7a88;
+}
+.fdx-filter-chip--nlu.is-active {
+  background: #2a9aab;
+  border-color: #2a9aab;
+  color: #fff;
+}
+
 .fdx-contacts-empty {
   color: #9a7880;
   font-size: 0.83rem;
@@ -5951,6 +5979,69 @@ body {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
+}
+
+/* ── Paginado ── */
+.fdx-pagination {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.9rem;
+  flex-wrap: wrap;
+}
+
+.fdx-page-numbers {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.fdx-page-btn {
+  border: 1px solid #ddd0d0;
+  background: #faf7f7;
+  color: #7a656b;
+  border-radius: 7px;
+  padding: 0.28rem 0.65rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: all 0.13s;
+  white-space: nowrap;
+}
+
+.fdx-page-btn:hover:not(:disabled) {
+  background: #f0e7e8;
+  border-color: #c9aab0;
+  color: #3c2b2f;
+}
+
+.fdx-page-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.fdx-page-num {
+  min-width: 32px;
+  text-align: center;
+  padding: 0.28rem 0.45rem;
+}
+
+.fdx-page-num.is-active {
+  background: #5b1f30;
+  border-color: #5b1f30;
+  color: #fff;
+}
+
+.fdx-page-ellipsis {
+  font-size: 0.8rem;
+  color: #9a7880;
+  padding: 0 0.2rem;
+  user-select: none;
+}
+
+.fdx-page-info {
+  margin-left: auto;
+  font-size: 0.76rem;
+  color: #9a7880;
 }
 
 .fdx-contact-row {
