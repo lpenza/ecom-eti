@@ -19,7 +19,6 @@ import {
   generarLinkWhatsApp,
   obtenerPedidosFinalizados,
   obtenerPedidosArmado,
-  obtenerPedidosParaReclamo,
   obtenerPlantillas,
   crearPlantilla,
   actualizarPlantilla,
@@ -37,6 +36,9 @@ import {
   marcarProcesados,
   obtenerPedidosPickup,
   obtenerPedidosRecibilo,
+  obtenerPedidosReenvio,
+  crearReenvio,
+  buscarPedidos,
   reprocesarPedidoShopify,
 } from './services/api';
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
@@ -111,7 +113,8 @@ function AppContent({ user, logout }) {
     setPedidoSeleccionado,
     toggleSelectAll,
     toggleSelectPedido,
-    loginUES
+    loginUES,
+    actualizarLinkDrivePedidos,
   } = usePedidos();
 
   const [showDatosModal, setShowDatosModal] = useState(false);
@@ -151,6 +154,17 @@ function AppContent({ user, logout }) {
   const [pedidosArmadoOperario, setPedidosArmadoOperario] = useState([]);
   const [pickupList,    setPickupList]    = useState([]);
   const [recibiloList,  setRecibiloList]  = useState([]);
+  const [reenvioList,   setReenvioList]   = useState([]);
+  const [reenvioModal,  setReenvioModal]  = useState(null); // pedido origen seleccionado
+  const [reenvioForm,   setReenvioForm]   = useState({
+    cliente_nombre: '', cliente_email: '', cliente_telefono: '',
+    direccion_envio: '', localidad: '', departamento: '', codigo_postal: '',
+    tipo_envio: 'estandar', motivo_reenvio: '',
+  });
+  const [reenvioSearch,        setReenvioSearch]        = useState('');
+  const [reenvioSearchResults, setReenvioSearchResults] = useState([]);
+  const [reenvioSearchLoading, setReenvioSearchLoading] = useState(false);
+  const [reenvioCreating,      setReenvioCreating]      = useState(false);
   const [templates, setTemplates] = useState([]);
   const [activeTemplateId, setActiveTemplateId] = useState('');
   const [activeTrackingTemplateId, setActiveTrackingTemplateId] = useState('');
@@ -265,6 +279,7 @@ function AppContent({ user, logout }) {
     enviados: pedidosEnviadosList.length,
     pickup: pickupList.length,
     recibilo: recibiloList.length,
+    reenvios: reenvioList.length,
     trackingAlert: hayDescuadreTracking || pedidosRevisionManual.length > 0,
     trackingBreakdown: {
       total: pedidosConEtiqueta.length,
@@ -447,7 +462,7 @@ function AppContent({ user, logout }) {
     if (!shouldLoadFinalizados) return;
 
     let cancelled = false;
-    obtenerPedidosParaReclamo()
+    obtenerPedidosFinalizados()
       .then((data) => {
         if (cancelled) return;
         setPedidosFinalizados(Array.isArray(data) ? data : []);
@@ -526,6 +541,15 @@ function AppContent({ user, logout }) {
     }
   }, []);
 
+  const cargarPedidosReenvio = useCallback(async () => {
+    try {
+      const data = await obtenerPedidosReenvio();
+      setReenvioList(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('❌ Error cargando pedidos reenvio:', error);
+    }
+  }, []);
+
   const cargarPedidosArmadoOperario = useCallback(async () => {
     try {
       const data = await obtenerPedidosArmado();
@@ -541,13 +565,31 @@ function AppContent({ user, logout }) {
     cargarPedidosEnviados();
     cargarPedidosPickup();
     cargarPedidosRecibilo();
-  }, [cargarPedidosDespachados, cargarPedidosEnviados, cargarPedidosPickup, cargarPedidosRecibilo]);
+    cargarPedidosReenvio();
+  }, [cargarPedidosDespachados, cargarPedidosEnviados, cargarPedidosPickup, cargarPedidosRecibilo, cargarPedidosReenvio]);
 
   useEffect(() => {
     if (!esAdmin) {
       cargarPedidosArmadoOperario();
     }
   }, [esAdmin, cargarPedidosArmadoOperario]);
+
+  useEffect(() => {
+    const q = reenvioSearch.trim();
+    if (q.length < 2) { setReenvioSearchResults([]); return; }
+    const timer = setTimeout(async () => {
+      setReenvioSearchLoading(true);
+      try {
+        const resultados = await buscarPedidos(q);
+        setReenvioSearchResults(resultados);
+      } catch {
+        setReenvioSearchResults([]);
+      } finally {
+        setReenvioSearchLoading(false);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [reenvioSearch]);
 
   const handleActualizarOperativa = useCallback(async () => {
     await cargarPedidos();
@@ -558,6 +600,7 @@ function AppContent({ user, logout }) {
       cargarPedidosEnviados(),
       cargarPedidosPickup(),
       cargarPedidosRecibilo(),
+      cargarPedidosReenvio(),
     ]);
   }, [cargarPedidos, cargarPedidosDespachados, cargarPedidosEnviados, cargarPedidosPickup, cargarPedidosRecibilo]);
 
@@ -1436,6 +1479,58 @@ function AppContent({ user, logout }) {
     });
   };
 
+  // ==================== HANDLER GUARDAR LINK DRIVE (pedidos agrupados) ====================
+
+  const handleGuardarLinkDrivePedidos = useCallback((ids, link) => {
+    actualizarLinkDrivePedidos(ids, link);
+    mostrarToast('✅ Link de Drive guardado', 'success');
+  }, [actualizarLinkDrivePedidos]);
+
+  // ==================== HANDLERS REENVÍOS ====================
+
+  const handleAbrirModalReenvio = (pedido) => {
+    setReenvioForm({
+      cliente_nombre:   pedido.cliente_nombre   || '',
+      cliente_email:    pedido.cliente_email    || '',
+      cliente_telefono: pedido.cliente_telefono || '',
+      direccion_envio:  pedido.direccion_envio  || '',
+      localidad:        pedido.localidad        || '',
+      departamento:     pedido.departamento     || '',
+      codigo_postal:    pedido.codigo_postal    || '',
+      tipo_envio:       'estandar',
+      motivo_reenvio:   '',
+    });
+    setReenvioModal(pedido);
+  };
+
+  const handleCerrarModalReenvio = () => {
+    setReenvioModal(null);
+    setReenvioSearch('');
+  };
+
+  const handleConfirmarReenvio = async () => {
+    if (!reenvioModal) return;
+    if (!reenvioForm.motivo_reenvio.trim()) {
+      mostrarToast('Completá el motivo del reenvío', 'warning');
+      return;
+    }
+    setReenvioCreating(true);
+    try {
+      const resultado = await crearReenvio(reenvioModal.id, reenvioForm);
+      if (!resultado.success) {
+        mostrarToast(resultado.error || 'Error al crear reenvío', 'error');
+        return;
+      }
+      mostrarToast(`✅ Reenvío ${resultado.data.numero_pedido} creado`, 'success');
+      handleCerrarModalReenvio();
+      cargarPedidosReenvio();
+    } catch (err) {
+      mostrarToast(`Error: ${err.message}`, 'error');
+    } finally {
+      setReenvioCreating(false);
+    }
+  };
+
   // ==================== HANDLERS RECLAMOS PENDIENTES ====================
 
   const handleNotificarReclamoWhatsApp = async (reclamo) => {
@@ -2056,6 +2151,58 @@ function AppContent({ user, logout }) {
             </div>
           )}
 
+          {/* ── Reenvíos ──────────────────────────────────────────────────── */}
+          {tableFilter === 'reenvios' && (
+            <div className="main-content">
+              {/* Buscador para crear un reenvío desde cualquier pedido */}
+              <div className="module-panel module-panel-tight-top" style={{ marginBottom: 16 }}>
+                <h3 style={{ marginBottom: 6 }}>Nuevo Reenvío</h3>
+                <p style={{ marginBottom: 8, color: '#666', fontSize: 13 }}>
+                  Buscá un pedido (activo o finalizado) para generar un reenvío con nueva etiqueta.
+                </p>
+                <input
+                  className="module-input"
+                  placeholder="Buscar por N° pedido, cliente, email o teléfono…"
+                  value={reenvioSearch}
+                  onChange={(e) => setReenvioSearch(e.target.value)}
+                  style={{ marginBottom: 8 }}
+                />
+                {reenvioSearch.trim().length >= 2 && (
+                  <div className="module-search-results">
+                    {reenvioSearchLoading ? (
+                      <div className="module-search-empty">Buscando…</div>
+                    ) : reenvioSearchResults.length === 0 ? (
+                      <div className="module-search-empty">No se encontraron pedidos</div>
+                    ) : reenvioSearchResults.map(p => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className="module-search-item"
+                        onClick={() => { handleAbrirModalReenvio(p); setReenvioSearch(''); setReenvioSearchResults([]); }}
+                      >
+                        <strong>#{p.numero_pedido}</strong> — {p.cliente_nombre || 'Sin nombre'}
+                        <span style={{ color: '#888', fontSize: 12, marginLeft: 8 }}>
+                          {p.localidad || p.direccion_envio || ''}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <DeliveryEspecialTable
+                pedidos={reenvioList}
+                tipo="reenvio"
+                onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'reenvio')}
+                onMarcarDespachadosBulk={(ids) => handleMarcarDespachadosBulkEspecial(ids, 'reenvio')}
+                onProcesar={(id) => handleProcesarEspecial(id, 'reenvio')}
+                onProcesarBulk={(ids) => handleProcesarBulkEspecial(ids, 'reenvio')}
+                onActualizar={cargarPedidosReenvio}
+                mostrarToast={mostrarToast}
+              />
+            </div>
+          )}
+
           {/* ⚠️ TEMPORAL: Panel para reprocesar pedidos que no entraron por webhook.
                Cuando ya no se necesite, cambiar REPROCESS_ENABLED = false arriba */}
           {esAdmin && REPROCESS_ENABLED && (
@@ -2088,7 +2235,7 @@ function AppContent({ user, logout }) {
           )}
 
           {/* Tabla de pedidos */}
-          {tableFilter !== 'reclamosPendientes' && tableFilter !== 'pickup' && tableFilter !== 'recibilo' && (
+          {tableFilter !== 'reclamosPendientes' && tableFilter !== 'pickup' && tableFilter !== 'recibilo' && tableFilter !== 'reenvios' && (
           <div className="main-content">
             <PedidosTable
               pedidos={fulfillmentPreviewIds !== null
@@ -2109,6 +2256,7 @@ function AppContent({ user, logout }) {
               onMarcarNotificado={async (pedidoId) => { await marcarPedidoNotificado(pedidoId); cargarPedidosEnviados(); cargarPedidosDespachados(); }}
               onDescargarEtiqueta={handleDescargarEtiqueta}
               onDescartarEtiqueta={handleDescartarEtiqueta}
+              onGuardarLinkDrive={handleGuardarLinkDrivePedidos}
               onProcesarDirecto={async (pedidoId) => {
                 const ids = Array.isArray(pedidoId) ? pedidoId : [pedidoId];
                 try {
@@ -2303,7 +2451,7 @@ function AppContent({ user, logout }) {
       )}
 
       {activeView === 'feedback' && (
-        <FeedbackDashboardPanel mostrarToast={mostrarToast} />
+        <FeedbackDashboardPanel mostrarToast={mostrarToast} templates={templatesWhatsapp} />
       )}
 
       {activeView === 'plantillas' && (
@@ -2376,6 +2524,85 @@ function AppContent({ user, logout }) {
 
       {/* Modal de loading */}
       {loading && <LoadingModal text={loadingText} />}
+
+      {/* Modal crear reenvío */}
+      {reenvioModal && (
+        <div className="modal-overlay" onClick={handleCerrarModalReenvio}>
+          <div className="modal-content" style={{ maxWidth: 520 }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Crear Reenvío — Pedido #{reenvioModal.numero_pedido}</h3>
+              <button type="button" className="modal-close" onClick={handleCerrarModalReenvio}>✕</button>
+            </div>
+            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ background: '#f8f9fa', borderRadius: 6, padding: '8px 12px', fontSize: 13, color: '#555' }}>
+                Cliente original: <strong>{reenvioModal.cliente_nombre}</strong> — {reenvioModal.direccion_envio}, {reenvioModal.localidad}
+              </div>
+
+              <label style={{ fontWeight: 600, fontSize: 13 }}>Motivo / producto faltante *</label>
+              <textarea
+                className="module-input"
+                rows={3}
+                placeholder="Ej: Faltó remera talle M negra del pedido #1937"
+                value={reenvioForm.motivo_reenvio}
+                onChange={e => setReenvioForm(f => ({ ...f, motivo_reenvio: e.target.value }))}
+                style={{ resize: 'vertical' }}
+              />
+
+              <label style={{ fontWeight: 600, fontSize: 13 }}>Tipo de envío</label>
+              <select
+                className="module-input"
+                value={reenvioForm.tipo_envio}
+                onChange={e => setReenvioForm(f => ({ ...f, tipo_envio: e.target.value }))}
+              >
+                <option value="estandar">Estándar (UES domicilio)</option>
+                <option value="pickup_local">Pick-UP (retiro en local)</option>
+                <option value="recibilo_hoy">Recibilo Hoy</option>
+                <option value="express">Express</option>
+              </select>
+
+              <details style={{ fontSize: 13 }}>
+                <summary style={{ cursor: 'pointer', fontWeight: 600, marginBottom: 6 }}>
+                  Editar datos de envío (opcional)
+                </summary>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 8 }}>
+                  {[
+                    ['cliente_nombre', 'Nombre cliente'],
+                    ['cliente_email', 'Email'],
+                    ['cliente_telefono', 'Teléfono'],
+                    ['direccion_envio', 'Dirección'],
+                    ['localidad', 'Localidad'],
+                    ['departamento', 'Departamento'],
+                    ['codigo_postal', 'Código postal'],
+                  ].map(([key, label]) => (
+                    <div key={key}>
+                      <label style={{ fontSize: 12, color: '#555' }}>{label}</label>
+                      <input
+                        className="module-input"
+                        value={reenvioForm[key]}
+                        onChange={e => setReenvioForm(f => ({ ...f, [key]: e.target.value }))}
+                        style={{ marginTop: 2 }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </details>
+            </div>
+            <div className="modal-footer" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button type="button" className="btn btn-secondary" onClick={handleCerrarModalReenvio}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleConfirmarReenvio}
+                disabled={reenvioCreating || !reenvioForm.motivo_reenvio.trim()}
+              >
+                {reenvioCreating ? 'Creando…' : '📦 Crear Reenvío'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast de notificaciones */}
       {toast.show && <Toast message={toast.message} type={toast.type} />}

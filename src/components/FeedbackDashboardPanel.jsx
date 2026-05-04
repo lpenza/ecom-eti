@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { obtenerFeedbackDashboard, analizarRazonesCompra } from '../services/api';
+import { obtenerFeedbackDashboard, analizarRazonesCompra, reintentarFollowup } from '../services/api';
 
 function percent(part, total) {
   if (!total) return 0;
@@ -246,8 +246,113 @@ function stateTone(rawState) {
 }
 
 const PER_PAGE = 15;
+const MS_24H = 24 * 60 * 60 * 1000;
 
-function CampaignContactsList({ contacts = [], campaignSent = 0 }) {
+function isRetryEligible(contact) {
+  if (contact.responded) return false;
+  if (!contact.followupSentAt) return false;
+  return Date.now() - new Date(contact.followupSentAt).getTime() >= MS_24H;
+}
+
+function renderRetryTemplate(templateContent, contact) {
+  const primerNombre = String(contact.name || '').trim().split(/\s+/)[0] || 'cliente';
+  const vars = {
+    cliente_nombre: primerNombre,
+    numero_pedido: contact.numeroPedido || '',
+    tracking: '',
+    dias_transcurridos: '',
+    fecha_objetivo: '',
+  };
+  return String(templateContent || '').replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_, key) => vars[key] ?? '');
+}
+
+function buildRetryWALink(phone, renderedMessage) {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return null;
+  const numero = digits.startsWith('598') ? digits : `598${digits}`;
+  return `https://api.whatsapp.com/send?phone=${numero}&text=${encodeURIComponent(renderedMessage)}`;
+}
+
+function RetryPanel({ contact, templates = [], onRetrySuccess }) {
+  const [selectedTemplateId, setSelectedTemplateId] = useState(templates[0]?.id || '');
+  const [saving, setSaving] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [error, setError] = useState('');
+
+  const activeTemplate = templates.find((t) => t.id === selectedTemplateId) || templates[0];
+  const previewText = activeTemplate ? renderRetryTemplate(activeTemplate.content, contact) : '';
+  const waLink = contact.phone ? buildRetryWALink(contact.phone, previewText) : null;
+
+  const handleOpen = async () => {
+    if (!waLink) return;
+    setError('');
+    setSaving(true);
+    try {
+      const result = await reintentarFollowup(contact.pedidoId);
+      if (result?.success && result?.data) {
+        onRetrySuccess?.({
+          customerId: contact.customerId,
+          followupSentAt: result.data.followup_enviado_at,
+          retryCount: result.data.followup_retry_count,
+        });
+      }
+    } catch (err) {
+      setError('No se pudo registrar el reintento, pero el mensaje fue enviado.');
+    } finally {
+      setSaving(false);
+    }
+    // Abrir WhatsApp siempre, aunque falle el registro
+    window.open(waLink, '_blank', 'noopener,noreferrer');
+    setSent(true);
+  };
+
+  if (templates.length === 0) {
+    return (
+      <div className="fdx-retry-panel">
+        <p className="fdx-retry-notice">No hay plantillas disponibles. Creá una desde el panel de plantillas.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fdx-retry-panel">
+      <div className="fdx-retry-header">
+        <span className="fdx-retry-title">⟳ Reintentar contacto</span>
+        {sent && <span className="fdx-retry-sent-badge">✓ WhatsApp abierto</span>}
+      </div>
+      <div className="fdx-retry-controls">
+        <select
+          className="module-input fdx-retry-select"
+          value={selectedTemplateId}
+          onChange={(e) => { setSelectedTemplateId(e.target.value); setSent(false); }}
+          disabled={saving}
+        >
+          {templates.map((t) => (
+            <option key={t.id} value={t.id}>{t.name}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className={`btn fdx-retry-btn${sent ? ' fdx-retry-btn--sent' : ''}`}
+          onClick={handleOpen}
+          disabled={!waLink || saving}
+          title={!waLink ? 'Este contacto no tiene teléfono registrado' : ''}
+        >
+          {saving ? '...' : sent ? '✓ Enviado' : '📲 Abrir WhatsApp'}
+        </button>
+      </div>
+      {error && <p className="fdx-retry-error">{error}</p>}
+      {previewText && (
+        <details className="fdx-retry-preview">
+          <summary>Ver mensaje</summary>
+          <pre className="fdx-retry-preview-text">{previewText}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function CampaignContactsList({ contacts = [], campaignSent = 0, templates = [], onRetrySuccess }) {
   const [filter, setFilter] = useState('todos');
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState(null);
@@ -356,6 +461,15 @@ function CampaignContactsList({ contacts = [], campaignSent = 0 }) {
                       {c.responded ? '✓ Respondió' : '✗ Sin resp.'}
                     </span>
                     <span className="fdx-contact-date">{formatRelativeDate(c.followupSentAt)}</span>
+                    {isRetryEligible(c) && (
+                      <span
+                        className="fdx-retry-badge"
+                        title="Sin respuesta hace más de 24 horas — podés reintentar"
+                        onClick={(e) => { e.stopPropagation(); setExpanded(c.customerId); }}
+                      >
+                        ⟳ Reintentar
+                      </span>
+                    )}
                   </button>
 
                   {isOpen && (
@@ -404,11 +518,22 @@ function CampaignContactsList({ contacts = [], campaignSent = 0 }) {
                         <p className="fdx-contact-nodata">Sin notas ni estado registrado en base de datos.</p>
                       )}
 
+                      {c.retryCount > 0 && (
+                        <div className="fdx-retry-count-row">
+                          <span className="fdx-retry-count-label">Reintentos registrados</span>
+                          <span className="fdx-retry-count-badge">{c.retryCount}</span>
+                        </div>
+                      )}
+
                       {c.profileSummary && (
                         <details className="fdx-contact-summary">
                           <summary>Ver perfil del bot</summary>
                           <p>{c.profileSummary}</p>
                         </details>
+                      )}
+
+                      {isRetryEligible(c) && (
+                        <RetryPanel contact={c} templates={templates} onRetrySuccess={onRetrySuccess} />
                       )}
                     </div>
                   )}
@@ -628,13 +753,15 @@ function RazonesDeCompra({ razones, loading, onAnalizar }) {
   );
 }
 
-function FeedbackDashboardPanel({ mostrarToast }) {
+function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
   const [activeTab, setActiveTab] = useState('resumen');
   const [razones, setRazones] = useState(null);
   const [loadingRazones, setLoadingRazones] = useState(false);
+  // Parche local para actualizar contactos tras un reintento sin recargar todo
+  const [retryPatch, setRetryPatch] = useState({});
 
   const loadDashboard = async () => {
     try {
@@ -672,9 +799,23 @@ function FeedbackDashboardPanel({ mostrarToast }) {
     }
   };
 
+  const handleRetrySuccess = ({ customerId, followupSentAt, retryCount }) => {
+    setRetryPatch((prev) => ({ ...prev, [customerId]: { followupSentAt, retryCount } }));
+  };
+
   const campaign = data?.campaignFeedback?.kpis || { sent: 0, responded: 0, ok: 0, notOk: 0, noResponse: 0 };
   const campaignSentiment = data?.campaignFeedback?.sentiment || { positive: 0, neutral: 0, negative: 0 };
-  const campaignContacts = data?.campaignFeedback?.contacts || [];
+  const rawCampaignContacts = data?.campaignFeedback?.contacts || [];
+
+  // Aplicar parche local de reintentos sin recargar desde el servidor
+  const campaignContacts = useMemo(
+    () => rawCampaignContacts.map((c) => {
+      const patch = retryPatch[c.customerId];
+      if (!patch) return c;
+      return { ...c, followupSentAt: patch.followupSentAt, retryCount: patch.retryCount };
+    }),
+    [rawCampaignContacts, retryPatch]
+  );
   const noLoUsoCount = campaignContacts.filter((c) => String(c.state || '').toLowerCase() === 'no_lo_uso').length;
   const timeline = data?.campaignFeedback?.timeline || [];
   const hotOverview = data?.hotRedis?.overview || { contacts: 0, activeLast24h: 0, requiresHuman: 0, paused: 0, blacklisted: 0, botActive: 0 };
@@ -879,7 +1020,12 @@ function FeedbackDashboardPanel({ mostrarToast }) {
 
       {/* Lista de contactos de campaña */}
       {activeTab === 'campanas' && (
-        <CampaignContactsList contacts={campaignContacts} campaignSent={campaign.sent} />
+        <CampaignContactsList
+          contacts={campaignContacts}
+          campaignSent={campaign.sent}
+          templates={templates}
+          onRetrySuccess={handleRetrySuccess}
+        />
       )}
 
       {/* ════════════════════════════════

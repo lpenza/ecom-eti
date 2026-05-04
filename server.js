@@ -2028,6 +2028,9 @@ app.get('/api/feedback/dashboard', async (req, res) => {
         customerId,
         name: pedido.cliente_nombre || matchedContact?.customer_name || '—',
         phone: pedido.cliente_telefono || null,
+        pedidoId: pedido.id || null,
+        numeroPedido: pedido.numero_pedido || pedido.id || null,
+        retryCount: pedido.followup_retry_count || 0,
         followupSentAt: pedido.followup_enviado_at || null,
         responded: !!(respondedByRedis || respondedByState),
         state,
@@ -2405,6 +2408,22 @@ app.post('/api/pedidos/:pedidoId/marcar-followup', async (req, res) => {
     return res.json({ success: true, data });
   } catch (error) {
     logService.error('Error marcando follow-up como enviado', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Registrar reintento de follow-up: actualiza timestamp y suma 1 al contador
+app.post('/api/pedidos/:pedidoId/reintentar-followup', async (req, res) => {
+  try {
+    const { pedidoId } = req.params;
+    if (!pedidoId) {
+      return res.status(400).json({ success: false, error: 'pedidoId requerido' });
+    }
+    const data = await supabaseService.registrarReintentoFollowup(pedidoId);
+    logService.info(`Reintento follow-up registrado — pedido ${pedidoId} · intentos: ${data.followup_retry_count}`);
+    return res.json({ success: true, data });
+  } catch (error) {
+    logService.error('Error registrando reintento de follow-up', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -2967,6 +2986,42 @@ app.get('/api/pedidos-recibilo', async (req, res) => {
   } catch (error) {
     logService.error('Error al obtener pedidos recibilo', error);
     res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+// ── Búsqueda de pedidos (para reenvíos) ──────────────────────────────────────
+app.get('/api/pedidos/buscar', async (req, res) => {
+  const { q } = req.query;
+  try {
+    const resultados = await supabaseService.buscarPedidos(q);
+    res.json({ success: true, data: resultados });
+  } catch (error) {
+    logService.error('Error al buscar pedidos', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+// ── Reenvíos ─────────────────────────────────────────────────────────────────
+app.get('/api/pedidos-reenvio', async (req, res) => {
+  try {
+    const pedidos = await supabaseService.obtenerPedidosReenvio();
+    res.json({ success: true, data: pedidos });
+  } catch (error) {
+    logService.error('Error al obtener pedidos reenvio', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+app.post('/api/pedidos/:id/crear-reenvio', async (req, res) => {
+  const { id } = req.params;
+  const datos = req.body || {};
+  try {
+    const nuevo = await supabaseService.crearReenvio(id, datos);
+    logService.info(`Reenvío creado: ${nuevo.numero_pedido} desde pedido ${id}`);
+    res.json({ success: true, data: nuevo });
+  } catch (error) {
+    logService.error('Error al crear reenvio', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

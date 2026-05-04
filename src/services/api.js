@@ -253,6 +253,10 @@ export async function marcarFollowupEnviado(pedidoId) {
   return await fetchAPI(`/pedidos/${pedidoId}/marcar-followup`, { method: 'POST' });
 }
 
+export async function reintentarFollowup(pedidoId) {
+  return await fetchAPI(`/pedidos/${pedidoId}/reintentar-followup`, { method: 'POST' });
+}
+
 export async function obtenerFeedbackDashboard({ days = 30, from = '', to = '' } = {}) {
   const params = new URLSearchParams();
   params.set('days', String(days));
@@ -495,6 +499,27 @@ export async function obtenerPedidosPickup() {
 export async function obtenerPedidosRecibilo() {
   const data = await fetchAPI('/pedidos-recibilo', { method: 'GET' });
   return Array.isArray(data?.data) ? data.data : [];
+}
+
+// ==================== BÚSQUEDA PEDIDOS ====================
+
+export async function buscarPedidos(q) {
+  const data = await fetchAPI(`/pedidos/buscar?q=${encodeURIComponent(q)}`, { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+// ==================== REENVÍOS ====================
+
+export async function obtenerPedidosReenvio() {
+  const data = await fetchAPI('/pedidos-reenvio', { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+export async function crearReenvio(pedidoId, datos) {
+  return await fetchAPI(`/pedidos/${pedidoId}/crear-reenvio`, {
+    method: 'POST',
+    body: JSON.stringify(datos),
+  });
 }
 
 export async function buscarEtiquetaDrive(numeroPedido) {

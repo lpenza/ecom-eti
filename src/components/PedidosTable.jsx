@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
+import { buscarEtiquetaDrive, guardarLinkDriveEnPedido } from '../services/api';
 
 // Extrae file ID de un link de Drive y devuelve URLs de preview y descarga.
 // Funciona con /file/d/{id}/view, /file/d/{id}/edit, webViewLink, etc.
@@ -57,6 +58,7 @@ function PedidosTable({
   onDescargarEtiqueta,
   onDescartarEtiqueta,
   onProcesarDirecto,
+  onGuardarLinkDrive,
   fulfillmentPreview,
   channelPriority = 'email',
   showNotifyColumn = true,
@@ -179,6 +181,7 @@ function PedidosTable({
                     onDescartarEtiqueta={onDescartarEtiqueta}
                     onPreviewEtiqueta={setPreviewPedido}
                     onProcesarDirecto={onProcesarDirecto}
+                    onGuardarLinkDrive={onGuardarLinkDrive}
                     fulfillmentPreview={fulfillmentPreview}
                     channelPriority={channelPriority}
                     showNotifyColumn={showNotifyColumn}
@@ -210,6 +213,7 @@ function PedidoRow({
   onDescartarEtiqueta,
   onPreviewEtiqueta,
   onProcesarDirecto,
+  onGuardarLinkDrive,
   fulfillmentPreview = false,
   channelPriority = 'email',
   showNotifyColumn = true,
@@ -220,6 +224,49 @@ function PedidoRow({
   modoPendienteContacto = false,
   allowRedownload = false,
 }) {
+  const [driveLoading,    setDriveLoading]    = useState(false);
+  const [driveFound,      setDriveFound]      = useState('');
+  const [driveManual,     setDriveManual]     = useState('');
+  const [driveShowManual, setDriveShowManual] = useState(false);
+  const [driveSaving,     setDriveSaving]     = useState(false);
+
+  const primerNumero = String(pedido.numero_pedido || '').split('/')[0].trim();
+
+  const handleBuscarDrive = useCallback(async () => {
+    setDriveLoading(true);
+    setDriveLink('');
+    setDriveShowManual(false);
+    try {
+      const res = await buscarEtiquetaDrive(primerNumero);
+      if (res.success && res.webViewLink) {
+        setDriveFound(res.webViewLink);
+      } else {
+        setDriveShowManual(true);
+      }
+    } catch {
+      setDriveShowManual(true);
+    } finally {
+      setDriveLoading(false);
+    }
+  }, [primerNumero]);
+
+  const handleGuardarDrive = useCallback(async (link) => {
+    const linkFinal = link || driveManual;
+    if (!linkFinal) return;
+    setDriveSaving(true);
+    try {
+      const ids = pedido._mergedIds || [pedido.id];
+      for (const id of ids) {
+        await guardarLinkDriveEnPedido(id, linkFinal);
+      }
+      onGuardarLinkDrive?.(ids, linkFinal);
+      setDriveFound('');
+      setDriveManual('');
+      setDriveShowManual(false);
+    } finally {
+      setDriveSaving(false);
+    }
+  }, [driveManual, pedido._mergedIds, pedido.id, onGuardarLinkDrive]);
   const estadoClass = pedido.estado === 'procesado' ? 'badge-success' : 'badge-warning';
   const tieneRevisionContacto = Boolean(pedido.revision_contacto_pendiente);
   const estadoText = pedido.estado === 'procesado' ? 'Procesado' :
@@ -435,6 +482,43 @@ function PedidoRow({
               >
                 ↩️ Descartar
               </button>
+            )}
+
+            {/* Buscar etiqueta en Drive — solo para pedidos con mismo tracking */}
+            {esDuplicateTracking && !fulfillmentPreview && (
+              <div style={{ marginTop: '0.3rem', display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+                {driveFound ? (
+                  <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                    <a href={driveFound} target="_blank" rel="noopener noreferrer"
+                      className="btn btn-secondary btn-sm">👁 Ver Drive</a>
+                    <button className="btn btn-primary btn-sm" disabled={driveSaving}
+                      onClick={() => handleGuardarDrive(driveFound)}>
+                      {driveSaving ? '…' : '💾 Guardar'}
+                    </button>
+                    <button className="btn btn-outline btn-sm" onClick={() => setDriveFound('')}>✕</button>
+                  </div>
+                ) : driveShowManual ? (
+                  <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                    <input
+                      style={{ fontSize: 11, padding: '2px 6px', border: '1px solid #ccc', borderRadius: 4, width: 160 }}
+                      placeholder="Pegar link Drive…"
+                      value={driveManual}
+                      onChange={e => setDriveManual(e.target.value)}
+                    />
+                    <button className="btn btn-primary btn-sm" disabled={!driveManual || driveSaving}
+                      onClick={() => handleGuardarDrive(driveManual)}>
+                      {driveSaving ? '…' : '💾 Guardar'}
+                    </button>
+                    <button className="btn btn-outline btn-sm" onClick={() => setDriveShowManual(false)}>✕</button>
+                  </div>
+                ) : (
+                  <button className="btn btn-secondary btn-sm" disabled={driveLoading}
+                    onClick={handleBuscarDrive}
+                    title={`Buscar etiqueta en Drive para pedido ${primerNumero}`}>
+                    {driveLoading ? '🔍 Buscando…' : '🔍 Buscar en Drive'}
+                  </button>
+                )}
+              </div>
             )}
 
           </div>

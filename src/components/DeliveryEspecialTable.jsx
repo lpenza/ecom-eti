@@ -31,6 +31,32 @@ function buildDriveUrls(fileId) {
   };
 }
 
+function groupByTracking(pedidos) {
+  const normalize = (s) => String(s || '').trim().toLowerCase();
+  const map = new Map();
+  for (const p of pedidos) {
+    // Agrupar por tracking si existe, sino por cliente+dirección
+    const tracking = normalize(p.numero_seguimiento_ues);
+    const key = tracking
+      ? `tracking:${tracking}`
+      : `dir:${normalize(p.cliente_nombre)}|${normalize(p.direccion_envio)}|${normalize(p.localidad)}`;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(p);
+  }
+  const result = [];
+  for (const group of map.values()) {
+    if (group.length === 1) { result.push(group[0]); continue; }
+    result.push({
+      ...group[0],
+      numero_pedido: group.map(p => p.numero_pedido).join(' / '),
+      _isDuplicateTracking: true,
+      _mergedIds: group.map(p => p.id),
+      _mergedPedidos: group,
+    });
+  }
+  return result;
+}
+
 export default function DeliveryEspecialTable({
   pedidos = [],
   tipo,
@@ -46,34 +72,42 @@ export default function DeliveryEspecialTable({
   const [selectedIds, setSelectedIds]     = useState(new Set());
   const [bulkLoading, setBulkLoading]     = useState(false);
 
-  const tipoLabel = tipo === 'pickup_local' ? 'Pick-UP' : 'Recibilo Hoy';
-  const tipoIcon  = tipo === 'pickup_local' ? '🏪' : '⚡';
+  const tipoLabel = tipo === 'pickup_local' ? 'Pick-UP' : tipo === 'recibilo_hoy' ? 'Recibilo Hoy' : 'Reenvíos';
+  const tipoIcon  = tipo === 'pickup_local' ? '🏪' : tipo === 'recibilo_hoy' ? '⚡' : '📦';
+  const esReenvio = tipo === 'reenvio';
 
-  const pedidosOrdenados = [...pedidos].sort((a, b) => {
-    const na = parseInt(String(a.numero_pedido || '').replace(/\D/g, ''), 10) || 0;
-    const nb = parseInt(String(b.numero_pedido || '').replace(/\D/g, ''), 10) || 0;
-    return nb - na;
-  });
+  const pedidosOrdenados = groupByTracking(
+    [...pedidos].sort((a, b) => {
+      const na = parseInt(String(a.numero_pedido || '').replace(/\D/g, ''), 10) || 0;
+      const nb = parseInt(String(b.numero_pedido || '').replace(/\D/g, ''), 10) || 0;
+      return nb - na;
+    })
+  );
+
+  // IDs reales (expandidos) de todos los pedidos en la vista
+  const allRealIds = pedidosOrdenados.flatMap(p => p._mergedIds || [p.id]);
 
   // ── Selección ───────────────────────────────────────────────────────────────
-  const allSelected = pedidosOrdenados.length > 0 && selectedIds.size === pedidosOrdenados.length;
+  const allSelected = allRealIds.length > 0 && allRealIds.every(id => selectedIds.has(id));
   const someSelected = selectedIds.size > 0;
 
-  const toggleSelect = useCallback((id) => {
+  const toggleSelect = useCallback((row) => {
+    const ids = row._mergedIds || [row.id];
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      const allSel = ids.every(id => next.has(id));
+      ids.forEach(id => allSel ? next.delete(id) : next.add(id));
       return next;
     });
   }, []);
 
   const toggleAll = useCallback(() => {
     setSelectedIds((prev) =>
-      prev.size === pedidosOrdenados.length
+      allRealIds.every(id => prev.has(id))
         ? new Set()
-        : new Set(pedidosOrdenados.map((p) => p.id))
+        : new Set(allRealIds)
     );
-  }, [pedidosOrdenados]);
+  }, [allRealIds]);
 
   // ── Etiqueta helpers ────────────────────────────────────────────────────────
   const getEtiquetaUrl = (pedido) => {
@@ -94,24 +128,30 @@ export default function DeliveryEspecialTable({
     return null;
   };
 
-  // ── Buscar etiqueta individual ──────────────────────────────────────────────
+  // ── Buscar etiqueta (soporta grupos) ───────────────────────────────────────
   const buscarEtiqueta = async (pedido) => {
-    const id = pedido.id;
-    setDriveState((s) => ({ ...s, [id]: { ...s[id], loading: true, error: null, showManualInput: false } }));
+    const stateKey = pedido.id;
+    const ids = pedido._mergedIds || [pedido.id];
+    // Para grupos, buscar por el primer número real del grupo
+    const primerNumero = pedido._mergedPedidos
+      ? pedido._mergedPedidos[0].numero_pedido
+      : pedido.numero_pedido;
+
+    setDriveState((s) => ({ ...s, [stateKey]: { ...s[stateKey], loading: true, error: null, showManualInput: false } }));
     try {
-      const result = await buscarEtiquetaDrive(pedido.numero_pedido);
+      const result = await buscarEtiquetaDrive(primerNumero);
       if (result.success) {
-        await guardarLinkDriveEnPedido(id, result.webViewLink);
+        for (const id of ids) await guardarLinkDriveEnPedido(id, result.webViewLink);
         setDriveState((s) => ({
           ...s,
-          [id]: { loading: false, previewUrl: result.previewUrl, downloadUrl: result.downloadUrl, webViewLink: result.webViewLink },
+          [stateKey]: { loading: false, previewUrl: result.previewUrl, downloadUrl: result.downloadUrl, webViewLink: result.webViewLink },
         }));
         mostrarToast?.(`✅ Etiqueta encontrada: ${result.name}`, 'success');
         onActualizar?.();
       } else {
         setDriveState((s) => ({
           ...s,
-          [id]: { loading: false, fallbackUrl: result.fallbackUrl, error: result.error, showManualInput: true, manualLink: '' },
+          [stateKey]: { loading: false, fallbackUrl: result.fallbackUrl, error: result.error, showManualInput: true, manualLink: '' },
         }));
         mostrarToast?.(
           result.error?.includes('GOOGLE_API_KEY')
@@ -123,15 +163,16 @@ export default function DeliveryEspecialTable({
     } catch (err) {
       setDriveState((s) => ({
         ...s,
-        [id]: { loading: false, error: err.message, showManualInput: true, manualLink: '' },
+        [stateKey]: { loading: false, error: err.message, showManualInput: true, manualLink: '' },
       }));
       mostrarToast?.('Error buscando en Drive — pegá el link manualmente', 'warning');
     }
   };
 
-  // ── Link manual ─────────────────────────────────────────────────────────────
+  // ── Link manual (soporta grupos) ────────────────────────────────────────────
   const handleManualLink = async (pedido, rawLink) => {
-    const id = pedido.id;
+    const stateKey = pedido.id;
+    const ids = pedido._mergedIds || [pedido.id];
     const fileId = extractDriveFileId(rawLink);
     if (!fileId) {
       mostrarToast?.('El link no parece un link de Google Drive válido', 'error');
@@ -139,19 +180,22 @@ export default function DeliveryEspecialTable({
     }
     const urls = buildDriveUrls(fileId);
     try {
-      await guardarLinkDriveEnPedido(id, urls.webViewLink);
-      setDriveState((s) => ({ ...s, [id]: { loading: false, ...urls, showManualInput: false } }));
+      for (const id of ids) await guardarLinkDriveEnPedido(id, urls.webViewLink);
+      setDriveState((s) => ({ ...s, [stateKey]: { loading: false, ...urls, showManualInput: false } }));
       mostrarToast?.('✅ Etiqueta vinculada correctamente', 'success');
       onActualizar?.();
     } catch (_) {
-      setDriveState((s) => ({ ...s, [id]: { loading: false, ...urls, showManualInput: false } }));
+      setDriveState((s) => ({ ...s, [stateKey]: { loading: false, ...urls, showManualInput: false } }));
       mostrarToast?.('PDF cargado (no se pudo guardar en DB)', 'warning');
     }
   };
 
   // ── Descargar PDFs unidos (bulk) ────────────────────────────────────────────
   const handleDescargarPDFsBulk = useCallback(async () => {
-    const pedidosSel = pedidosOrdenados.filter((p) => selectedIds.has(p.id));
+    const pedidosSel = pedidosOrdenados.filter((p) => {
+      const ids = p._mergedIds || [p.id];
+      return ids.some(id => selectedIds.has(id));
+    });
     const links = pedidosSel.map((p) => getDriveLink(p)).filter(Boolean);
 
     if (links.length === 0) {
@@ -183,7 +227,7 @@ export default function DeliveryEspecialTable({
 
   // ── Marcar despachados (bulk) ───────────────────────────────────────────────
   const handleDespacharBulk = useCallback(async () => {
-    const ids = [...selectedIds];
+    const ids = [...selectedIds]; // selectedIds ya contiene IDs reales expandidos
     if (ids.length === 0) return;
     setBulkLoading(true);
     try {
@@ -294,6 +338,7 @@ export default function DeliveryEspecialTable({
                 <th>N° Orden</th>
                 <th>Cliente</th>
                 <th>Teléfono</th>
+                {esReenvio && <th>Motivo / Producto</th>}
                 <th>Estado</th>
                 <th>Fecha</th>
                 <th>Etiqueta Drive</th>
@@ -307,20 +352,41 @@ export default function DeliveryEspecialTable({
                 const estado  = pedido.estado || 'pendiente';
                 const eLabel  = ESTADO_LABELS[estado] || { label: estado, cls: '', icon: '🔹' };
                 const isDespachado = estado === 'despachado' || estado === 'enviado';
-                const isSelected   = selectedIds.has(pedido.id);
+                const realIds  = pedido._mergedIds || [pedido.id];
+                const isSelected = realIds.every(id => selectedIds.has(id));
+                const rowKey   = pedido._mergedIds ? pedido._mergedIds.join('-') : pedido.id;
 
                 return (
-                  <tr key={pedido.id} className={isSelected ? 'de-row-selected' : ''}>
+                  <tr key={rowKey} className={[isSelected ? 'de-row-selected' : '', pedido._isDuplicateTracking ? 'pedidos-row-duplicate-tracking' : ''].filter(Boolean).join(' ')}>
                     <td>
                       <input
                         type="checkbox"
                         checked={isSelected}
-                        onChange={() => toggleSelect(pedido.id)}
+                        onChange={() => toggleSelect(pedido)}
                       />
                     </td>
-                    <td><strong>#{pedido.numero_pedido}</strong></td>
+                    <td>
+                      <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <strong>#{pedido.numero_pedido}</strong>
+                        {pedido._isDuplicateTracking && (
+                          <span className="pedido-duplicate-tracking-badge" style={{ fontSize: 11 }}>
+                            📦 mismo tracking
+                          </span>
+                        )}
+                        {esReenvio && pedido.pedido_origen_id && (
+                          <span style={{ fontSize: 11, color: '#888' }}>
+                            origen: #{String(pedido.numero_pedido).replace(/^RCL-/, '').replace(/-\d+$/, '')}
+                          </span>
+                        )}
+                      </span>
+                    </td>
                     <td>{pedido.cliente_nombre || '—'}</td>
                     <td>{pedido.cliente_telefono || pedido.cliente_email || '—'}</td>
+                    {esReenvio && (
+                      <td style={{ fontSize: 12, maxWidth: 180, wordBreak: 'break-word' }}>
+                        {pedido.motivo_reenvio || '—'}
+                      </td>
+                    )}
                     <td>
                       <span className={`reclamo-estado-badge ${eLabel.cls}`}>
                         {eLabel.icon} {eLabel.label}

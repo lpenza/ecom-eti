@@ -22,7 +22,7 @@ class ShopifyService {
       const defaultParams = {
         status: 'any',
         limit: 250,
-        financial_status: 'paid',
+        financial_status: 'paid,pending',
         ...params
       };
 

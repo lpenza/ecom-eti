@@ -312,6 +312,10 @@ body {
   background: linear-gradient(180deg, #fefce8 0%, #fef08a 40%, #fde047 100%);
 }
 
+.stat-card-reenvio {
+  background: linear-gradient(180deg, #f0f4ff 0%, #dbeafe 40%, #bfdbfe 100%);
+}
+
 .stat-card-success {
   background: linear-gradient(180deg, #f4fbf6 0%, #e7f7ec 100%);
 }
@@ -6150,6 +6154,160 @@ body {
   background: #faf7f7;
   border-radius: 7px;
   border: 1px solid #ede4e4;
+}
+
+/* ── Badge "Reintentar" en la fila ── */
+.fdx-retry-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #c47400;
+  background: #fff8ec;
+  border: 1px solid #f0c060;
+  border-radius: 20px;
+  padding: 0.15rem 0.55rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.fdx-retry-badge:hover {
+  background: #ffeec0;
+  color: #a05a00;
+}
+
+/* ── Panel de reintento (dentro del detalle expandido) ── */
+.fdx-retry-panel {
+  margin-top: 0.75rem;
+  padding: 0.85rem 1rem;
+  background: #fffbf2;
+  border: 1px solid #f0c060;
+  border-radius: 9px;
+}
+
+.fdx-retry-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.fdx-retry-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #a05a00;
+}
+
+.fdx-retry-sent-badge {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #2a6e2e;
+  background: #eafbea;
+  border: 1px solid #a8e0a8;
+  border-radius: 20px;
+  padding: 0.1rem 0.5rem;
+}
+
+.fdx-retry-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.fdx-retry-select {
+  flex: 1;
+  min-width: 160px;
+  font-size: 0.82rem;
+}
+
+.fdx-retry-btn {
+  font-size: 0.82rem;
+  font-weight: 600;
+  background: #25d366;
+  color: #fff;
+  border: none;
+  border-radius: 7px;
+  padding: 0.38rem 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.fdx-retry-btn:hover:not(:disabled) {
+  background: #1eb558;
+}
+.fdx-retry-btn--sent {
+  background: #5ba75b;
+}
+.fdx-retry-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.fdx-retry-error {
+  margin: 0.4rem 0 0;
+  font-size: 0.76rem;
+  color: #c0392b;
+  font-style: italic;
+}
+
+.fdx-retry-notice {
+  font-size: 0.8rem;
+  color: #9a7880;
+  margin: 0;
+  font-style: italic;
+}
+
+/* ── Fila de contador de reintentos ── */
+.fdx-retry-count-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.78rem;
+  color: #7a656b;
+}
+
+.fdx-retry-count-label {
+  font-weight: 500;
+}
+
+.fdx-retry-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.4rem;
+  height: 1.4rem;
+  background: #f0c060;
+  color: #7a3e00;
+  font-size: 0.74rem;
+  font-weight: 700;
+  border-radius: 20px;
+  padding: 0 0.4rem;
+}
+
+.fdx-retry-preview {
+  margin-top: 0.6rem;
+  font-size: 0.78rem;
+  color: #7a656b;
+}
+.fdx-retry-preview summary {
+  cursor: pointer;
+  color: #8a7178;
+  font-weight: 600;
+}
+.fdx-retry-preview-text {
+  margin: 0.35rem 0 0;
+  font-size: 0.79rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #faf7f7;
+  border: 1px solid #ede4e4;
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+  color: #4d3b3f;
+  line-height: 1.55;
+  font-family: inherit;
 }
 
 .fdx-contact-dates {

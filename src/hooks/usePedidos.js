@@ -448,6 +448,12 @@ export function usePedidos() {
     });
   }, []);
 
+  const actualizarLinkDrivePedidos = (ids, link) => {
+    setPedidos(prev => prev.map(p =>
+      ids.includes(p.id) ? { ...p, link_etiqueta_drive: link, etiqueta_generada: true } : p
+    ));
+  };
+
   return {
     pedidos,
     loading,
@@ -473,6 +479,7 @@ export function usePedidos() {
     toggleSelectPedido,
     loginUES,
     limpiarSeleccion,
-    setPedidoSeleccionado
+    setPedidoSeleccionado,
+    actualizarLinkDrivePedidos,
   };
 }

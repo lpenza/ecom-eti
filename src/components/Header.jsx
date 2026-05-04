@@ -72,6 +72,14 @@ function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES,
           <div className="stat-label">⚡ Recibilo Hoy</div>
         </button>
         <button
+          className={`stat-card stat-card-reenvio ${activeFilter === 'reenvios' ? 'stat-card-active' : ''}`}
+          onClick={() => onFilterChange?.('reenvios')}
+          type="button"
+        >
+          <div className="stat-value">{stats.reenvios || 0}</div>
+          <div className="stat-label">📦 Reenvíos</div>
+        </button>
+        <button
           className={`stat-card stat-card-neutral ${activeFilter === 'etiquetasGeneradas' ? 'stat-card-active' : ''}`}
           onClick={() => onFilterChange?.('etiquetasGeneradas')}
           type="button"
