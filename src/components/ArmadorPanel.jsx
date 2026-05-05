@@ -91,6 +91,7 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                 <th>N&deg; Orden</th>
                 <th>Tipo de entrega</th>
                 <th>Tracking</th>
+                <th>Nota</th>
               </tr>
             </thead>
             <tbody>
@@ -101,6 +102,11 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                 >
                   <td className="armador-orden">
                     #{p.numero_pedido || p.id?.substring(0, 8)}
+                    {p.es_reclamo && (
+                      <span className="pedido-duplicate-tracking-badge" style={{ background: '#fef9c3', color: '#92400e', borderColor: '#fde047' }}>
+                        ⚠ reclamo
+                      </span>
+                    )}
                     {p._isDuplicateTracking && (
                       <span className="pedido-duplicate-tracking-badge" title="Estos pedidos comparten el mismo número de seguimiento">
                         📦 mismo tracking
@@ -109,6 +115,13 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                   </td>
                   <td>{getTipoEnvioLabel(p.tipo_envio)}</td>
                   <td>{p.numero_seguimiento_ues || '-'}</td>
+                  <td style={{ maxWidth: '220px' }}>
+                    {p.motivo_reenvio ? (
+                      <span style={{ display: 'inline-block', background: '#fee2e2', border: '1px solid #f87171', color: '#991b1b', borderRadius: '6px', padding: '0.2rem 0.5rem', fontSize: '0.8rem', fontWeight: 600 }}>
+                        ⚠ {p.motivo_reenvio}
+                      </span>
+                    ) : '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>

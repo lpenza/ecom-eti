@@ -174,6 +174,86 @@ app.get('/api/admin/reporte', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// ── Productos (admin) ────────────────────────────────────────────────────────
+
+app.get('/api/admin/productos', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const productos = await supabaseService.listarProductos();
+    res.json({ success: true, productos });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/productos', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { nombre, descripcion, sku, precio, activo } = req.body || {};
+    if (!nombre || !String(nombre).trim()) {
+      return res.status(400).json({ success: false, error: 'El nombre es requerido' });
+    }
+    const producto = await supabaseService.crearProducto({ nombre: String(nombre).trim(), descripcion, sku, precio, activo });
+    logService.info(`Admin ${req.user.email} creó producto "${producto.nombre}"`);
+    res.json({ success: true, producto });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.put('/api/admin/productos/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombre, descripcion, sku, precio, activo } = req.body || {};
+    if (nombre !== undefined && !String(nombre).trim()) {
+      return res.status(400).json({ success: false, error: 'El nombre no puede estar vacío' });
+    }
+    const campos = {};
+    if (nombre !== undefined) campos.nombre = String(nombre).trim();
+    if (descripcion !== undefined) campos.descripcion = descripcion;
+    if (sku !== undefined) campos.sku = sku;
+    if (precio !== undefined) campos.precio = precio === '' ? null : precio;
+    if (activo !== undefined) campos.activo = activo;
+    const producto = await supabaseService.actualizarProducto(id, campos);
+    logService.info(`Admin ${req.user.email} actualizó producto ${id}`);
+    res.json({ success: true, producto });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/admin/productos/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await supabaseService.eliminarProducto(id);
+    logService.info(`Admin ${req.user.email} eliminó producto ${id}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Pedidos (admin) ───────────────────────────────────────────────────────────
+
+app.get('/api/admin/pedidos', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { q = '' } = req.query;
+    const pedidos = await supabaseService.buscarPedidosAdmin(q);
+    res.json({ success: true, pedidos });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.put('/api/admin/pedidos/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pedido = await supabaseService.actualizarPedidoAdmin(id, req.body || {});
+    logService.info(`Admin ${req.user.email} editó pedido ${id}`);
+    res.json({ success: true, pedido });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── Inicializar usuarios por defecto ─────────────────────────────────────────
 async function initializeDefaultUsers() {
   try {
@@ -2891,6 +2971,7 @@ app.post('/api/reclamos/:pedidoId/generar-etiqueta', async (req, res) => {
         numero_seguimiento_ues: etiqueta.numeroSeguimiento || null,
         link_etiqueta_drive: etiqueta.urlPdf || null,
         notificacion_enviada_at: null,
+        ...(notas ? { motivo_reenvio: notas } : {}),
       });
       logService.info(`Reclamo ${referencia} persistido en pedido ${pedidoId}`);
     } catch (dbError) {

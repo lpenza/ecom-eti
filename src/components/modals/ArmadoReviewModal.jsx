@@ -10,6 +10,7 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
   const [confirmingId, setConfirmingId] = useState(null);
   const [confirmedIds, setConfirmedIds] = useState(new Set());
   const [justConfirmedId, setJustConfirmedId] = useState(null);
+  const [motivoAceptadoByPedido, setMotivoAceptadoByPedido] = useState({});
 
   const pedido = pedidos[index];
 
@@ -78,7 +79,8 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
       const items = lineItemsByPedido[p.id] || [];
       if (items.length === 0) continue;
       const checkedSet = checkedByPedido[p.id] || new Set();
-      if (checkedSet.size === items.length) {
+      const motivoOk = !p.motivo_reenvio || !!motivoAceptadoByPedido[p.id];
+      if (checkedSet.size === items.length && motivoOk) {
         const ids = allIdsForPedido(p);
         primaryIds.push(ids[0]);
         secondaryIds.push(...ids.slice(1));
@@ -235,6 +237,34 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
               <div className="preview-validation-list">
                 <span className="tag-warn">Listos para confirmar: {readyCount}</span>
               </div>
+
+              {/* Alerta motivo reenvío — debe chequearse antes de confirmar */}
+              {pedido.motivo_reenvio && (
+                <div style={{
+                  background: motivoAceptadoByPedido[pedido.id] ? '#dcfce7' : '#fee2e2',
+                  border: `2px solid ${motivoAceptadoByPedido[pedido.id] ? '#86efac' : '#f87171'}`,
+                  borderRadius: '8px',
+                  padding: '0.75rem 1rem',
+                  marginBottom: '0.75rem',
+                  transition: 'background 0.2s, border-color 0.2s',
+                }}>
+                  <div style={{ fontWeight: 700, color: motivoAceptadoByPedido[pedido.id] ? '#166534' : '#991b1b', fontSize: '0.82rem', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.3rem' }}>
+                    ⚠ {pedido.es_reclamo ? 'Reclamo — ' : ''}Atención
+                  </div>
+                  <p style={{ margin: '0 0 0.6rem', color: motivoAceptadoByPedido[pedido.id] ? '#166534' : '#7f1d1d', fontSize: '0.92rem', whiteSpace: 'pre-wrap', fontWeight: 600 }}>
+                    {pedido.motivo_reenvio}
+                  </p>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: isConfirmed ? 'default' : 'pointer', fontSize: '0.85rem', color: motivoAceptadoByPedido[pedido.id] ? '#166534' : '#991b1b', fontWeight: 600 }}>
+                    <input
+                      type="checkbox"
+                      checked={!!motivoAceptadoByPedido[pedido.id]}
+                      disabled={isConfirmed}
+                      onChange={(e) => setMotivoAceptadoByPedido((prev) => ({ ...prev, [pedido.id]: e.target.checked }))}
+                    />
+                    Leí la especificación y voy a incluirla en el paquete
+                  </label>
+                </div>
+              )}
 
               {/* Contenido: items */}
               <div className="preview-section" style={{ borderLeftColor: '#7b2f4d' }}>
