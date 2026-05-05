@@ -534,7 +534,6 @@ class SupabaseService {
         .is('notificacion_enviada_at', null)
         .neq('estado', 'enviado')
         .neq('estado', 'despachado')
-        .neq('es_reclamo', true)
         .order('created_at', { ascending: true });
 
       if (error) throw error;
@@ -1273,6 +1272,84 @@ class SupabaseService {
       .from('contact_motivations')
       .upsert(rows, { onConflict: 'phone' });
     if (error) throw error;
+  }
+
+  // ── Productos ────────────────────────────────────────────────────────────────
+
+  async listarProductos() {
+    const { data, error } = await supabase
+      .from('productos')
+      .select('*')
+      .order('nombre', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  }
+
+  async crearProducto({ nombre, descripcion = null, sku = null, precio = null, activo = true }) {
+    const { data, error } = await supabase
+      .from('productos')
+      .insert({ nombre, descripcion, sku, precio, activo, created_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async actualizarProducto(id, campos) {
+    const { data, error } = await supabase
+      .from('productos')
+      .update({ ...campos, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async eliminarProducto(id) {
+    const { error } = await supabase.from('productos').delete().eq('id', id);
+    if (error) throw error;
+  }
+
+  // ── Pedidos admin ────────────────────────────────────────────────────────────
+
+  async buscarPedidosAdmin(q = '') {
+    const termino = String(q || '').trim();
+    let query = supabase
+      .from('pedidos')
+      .select('id, numero_pedido, cliente_nombre, cliente_email, cliente_telefono, direccion_envio, localidad, departamento, codigo_postal, estado, tipo_envio, etiqueta_generada, es_reclamo, created_at')
+      .order('created_at', { ascending: false })
+      .limit(30);
+
+    if (termino) {
+      query = query.or(
+        `numero_pedido.ilike.%${termino}%,cliente_nombre.ilike.%${termino}%,cliente_email.ilike.%${termino}%,cliente_telefono.ilike.%${termino}%`
+      );
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+  }
+
+  async actualizarPedidoAdmin(id, campos) {
+    const camposPermitidos = [
+      'cliente_nombre', 'cliente_email', 'cliente_telefono',
+      'direccion_envio', 'localidad', 'departamento', 'codigo_postal',
+      'estado', 'tipo_envio', 'motivo_reenvio',
+    ];
+    const update = {};
+    for (const k of camposPermitidos) {
+      if (k in campos) update[k] = campos[k];
+    }
+    const { data, error } = await supabase
+      .from('pedidos')
+      .update(update)
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
   }
 }
 
