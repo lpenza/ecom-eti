@@ -2294,58 +2294,6 @@ function AppContent({ user, logout }) {
             </div>
           )}
 
-          {/* ── Reenvíos ──────────────────────────────────────────────────── */}
-          {tableFilter === 'reenvios' && (
-            <div className="main-content">
-              {/* Buscador para crear un reenvío desde cualquier pedido */}
-              <div className="module-panel module-panel-tight-top" style={{ marginBottom: 16 }}>
-                <h3 style={{ marginBottom: 6 }}>Nuevo Reenvío</h3>
-                <p style={{ marginBottom: 8, color: '#666', fontSize: 13 }}>
-                  Buscá un pedido (activo o finalizado) para generar un reenvío con nueva etiqueta.
-                </p>
-                <input
-                  className="module-input"
-                  placeholder="Buscar por N° pedido, cliente, email o teléfono…"
-                  value={reenvioSearch}
-                  onChange={(e) => setReenvioSearch(e.target.value)}
-                  style={{ marginBottom: 8 }}
-                />
-                {reenvioSearch.trim().length >= 2 && (
-                  <div className="module-search-results">
-                    {reenvioSearchLoading ? (
-                      <div className="module-search-empty">Buscando…</div>
-                    ) : reenvioSearchResults.length === 0 ? (
-                      <div className="module-search-empty">No se encontraron pedidos</div>
-                    ) : reenvioSearchResults.map(p => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        className="module-search-item"
-                        onClick={() => { handleAbrirModalReenvio(p); setReenvioSearch(''); setReenvioSearchResults([]); }}
-                      >
-                        <strong>#{p.numero_pedido}</strong> — {p.cliente_nombre || 'Sin nombre'}
-                        <span style={{ color: '#888', fontSize: 12, marginLeft: 8 }}>
-                          {p.localidad || p.direccion_envio || ''}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <DeliveryEspecialTable
-                pedidos={reenvioList}
-                tipo="reenvio"
-                onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'reenvio')}
-                onMarcarDespachadosBulk={(ids) => handleMarcarDespachadosBulkEspecial(ids, 'reenvio')}
-                onProcesar={(id) => handleProcesarEspecial(id, 'reenvio')}
-                onProcesarBulk={(ids) => handleProcesarBulkEspecial(ids, 'reenvio')}
-                onActualizar={cargarPedidosReenvio}
-                mostrarToast={mostrarToast}
-              />
-            </div>
-          )}
-
           {/* ⚠️ TEMPORAL: Panel para reprocesar pedidos que no entraron por webhook.
                Cuando ya no se necesite, cambiar REPROCESS_ENABLED = false arriba */}
           {esAdmin && REPROCESS_ENABLED && (
