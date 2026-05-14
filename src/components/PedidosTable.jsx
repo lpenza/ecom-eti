@@ -47,6 +47,35 @@ function groupPedidosByTracking(pedidos) {
   return result;
 }
 
+function IframePreview({ src, title }) {
+  const [loaded, setLoaded] = React.useState(false);
+  React.useEffect(() => { setLoaded(false); }, [src]);
+  return (
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {!loaded && (
+        <div style={{
+          position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
+          justifyContent: 'center', background: 'rgba(255,255,255,0.85)', zIndex: 2,
+          flexDirection: 'column', gap: 8, fontSize: 14, color: '#555'
+        }}>
+          <div style={{
+            width: 32, height: 32, border: '3px solid #ddd', borderTopColor: '#7e5a87',
+            borderRadius: '50%', animation: 'spin 0.9s linear infinite'
+          }} />
+          <span>Generando / cargando etiqueta…</span>
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      )}
+      <iframe
+        src={src}
+        title={title}
+        className="de-modal-iframe"
+        onLoad={() => setLoaded(true)}
+      />
+    </div>
+  );
+}
+
 function PedidosTable({
   pedidos,
   selectedPedidos,
@@ -57,6 +86,8 @@ function PedidosTable({
   onMarcarNotificado,
   onDescargarEtiqueta,
   onDescartarEtiqueta,
+  onGenerarEtiquetaMP,
+  onGenerarEtiquetaUES,
   onProcesarDirecto,
   onGuardarLinkDrive,
   fulfillmentPreview,
@@ -112,7 +143,7 @@ function PedidosTable({
               </div>
             </div>
             {previewUrls?.previewUrl
-              ? <iframe src={previewUrls.previewUrl} className="de-modal-iframe" title="Etiqueta PDF" />
+              ? <IframePreview src={previewUrls.previewUrl} title="Etiqueta PDF" />
               : <p className="de-modal-empty">No hay URL de previsualización disponible.</p>
             }
           </div>
@@ -179,6 +210,8 @@ function PedidosTable({
                     onMarcarNotificado={onMarcarNotificado}
                     onDescargarEtiqueta={onDescargarEtiqueta}
                     onDescartarEtiqueta={onDescartarEtiqueta}
+                    onGenerarEtiquetaMP={onGenerarEtiquetaMP}
+                    onGenerarEtiquetaUES={onGenerarEtiquetaUES}
                     onPreviewEtiqueta={setPreviewPedido}
                     onProcesarDirecto={onProcesarDirecto}
                     onGuardarLinkDrive={onGuardarLinkDrive}
@@ -211,6 +244,8 @@ function PedidoRow({
   onMarcarNotificado,
   onDescargarEtiqueta,
   onDescartarEtiqueta,
+  onGenerarEtiquetaMP,
+  onGenerarEtiquetaUES,
   onPreviewEtiqueta,
   onProcesarDirecto,
   onGuardarLinkDrive,
@@ -472,6 +507,26 @@ function PedidoRow({
                   </button>
                 )}
               </>
+            )}
+
+            {(pedido.es_envio_express || pedido.es_reenvio) && !fulfillmentPreview && onGenerarEtiquetaMP && (
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => onGenerarEtiquetaMP(pedido.id)}
+                title="Generar etiqueta via Marco Postal"
+              >
+                📮 Etiqueta MP
+              </button>
+            )}
+
+            {pedido.es_reenvio && !fulfillmentPreview && onGenerarEtiquetaUES && !pedido.etiqueta_generada && (
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => onGenerarEtiquetaUES(pedido)}
+                title="Generar etiqueta UES (domicilio)"
+              >
+                🏷️ Etiqueta UES
+              </button>
             )}
 
             {puedeDescartarEtiqueta && !fulfillmentPreview && (

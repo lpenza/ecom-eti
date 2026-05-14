@@ -50,6 +50,10 @@ app.use((req, res, next) => {
 // Importar servicios
 const supabaseService = require('./services/supabaseService');
 const uesService = require('./services/uesService');
+const marcoPostalService = require('./services/marcoPostalService');
+const marcoPostalWebService = require('./services/marcoPostalWebService');
+const etiquetaPdfService = require('./services/etiquetaPdfService');
+const etiquetaPdfCleanup = require('./services/etiquetaPdfCleanup');
 const shopifyService = require('./services/shopifyService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
 const emailService = require('./services/emailService');
@@ -1125,6 +1129,477 @@ app.get('/api/ues/payload-preview/:pedidoId', async (req, res) => {
   }
 });
 
+// ── MarcoPostal Web (sesión + CSRF) ──────────────────────────────────────────
+app.get('/api/marcopostal/test-login', async (req, res) => {
+  try {
+    const info = await marcoPostalWebService.testLogin();
+    res.json({ success: true, data: info });
+  } catch (error) {
+    logService.error('MarcoPostal Web — test-login error', error);
+    // Diagnóstico extendido: incluye URL, status, snippet del body y headers de respuesta
+    // para entender exactamente qué responde MarcoPostal (bot detection, captcha, etc.).
+    const axiosErr = error.cause || error;
+    const detalle = {
+      message: error.message,
+      status: error.status || axiosErr.response?.status || null,
+      url: error.url || axiosErr.config?.url || null,
+      responseSnippet:
+        typeof axiosErr.response?.data === 'string'
+          ? axiosErr.response.data.slice(0, 500)
+          : axiosErr.response?.data
+          ? JSON.stringify(axiosErr.response.data).slice(0, 500)
+          : null,
+      responseHeaders: axiosErr.response?.headers
+        ? {
+            server: axiosErr.response.headers.server,
+            'content-type': axiosErr.response.headers['content-type'],
+            'cf-ray': axiosErr.response.headers['cf-ray'],
+            'cf-cache-status': axiosErr.response.headers['cf-cache-status'],
+            'x-request-id': axiosErr.response.headers['x-request-id'],
+            'set-cookie': axiosErr.response.headers['set-cookie'],
+          }
+        : null,
+      requestHeaders: axiosErr.config?.headers
+        ? Object.fromEntries(
+            Object.entries(axiosErr.config.headers).filter(([k]) =>
+              !['Authorization', 'Cookie'].includes(k)
+            )
+          )
+        : null,
+    };
+    res.status(500).json({ success: false, error: error.message, detalle });
+  }
+});
+
+app.get('/api/marcopostal/catalogos', async (req, res) => {
+  const clienteId = req.query.cliente_id || undefined;
+  const result = {};
+  const safeCall = async (name, fn) => {
+    try {
+      result[name] = { ok: true, data: await fn() };
+    } catch (err) {
+      const detail = {
+        message: err.message,
+        status: err.response?.status,
+        responseSnippet:
+          typeof err.response?.data === 'string'
+            ? err.response.data.slice(0, 500)
+            : err.response?.data,
+      };
+      logService.error(`MarcoPostal Web — ${name} error`, detail);
+      result[name] = { ok: false, error: detail };
+    }
+  };
+  await safeCall('clientesServicios', () =>
+    marcoPostalWebService.getClientesServicios(clienteId)
+  );
+  await safeCall('sucursales', () => marcoPostalWebService.getSucursales(clienteId));
+  await safeCall('cecos', () => marcoPostalWebService.getCecos(clienteId));
+  res.json({ success: true, data: result });
+});
+
+// Sync masivo de barrios de Montevideo → mapea cada fila localidades_ues (dep=18)
+// contra el catálogo de MarcoPostal usando buscarLocalidad(nombre).
+// Idempotente. ?force=true sobreescribe los ya mapeados.
+app.post('/api/marcopostal/sync-barrios', async (req, res) => {
+  const norm = (s) =>
+    String(s || '')
+      .normalize('NFD')
+      .replace(/[̀-ͯ]/g, '')
+      .replace(/,/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+
+  // Devuelve la palabra "ancla" más útil para buscar en MP: la primera con 4+ chars,
+  // o la más larga del nombre, evitando stop-words.
+  const STOP = new Set(['de', 'la', 'el', 'los', 'las', 'y', 'del', 'al', 'por', 'con']);
+  const pickSearchKey = (nombre) => {
+    const words = norm(nombre).split(' ').filter((w) => w && !STOP.has(w));
+    if (words.length === 0) return norm(nombre);
+    const long = words.find((w) => w.length >= 5) || words.find((w) => w.length >= 4) || words[0];
+    return long;
+  };
+
+  // Similitud simple: cuántos tokens de A aparecen en B (subset score).
+  const subsetScore = (aNorm, bNorm) => {
+    const aw = new Set(aNorm.split(' ').filter(Boolean));
+    const bw = new Set(bNorm.split(' ').filter(Boolean));
+    if (aw.size === 0) return 0;
+    let hit = 0;
+    for (const w of aw) if (bw.has(w)) hit += 1;
+    return hit / aw.size;
+  };
+
+  const force = String(req.query.force || '') === 'true';
+
+  try {
+    const barrios = await supabaseService.obtenerBarriosMontevideo();
+    const report = { matched: [], ambiguous: [], unmatched: [], skipped: [], totalRows: barrios.length };
+
+    // Agrupar por nombre normalizado para minimizar calls.
+    const groups = new Map();
+    for (const b of barrios) {
+      const key = norm(b.nombre);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(b);
+    }
+
+    for (const [key, rows] of groups.entries()) {
+      // Si todas las filas del grupo ya tienen marcopostal_id y no es force → skip.
+      const allMapped = rows.every((r) => r.marcopostal_id);
+      if (allMapped && !force) {
+        report.skipped.push({ nombre: rows[0].nombre, ids: rows.map((r) => r.id), count: rows.length });
+        continue;
+      }
+
+      const searchKey = pickSearchKey(rows[0].nombre);
+      let items = [];
+      try {
+        const resp = await marcoPostalWebService.buscarLocalidad('MONTEVIDEO', searchKey);
+        items = Array.isArray(resp?.items) ? resp.items : Array.isArray(resp) ? resp : [];
+      } catch (err) {
+        report.unmatched.push({
+          nombre: rows[0].nombre,
+          searchKey,
+          ids: rows.map((r) => r.id),
+          reason: `buscarLocalidad falló: ${err.message}`,
+        });
+        continue;
+      }
+
+      // Match exacto por nombre normalizado primero; si no, ranking por subsetScore.
+      const exact = items.filter((it) => norm(it.nombre) === key);
+      let chosen = null;
+      let alternatives = [];
+      let fuzzy = false;
+
+      if (exact.length >= 1) {
+        chosen = exact[0];
+        alternatives = exact.slice(1).map((it) => ({ id: it.id, nombre: it.nombre, cp: it.cp }));
+      } else if (items.length > 0) {
+        const scored = items
+          .map((it) => ({ it, score: subsetScore(key, norm(it.nombre)) }))
+          .sort((a, b) => b.score - a.score);
+        // Aceptar fuzzy solo si comparte al menos la mitad de los tokens.
+        if (scored[0].score >= 0.5) {
+          chosen = scored[0].it;
+          alternatives = scored.slice(1, 5).map((s) => ({ id: s.it.id, nombre: s.it.nombre, cp: s.it.cp, score: s.score }));
+          fuzzy = true;
+        }
+      }
+
+      if (!chosen) {
+        report.unmatched.push({
+          nombre: rows[0].nombre,
+          searchKey,
+          ids: rows.map((r) => r.id),
+          candidatos: items.length,
+          sampleNames: items.slice(0, 5).map((it) => it.nombre),
+        });
+        continue;
+      }
+
+      // Aplicar a TODAS las filas del grupo (duplicados por acentos/variantes).
+      const updates = rows.map((r) => ({
+        id: r.id,
+        marcopostal_id: chosen.id,
+        marcopostal_nombre: chosen.nombre,
+        marcopostal_cp: chosen.cp,
+      }));
+      try {
+        await supabaseService.bulkSetMarcoPostal(updates);
+      } catch (err) {
+        report.unmatched.push({
+          nombre: rows[0].nombre,
+          ids: rows.map((r) => r.id),
+          reason: `upsert falló: ${err.message}`,
+        });
+        continue;
+      }
+
+      const entry = {
+        nombre: rows[0].nombre,
+        searchKey,
+        ids: rows.map((r) => r.id),
+        rowsAfectadas: rows.length,
+        marcopostal_id: chosen.id,
+        marcopostal_nombre: chosen.nombre,
+        marcopostal_cp: chosen.cp,
+        alternativas: alternatives,
+        fuzzy,
+      };
+      if (fuzzy || alternatives.length > 0) {
+        report.ambiguous.push(entry);
+      } else {
+        report.matched.push(entry);
+      }
+    }
+
+    res.json({ success: true, data: report });
+  } catch (error) {
+    logService.error('MarcoPostal Web — sync-barrios error', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Preview del payload que se mandaría a MarcoPostal para un pedido.
+// No envía nada — sólo arma y devuelve los datos para validar.
+app.post('/api/marcopostal/preview-guia/:pedidoRef', async (req, res) => {
+  try {
+    const { pedidoRef } = req.params;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(pedidoRef);
+    let pedido;
+    if (isUuid) {
+      pedido = await supabaseService.obtenerPedido(pedidoRef);
+    } else {
+      pedido = await supabaseService.obtenerPedidoPorNumero(pedidoRef);
+    }
+    if (!pedido) {
+      return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    }
+    const isPickup = pedido.tipo_envio === 'pickup_local';
+    const preview = isPickup
+      ? await marcoPostalWebService.previewGuiaPickup(pedido)
+      : await marcoPostalWebService.previewGuia(pedido);
+    res.json({ success: true, data: { pedidoId: pedido.id, numeroPedido: pedido.numero_pedido, isPickup, ...preview } });
+  } catch (error) {
+    logService.error('MarcoPostal Web — preview-guia error', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Genera la guía en MarcoPostal usando el formulario nueva-guia-v2.
+// Acepta payloadOverrides desde el modal para que el operador pueda editar.
+app.post('/api/marcopostal/generar-guia-web/:pedidoRef', async (req, res) => {
+  try {
+    const { pedidoRef } = req.params;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(pedidoRef);
+    const pedido = isUuid
+      ? await supabaseService.obtenerPedido(pedidoRef)
+      : await supabaseService.obtenerPedidoPorNumero(pedidoRef);
+    if (!pedido) {
+      return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    }
+    const isPickup = pedido.tipo_envio === 'pickup_local';
+    const result = isPickup
+      ? await marcoPostalWebService.generarGuiaPickup(pedido, req.body?.payloadOverrides || {})
+      : await marcoPostalWebService.generarGuia(pedido, req.body?.payloadOverrides || {});
+
+    // Si MP no devolvió guiaId, no hay etiqueta — devolver error con el raw para diagnóstico.
+    if (!result.guiaId) {
+      logService.error('MarcoPostal Web — POST sin guiaId en respuesta', {
+        pedidoId: pedido.id,
+        rawSnippet:
+          typeof result.raw === 'string'
+            ? result.raw.slice(0, 500)
+            : JSON.stringify(result.raw || {}).slice(0, 500),
+      });
+      return res.status(502).json({
+        success: false,
+        error: 'MarcoPostal no devolvió número de guía. Revisar payload/sesión.',
+        raw: result.raw,
+      });
+    }
+
+    // Renderizar el PDF local de la etiqueta + persistir tracking + link.
+    let updated = null;
+    let pdfUrl = null;
+    try {
+      pdfUrl = await etiquetaPdfService.renderEtiquetaMarcoPostal(result.guiaId);
+    } catch (pdfErr) {
+      logService.error('MarcoPostal Web — render PDF falló, sigue sin PDF local', {
+        guiaId: result.guiaId,
+        error: pdfErr.message,
+      });
+    }
+
+    // Guardamos siempre el endpoint smart (renderiza si falta el archivo) en vez
+    // del path estático directo. Así "Ver PDF" sigue funcionando si el cron borró
+    // el archivo, y el merge masivo regenera transparente.
+    const dbLink = `/api/marcopostal/etiqueta-web/${encodeURIComponent(result.guiaId)}`;
+    updated = await supabaseService.actualizarPedido(pedido.id, {
+      estado: 'pendiente',
+      numero_seguimiento_ues: String(result.guiaId),
+      link_etiqueta_drive: dbLink,
+      etiqueta_generada: true,
+      etiqueta_impresa: false,
+      notificacion_enviada_at: null,
+      despachado_por_nombre: null,
+      armado_at: null,
+    });
+    logService.info('MarcoPostal Web — etiqueta registrada en pedido', {
+      pedidoId: pedido.id,
+      guiaId: result.guiaId,
+      pdfUrl,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        pedidoId: pedido.id,
+        numeroPedido: pedido.numero_pedido,
+        guiaId: result.guiaId,
+        pdfUrl,
+        labelUrl: pdfUrl,
+        externalUrl: `https://marcopostal.epresis.com/guias/remito/imprimir-guia?url=ETIQUETA_100X150_HTML&guia_id=%20${encodeURIComponent(result.guiaId)}`,
+        raw: result.raw,
+        pedidoActualizado: updated,
+      },
+    });
+  } catch (error) {
+    logService.error('MarcoPostal Web — generar-guia-web error', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Cleanup manual de PDFs de etiquetas MarcoPostal viejos. ?days=N para override.
+app.post('/api/marcopostal/cleanup-etiquetas', async (req, res) => {
+  try {
+    const days = req.query.days ? parseInt(req.query.days, 10) : undefined;
+    const result = await etiquetaPdfCleanup.cleanup(days != null ? { olderThanDays: days } : {});
+    res.json({ success: true, data: result });
+  } catch (error) {
+    logService.error('MarcoPostal — cleanup-etiquetas error', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Asociar manualmente un guiaId existente a un pedido (cuando la guía ya se generó
+// pero no quedó vinculada en BD). Renderiza el PDF y guarda tracking + link.
+app.post('/api/marcopostal/asociar-guia/:pedidoRef', async (req, res) => {
+  try {
+    const { pedidoRef } = req.params;
+    const rawGuiaId = String(req.body?.guiaId || '').trim().replace(/\s+/g, '');
+    if (!rawGuiaId) {
+      return res.status(400).json({ success: false, error: 'Falta guiaId' });
+    }
+    if (!/^\d+$/.test(rawGuiaId)) {
+      return res.status(400).json({ success: false, error: 'guiaId debe ser numérico' });
+    }
+
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(pedidoRef);
+    const pedido = isUuid
+      ? await supabaseService.obtenerPedido(pedidoRef)
+      : await supabaseService.obtenerPedidoPorNumero(pedidoRef);
+    if (!pedido) {
+      return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    }
+
+    // Renderizar el PDF para verificar que la guía existe en MarcoPostal.
+    let pdfUrl = null;
+    try {
+      pdfUrl = await etiquetaPdfService.renderEtiquetaMarcoPostal(rawGuiaId);
+    } catch (pdfErr) {
+      logService.error('MarcoPostal Web — asociar-guia: render PDF falló', {
+        pedidoId: pedido.id,
+        guiaId: rawGuiaId,
+        error: pdfErr.message,
+      });
+      return res.status(404).json({
+        success: false,
+        error: `No se pudo encontrar la etiqueta para guiaId=${rawGuiaId} en MarcoPostal. ${pdfErr.message}`,
+      });
+    }
+
+    const dbLink = `/api/marcopostal/etiqueta-web/${encodeURIComponent(rawGuiaId)}`;
+    const updated = await supabaseService.actualizarPedido(pedido.id, {
+      estado: 'pendiente',
+      numero_seguimiento_ues: rawGuiaId,
+      link_etiqueta_drive: dbLink,
+      etiqueta_generada: true,
+      etiqueta_impresa: false,
+    });
+
+    logService.info('MarcoPostal Web — guía asociada manualmente a pedido', {
+      pedidoId: pedido.id,
+      numeroPedido: pedido.numero_pedido,
+      guiaId: rawGuiaId,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        pedidoId: pedido.id,
+        numeroPedido: pedido.numero_pedido,
+        guiaId: rawGuiaId,
+        pdfUrl,
+        labelUrl: pdfUrl || dbLink,
+        pedidoActualizado: updated,
+      },
+    });
+  } catch (error) {
+    logService.error('MarcoPostal Web — asociar-guia error', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Endpoint legacy de etiqueta MarcoPostal. Antes devolvía HTML, ahora renderiza
+// a PDF local y lo sirve. Sirve para curar entradas viejas en la BD que apuntan acá
+// (ej. /api/marcopostal/etiqueta-web/20187118 → "20" venía de un %20 mal codificado).
+app.get('/api/marcopostal/etiqueta-web/:guiaId', async (req, res) => {
+  const path = require('path');
+  const fsSync = require('fs');
+  const raw = req.params.guiaId || '';
+  const force = String(req.query.force || '') === 'true';
+
+  const decoded = decodeURIComponent(raw).trim().replace(/\s+/g, '');
+  const candidates = [];
+  candidates.push(decoded);
+  if (/^20\d{5,}$/.test(decoded)) {
+    candidates.push(decoded.slice(2));
+  }
+
+  const fpFor = (id) => path.join(__dirname, 'public', 'etiquetas-marcopostal', `${id}.pdf`);
+  const servePdf = (fp, id) => {
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="etiqueta-${id}.pdf"`);
+    return fsSync.createReadStream(fp).pipe(res);
+  };
+
+  // Si pidieron force, borramos todos los candidatos cacheados antes.
+  if (force) {
+    for (const id of candidates) {
+      try { fsSync.unlinkSync(fpFor(id)); } catch (_) {}
+    }
+  }
+
+  // Pase 1: servir cualquier PDF existente sin renderizar (rápido)
+  if (!force) {
+    for (const id of candidates) {
+      if (!id) continue;
+      const fp = fpFor(id);
+      if (fsSync.existsSync(fp)) return servePdf(fp, id);
+    }
+  }
+
+  // Pase 2: ningún PDF en disco; intentar renderizar candidatos uno por uno
+  for (const id of candidates) {
+    if (!id) continue;
+    const fp = fpFor(id);
+    try {
+      await etiquetaPdfService.renderEtiquetaMarcoPostal(id);
+      if (fsSync.existsSync(fp)) return servePdf(fp, id);
+    } catch (err) {
+      logService.warning('MarcoPostal Web — fallback render falló', { guiaId: id, error: err.message });
+    }
+  }
+
+  logService.error('MarcoPostal Web — etiqueta-web no se pudo resolver', { raw, candidates });
+  res.status(404).send(`<pre>Etiqueta no encontrada para guiaId="${raw}"</pre>`);
+});
+
+app.post('/api/marcopostal/buscar-localidad', async (req, res) => {
+  try {
+    const { departamento = 'MONTEVIDEO', search = '' } = req.body || {};
+    const data = await marcoPostalWebService.buscarLocalidad(departamento, search);
+    res.json({ success: true, data });
+  } catch (error) {
+    logService.error('MarcoPostal Web — buscar-localidad error', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.get('/api/ues/catalog/departamentos', async (req, res) => {
   try {
     const data = await supabaseService.obtenerDepartamentosUes();
@@ -1189,17 +1664,32 @@ app.post('/api/reprocess-shopify-order', async (req, res) => {
       return res.status(500).json({ success: false, error: 'SUPABASE_URL o SUPABASE_KEY no configurados' });
     }
 
+    const num = String(orderNumber).replace(/^#/, '').trim();
+
     const response = await fetch(`${supabaseUrl}/functions/v1/shopify-proxy`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${supabaseKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ action: 'reprocessOrder', orderNumber: String(orderNumber) }),
+      body: JSON.stringify({ action: 'reprocessOrder', orderNumber: num }),
     });
 
-    const data = await response.json();
-    res.status(response.ok ? 200 : 500).json(data);
+    const data = await response.json().catch(() => ({}));
+    logService.info(`[reprocess] Edge Function respondió status=${response.status} body=${JSON.stringify(data)}`);
+
+    if (response.ok && data?.success) {
+      return res.json({
+        success: true,
+        pedido_id: data.pedido_id,
+        numero_pedido: data.numero_pedido,
+        es_envio_express: data.es_envio_express,
+        mensaje: data.mensaje,
+      });
+    }
+
+    const errorMsg = data?.error || `Error reprocesando pedido #${num} (status ${response.status})`;
+    return res.status(response.status || 500).json({ success: false, error: errorMsg });
   } catch (error) {
     logService.error('Error al reprocesar pedido Shopify', error);
     res.status(500).json({ success: false, error: error.message });
@@ -1283,9 +1773,20 @@ async function handleFulfillmentShopify(req, res) {
 
         logService.info(`Fulfillment pedido #${pedido.numero_pedido} | shopifyOrderId=${shopifyOrderId} | tracking=${pedido.numero_seguimiento_ues}`);
 
+        const tieneEmail = !!(pedido.cliente_email || pedido.email);
+
+        // URL de tracking según departamento. MV → MarcoPostal, resto → UES (env template).
+        // No mandamos tracking_company para no depender de carriers registrados en Shopify.
+        const esMontevideo = String(pedido.departamento || '').trim().toLowerCase() === 'montevideo';
+        const fulfillmentOptions = esMontevideo
+          ? { trackingUrl: 'https://marcopostal.epresis.com/seguimiento' }
+          : {};
+
         const fulfillment = await shopifyService.marcarComoCumplida(
           shopifyOrderId,
-          pedido.numero_seguimiento_ues
+          pedido.numero_seguimiento_ues,
+          tieneEmail,
+          fulfillmentOptions
         );
 
         await supabaseService.actualizarPedido(pedido.id, {
@@ -2111,6 +2612,14 @@ app.get('/api/feedback/dashboard', async (req, res) => {
         pedidoId: pedido.id || null,
         numeroPedido: pedido.numero_pedido || pedido.id || null,
         retryCount: pedido.followup_retry_count || 0,
+        phone: pedido.cliente_telefono
+          || pedido.telefono
+          || matchedContact?.phone_number
+          || matchedContact?.phone
+          || null,
+        pedidoId: pedido.id || null,
+        numeroPedido: pedido.numero_pedido || pedido.id || null,
+        retryCount: pedido.followup_retry_count || 0,
         followupSentAt: pedido.followup_enviado_at || null,
         responded: !!(respondedByRedis || respondedByState),
         state,
@@ -2128,12 +2637,19 @@ app.get('/api/feedback/dashboard', async (req, res) => {
       if (!existing) {
         contactMapBuild.set(customerId, entry);
       } else {
-        // Conservar el más reciente; acumular orderCount
+        // Conservar el más reciente; acumular orderCount.
+        // Preservar el teléfono si el más reciente no lo tiene pero el previo sí.
         existing.orderCount += 1;
         const existingTs = new Date(existing.followupSentAt || 0).getTime();
         const newTs = new Date(entry.followupSentAt || 0).getTime();
         if (newTs > existingTs) {
-          contactMapBuild.set(customerId, { ...entry, orderCount: existing.orderCount });
+          contactMapBuild.set(customerId, {
+            ...entry,
+            phone: entry.phone || existing.phone || null,
+            orderCount: existing.orderCount,
+          });
+        } else if (!existing.phone && entry.phone) {
+          existing.phone = entry.phone;
         }
       }
     }
@@ -2508,6 +3024,22 @@ app.post('/api/pedidos/:pedidoId/reintentar-followup', async (req, res) => {
   }
 });
 
+// Registrar reintento de follow-up: actualiza timestamp y suma 1 al contador
+app.post('/api/pedidos/:pedidoId/reintentar-followup', async (req, res) => {
+  try {
+    const { pedidoId } = req.params;
+    if (!pedidoId) {
+      return res.status(400).json({ success: false, error: 'pedidoId requerido' });
+    }
+    const data = await supabaseService.registrarReintentoFollowup(pedidoId);
+    logService.info(`Reintento follow-up registrado — pedido ${pedidoId} · intentos: ${data.followup_retry_count}`);
+    return res.json({ success: true, data });
+  } catch (error) {
+    logService.error('Error registrando reintento de follow-up', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Generar etiqueta UES (con ID en URL para React)
 app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
   try {
@@ -2837,7 +3369,8 @@ app.post('/api/generar-etiquetas-masivo', async (req, res) => {
   }
 });
 
-// Combinar múltiples etiquetas PDF en un único archivo
+// Combinar múltiples etiquetas PDF en un único archivo.
+// Soporta URLs absolutas (UES/Drive) y paths locales de MarcoPostal con auto-render.
 app.post('/api/ues/combinar-pdfs', async (req, res) => {
   try {
     const { pdfUrls } = req.body || {};
@@ -2851,15 +3384,91 @@ app.post('/api/ues/combinar-pdfs', async (req, res) => {
       return res.status(400).json({ success: false, error: 'No hay URLs de PDF válidas para combinar' });
     }
 
+    const fsLocal = require('fs');
+    const pathLocal = require('path');
+
+    const renderOrReadMp = async (rawId) => {
+      const cleaned = String(rawId || '').trim().replace(/\s+/g, '');
+      const candidates = [cleaned];
+      if (/^20\d{5,}$/.test(cleaned)) candidates.push(cleaned.slice(2));
+
+      // Pase 1: leer cualquier PDF ya cacheado
+      for (const id of candidates) {
+        const fp = pathLocal.join(__dirname, 'public', 'etiquetas-marcopostal', `${id}.pdf`);
+        if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
+      }
+
+      // Pase 2: renderizar candidatos
+      for (const id of candidates) {
+        const fp = pathLocal.join(__dirname, 'public', 'etiquetas-marcopostal', `${id}.pdf`);
+        try {
+          await etiquetaPdfService.renderEtiquetaMarcoPostal(id);
+          if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
+        } catch (err) {
+          logService.warning(`[combinar-pdfs] MP render falló id=${id}: ${err.message}`);
+        }
+      }
+      return null;
+    };
+
+    const resolverPdfBuffer = async (url) => {
+      const u = String(url || '').trim();
+
+      // 0) URL externa de MarcoPostal (legacy en BD). Extraer guia_id y resolver local.
+      if (/marcopostal\.epresis\.com\/guias\/remito\/imprimir-guia/i.test(u)) {
+        try {
+          const parsed = new URL(u);
+          const rawId = parsed.searchParams.get('guia_id') || '';
+          const buf = await renderOrReadMp(rawId);
+          if (buf) return buf;
+        } catch (err) {
+          logService.warning(`[combinar-pdfs] error parseando URL MP externa: ${err.message}`);
+        }
+        return null;
+      }
+
+      // 1) MarcoPostal endpoint smart
+      const mMpApi = u.match(/\/api\/marcopostal\/etiqueta-web\/([^?#/]+)/);
+      if (mMpApi) return await renderOrReadMp(decodeURIComponent(mMpApi[1]));
+
+      // 2) Path estático MarcoPostal
+      const mMpStatic = u.match(/^\/etiquetas-marcopostal\/([^?#/]+)\.pdf$/);
+      if (mMpStatic) return await renderOrReadMp(mMpStatic[1]);
+
+      // 3) URL absoluta (Drive u otra) → axios.get
+      if (/^https?:\/\//i.test(u)) {
+        try {
+          const response = await axios.get(u, { responseType: 'arraybuffer', timeout: 30000 });
+          return Buffer.from(response.data);
+        } catch (err) {
+          logService.warning(`[combinar-pdfs] no se pudo descargar ${u}: ${err.message}`);
+          return null;
+        }
+      }
+
+      logService.warning(`[combinar-pdfs] URL no reconocida: ${u}`);
+      return null;
+    };
+
     const { PDFDocument } = require('pdf-lib');
     const mergedPdf = await PDFDocument.create();
+    let merged = 0;
 
     for (const url of urlsValidas) {
-      const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 });
-      const sourcePdf = await PDFDocument.load(response.data);
-      const pageIndices = sourcePdf.getPageIndices();
-      const copiedPages = await mergedPdf.copyPages(sourcePdf, pageIndices);
-      copiedPages.forEach((page) => mergedPdf.addPage(page));
+      const buffer = await resolverPdfBuffer(url);
+      if (!buffer) continue;
+      try {
+        const sourcePdf = await PDFDocument.load(buffer, { ignoreEncryption: true });
+        const copiedPages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
+        copiedPages.forEach((page) => mergedPdf.addPage(page));
+        merged += 1;
+      } catch (err) {
+        logService.warning(`[combinar-pdfs] PDF inválido para URL "${url}": ${err.message}`);
+      }
+    }
+
+    if (merged === 0) {
+      return res.status(404).json({ success: false, error: 'No se pudo cargar ningún PDF de las etiquetas seleccionadas' });
     }
 
     const mergedBytes = await mergedPdf.save();
@@ -2873,7 +3482,8 @@ app.post('/api/ues/combinar-pdfs', async (req, res) => {
     return res.json({
       success: true,
       pdfUrl: `/generated/${fileName}`,
-      count: urlsValidas.length,
+      count: merged,
+      requested: urlsValidas.length,
     });
   } catch (error) {
     logService.error('Error combinando PDFs de etiquetas', error);
@@ -3048,6 +3658,42 @@ app.get('/api/pedidos-enviados', async (req, res) => {
   }
 });
 
+// ── Búsqueda de pedidos (para reenvíos) ──────────────────────────────────────
+app.get('/api/pedidos/buscar', async (req, res) => {
+  const { q } = req.query;
+  try {
+    const resultados = await supabaseService.buscarPedidos(q);
+    res.json({ success: true, data: resultados });
+  } catch (error) {
+    logService.error('Error al buscar pedidos', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+// ── Reenvíos ─────────────────────────────────────────────────────────────────
+app.get('/api/pedidos-reenvio', async (req, res) => {
+  try {
+    const pedidos = await supabaseService.obtenerPedidosReenvio();
+    res.json({ success: true, data: pedidos });
+  } catch (error) {
+    logService.error('Error al obtener pedidos reenvio', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+app.post('/api/pedidos/:id/crear-reenvio', async (req, res) => {
+  const { id } = req.params;
+  const datos = req.body || {};
+  try {
+    const nuevo = await supabaseService.crearReenvio(id, datos);
+    logService.info(`Reenvío creado: ${nuevo.numero_pedido} desde pedido ${id}`);
+    res.json({ success: true, data: nuevo });
+  } catch (error) {
+    logService.error('Error al crear reenvio', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ── Pedidos Pick-UP ──────────────────────────────────────────────────────────
 app.get('/api/pedidos-pickup', async (req, res) => {
   try {
@@ -3180,9 +3826,6 @@ app.post('/api/drive-etiquetas/merge-pdf', async (req, res) => {
   if (!Array.isArray(links) || links.length === 0) {
     return res.status(400).json({ success: false, error: 'No se enviaron links' });
   }
-  if (!driveClient) {
-    return res.status(503).json({ success: false, error: 'Drive Service Account no configurado' });
-  }
 
   const { PDFDocument } = require('pdf-lib');
 
@@ -3194,25 +3837,87 @@ app.post('/api/drive-etiquetas/merge-pdf', async (req, res) => {
     return m2 ? m2[1] : null;
   }
 
-  try {
-    const mergedPdf = await PDFDocument.create();
-    let merged = 0;
+  const fsLocal = require('fs');
+  const pathLocal = require('path');
 
-    for (const link of links) {
-      const fileId = extractFileId(link);
-      if (!fileId) { logService.warning(`[MergePDF] Link inválido: ${link}`); continue; }
+  // Resuelve un link a un Buffer de PDF. Soporta:
+  // - Drive URL (/d/<id> o ?id=<id>) → descarga vía driveClient
+  // - /etiquetas-marcopostal/<id>.pdf → lee del disco
+  // - /api/marcopostal/etiqueta-web/<id> → render-or-reuse (incluso si "20<id>" corrupto)
+  const resolverPdfBuffer = async (link) => {
+    const linkStr = String(link || '');
 
+    // 1) MarcoPostal endpoint smart
+    const mMpApi = linkStr.match(/\/api\/marcopostal\/etiqueta-web\/([^?#/]+)/);
+    if (mMpApi) {
+      const rawId = decodeURIComponent(mMpApi[1]).trim().replace(/\s+/g, '');
+      const candidates = [rawId];
+      if (/^20\d{5,}$/.test(rawId)) candidates.push(rawId.slice(2));
+      for (const id of candidates) {
+        const fp = pathLocal.join(__dirname, 'public', 'etiquetas-marcopostal', `${id}.pdf`);
+        try {
+          if (!fsLocal.existsSync(fp)) {
+            await etiquetaPdfService.renderEtiquetaMarcoPostal(id);
+          }
+          if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
+        } catch (err) {
+          logService.warning(`[MergePDF] MP render falló id=${id}: ${err.message}`);
+        }
+      }
+      return null;
+    }
+
+    // 2) Path estático directo a la carpeta de MP
+    const mMpStatic = linkStr.match(/^\/etiquetas-marcopostal\/([^?#/]+\.pdf)$/);
+    if (mMpStatic) {
+      const fp = pathLocal.join(__dirname, 'public', 'etiquetas-marcopostal', mMpStatic[1]);
+      if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
+      // Intentar render si tenemos el id
+      const idMatch = mMpStatic[1].match(/^(.+)\.pdf$/);
+      if (idMatch) {
+        try {
+          await etiquetaPdfService.renderEtiquetaMarcoPostal(idMatch[1]);
+          if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
+        } catch (err) {
+          logService.warning(`[MergePDF] MP render fallback falló: ${err.message}`);
+        }
+      }
+      return null;
+    }
+
+    // 3) Drive
+    const fileId = extractFileId(linkStr);
+    if (fileId && driveClient) {
       try {
         const resp = await driveClient.files.get(
           { fileId, alt: 'media' },
           { responseType: 'arraybuffer' }
         );
-        const pdfDoc = await PDFDocument.load(Buffer.from(resp.data), { ignoreEncryption: true });
-        const pages  = await mergedPdf.copyPagesFrom(pdfDoc, pdfDoc.getPageIndices());
+        return Buffer.from(resp.data);
+      } catch (err) {
+        logService.warning(`[MergePDF] No se pudo descargar fileId ${fileId}: ${err.message}`);
+        return null;
+      }
+    }
+
+    logService.warning(`[MergePDF] Link no resuelto: ${linkStr}`);
+    return null;
+  };
+
+  try {
+    const mergedPdf = await PDFDocument.create();
+    let merged = 0;
+
+    for (const link of links) {
+      const buffer = await resolverPdfBuffer(link);
+      if (!buffer) continue;
+      try {
+        const pdfDoc = await PDFDocument.load(buffer, { ignoreEncryption: true });
+        const pages = await mergedPdf.copyPagesFrom(pdfDoc, pdfDoc.getPageIndices());
         pages.forEach((p) => mergedPdf.addPage(p));
         merged++;
       } catch (err) {
-        logService.warning(`[MergePDF] No se pudo descargar fileId ${fileId}: ${err.message}`);
+        logService.warning(`[MergePDF] PDF inválido para link "${link}": ${err.message}`);
       }
     }
 
@@ -3578,6 +4283,97 @@ app.post('/api/templates/initialize', async (req, res) => {
   }
 });
 
+// ── Marco Postal ─────────────────────────────────────────────────────────────
+
+app.post('/api/generar-etiqueta-marcopostal/:pedidoId', requireAuth, async (req, res) => {
+  try {
+    const { pedidoId } = req.params;
+
+    if (!pedidoId) {
+      return res.status(400).json({ success: false, error: 'ID de pedido requerido' });
+    }
+
+    const pedido = await supabaseService.obtenerPedido(pedidoId);
+    if (!pedido) {
+      return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    }
+
+    const isPickup = pedido.tipo_envio === 'pickup_local';
+    const isExpress = Boolean(pedido.es_envio_express);
+
+    if (!isPickup && !isExpress) {
+      return res.status(400).json({ success: false, error: 'El pedido no es express ni pickup' });
+    }
+
+    // Pickup → usa el flujo web (session + CSRF) con servicio_id=9 (PickUp en MP)
+    // Express → mantiene el flujo legacy API-token (compatibilidad)
+    let guiaId;
+    let raw = null;
+    if (isPickup) {
+      const result = await marcoPostalWebService.generarGuiaPickup(pedido, req.body?.payloadOverrides || {});
+      guiaId = result.guiaId;
+      raw = result.raw;
+    } else {
+      const result = await marcoPostalService.generarGuia(pedido);
+      guiaId = result.guiaId;
+    }
+
+    if (!guiaId) {
+      throw new Error('MarcoPostal no devolvió guiaId');
+    }
+
+    // Renderizar PDF local (sólo aplica al flow web; legacy ya tiene su URL HTML)
+    let pdfUrl = null;
+    if (isPickup) {
+      try {
+        pdfUrl = await etiquetaPdfService.renderEtiquetaMarcoPostal(guiaId);
+      } catch (pdfErr) {
+        logService.error('MarcoPostal Web — render PDF pickup falló', {
+          guiaId,
+          error: pdfErr.message,
+        });
+      }
+    }
+
+    const labelUrl = pdfUrl || `/api/marcopostal/etiqueta-web/${encodeURIComponent(guiaId)}`;
+
+    await supabaseService.actualizarPedido(pedidoId, {
+      estado: 'pendiente',
+      numero_seguimiento_ues: String(guiaId),
+      link_etiqueta_drive: labelUrl,
+      etiqueta_generada: true,
+      etiqueta_impresa: false,
+      notificacion_enviada_at: null,
+      despachado_por_nombre: null,
+      armado_at: null,
+    });
+
+    logService.info('Marco Postal — etiqueta registrada en pedido', {
+      pedidoId,
+      guiaId,
+      labelUrl,
+      modo: isPickup ? 'pickup-web' : 'express-legacy',
+    });
+
+    res.json({ success: true, guiaId, labelUrl, raw });
+  } catch (error) {
+    logService.error('Error generando etiqueta Marco Postal', { error: error.message, pedidoId: req.params.pedidoId });
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/etiqueta-marcopostal/:guiaId', requireAuth, async (req, res) => {
+  try {
+    const { guiaId } = req.params;
+    const html = await marcoPostalService.obtenerEtiquetaHtml(parseInt(guiaId, 10));
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(typeof html === 'string' ? html : JSON.stringify(html));
+  } catch (error) {
+    logService.error('Error obteniendo etiqueta Marco Postal', { error: error.message, guiaId: req.params.guiaId });
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 if (process.env.NODE_ENV === 'production') {
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'dist', 'index.html'));
@@ -3588,7 +4384,10 @@ if (process.env.NODE_ENV === 'production') {
 app.listen(PORT, async () => {
   console.log(`🚀 VELINNE Server corriendo en http://localhost:${PORT}`);
   logService.info(`Servidor iniciado en puerto ${PORT}`);
-  
+
+  // Arranca cleanup diario de PDFs MarcoPostal (retención env-configurable, default 7 días)
+  etiquetaPdfCleanup.startScheduler();
+
   // Inicializar plantillas por defecto al arrancar el servidor
   supabaseService.inicializarPlantillasDefecto().catch(err => {
     logService.error('Error al inicializar plantillas por defecto', err);

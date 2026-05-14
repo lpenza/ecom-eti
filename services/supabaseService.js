@@ -460,9 +460,19 @@ class SupabaseService {
       .select('*')
       .eq('id', pedidoId)
       .single();
-    
+
     if (error) throw error;
     return data;
+  }
+
+  async obtenerPedidoPorNumero(numero) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .eq('numero_pedido', String(numero))
+      .limit(1);
+    if (error) throw error;
+    return data?.[0] || null;
   }
 
   // Obtener todos los pedidos activos (pendientes + con etiqueta, excluye procesados y reclamos)
@@ -483,6 +493,98 @@ class SupabaseService {
       return data || [];
     } catch (error) {
       console.error('❌ Error en obtenerPedidosActivos:', error);
+      throw error;
+    }
+  }
+
+  // Crear un pedido de reenvío a partir de un pedido existente
+  async crearReenvio(pedidoOriginalId, datos) {
+    try {
+      const { data: original, error: fetchError } = await supabase
+        .from('pedidos')
+        .select('*')
+        .eq('id', pedidoOriginalId)
+        .single();
+
+      if (fetchError) throw fetchError;
+
+      // Contar reenvíos previos del mismo pedido para generar sufijo único
+      const { count } = await supabase
+        .from('pedidos')
+        .select('id', { count: 'exact', head: true })
+        .eq('pedido_origen_id', pedidoOriginalId);
+
+      const sufijo = (count || 0) + 1;
+      const numeroPedido = `RCL-${original.numero_pedido}${sufijo > 1 ? `-${sufijo}` : ''}`;
+
+      const { data, error } = await supabase
+        .from('pedidos')
+        .insert({
+          numero_pedido:    numeroPedido,
+          cliente_nombre:   datos.cliente_nombre   || original.cliente_nombre,
+          cliente_email:    datos.cliente_email    || original.cliente_email,
+          cliente_telefono: datos.cliente_telefono || original.cliente_telefono,
+          direccion_envio:  datos.direccion_envio  || original.direccion_envio,
+          localidad:        datos.localidad        || original.localidad,
+          departamento:     datos.departamento     || original.departamento,
+          codigo_postal:    datos.codigo_postal    || original.codigo_postal,
+          tipo_envio:       datos.tipo_envio       || 'estandar',
+          estado:           'pendiente',
+          etiqueta_generada: false,
+          es_reenvio:       true,
+          pedido_origen_id: pedidoOriginalId,
+          motivo_reenvio:   datos.motivo_reenvio   || '',
+          created_at:       new Date().toISOString(),
+          updated_at:       new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    } catch (error) {
+      console.error('❌ Error en crearReenvio:', error);
+      throw error;
+    }
+  }
+
+  // Obtener pedidos de reenvío pendientes
+  async obtenerPedidosReenvio() {
+    try {
+      const { data, error } = await supabase
+        .from('pedidos')
+        .select('*')
+        .eq('es_reenvio', true)
+        .not('estado', 'in', '("enviado","despachado")')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      return data || [];
+    } catch (error) {
+      console.error('❌ Error en obtenerPedidosReenvio:', error);
+      throw error;
+    }
+  }
+
+  // Buscar pedidos por número, nombre, email o teléfono (para reenvíos)
+  async buscarPedidos(q) {
+    const term = String(q || '').trim();
+    if (!term) return [];
+    try {
+      const { data, error } = await supabase
+        .from('pedidos')
+        .select('*')
+        .or(
+          `numero_pedido.ilike.%${term}%,cliente_nombre.ilike.%${term}%,cliente_email.ilike.%${term}%,cliente_telefono.ilike.%${term}%`
+        )
+        .eq('es_reenvio', false)
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (error) throw error;
+      return data || [];
+    } catch (error) {
+      console.error('❌ Error en buscarPedidos:', error);
       throw error;
     }
   }
@@ -807,6 +909,7 @@ class SupabaseService {
     let query = supabase
       .from('pedidos')
       .select('id, numero_pedido, cliente_nombre, cliente_email, cliente_telefono, followup_enviado_at, followup_retry_count')
+      .select('id, numero_pedido, cliente_nombre, cliente_email, cliente_telefono, followup_enviado_at, followup_retry_count')
       .not('followup_enviado_at', 'is', null)
       .order('followup_enviado_at', { ascending: false })
       .limit(5000);
@@ -929,7 +1032,6 @@ class SupabaseService {
   }
 
   async registrarReintentoFollowup(pedidoId) {
-    // 1. Leer el contador actual
     const { data: current, error: fetchError } = await supabase
       .from('pedidos')
       .select('followup_retry_count')
@@ -940,7 +1042,6 @@ class SupabaseService {
 
     const newCount = (current?.followup_retry_count ?? 0) + 1;
 
-    // 2. Actualizar timestamp + contador
     const { data, error } = await supabase
       .from('pedidos')
       .update({
@@ -1469,6 +1570,82 @@ class SupabaseService {
       .single();
     if (error) throw error;
     return data;
+  }
+
+  // ── MarcoPostal: mapeo de localidades_ues ────────────────────────────────────
+  async obtenerBarriosMontevideo() {
+    const { data, error } = await supabase
+      .from('localidades_ues')
+      .select('id, nombre, ues_id, marcopostal_id, marcopostal_nombre, marcopostal_cp')
+      .eq('departamento_id', 18)
+      .order('nombre');
+    if (error) throw error;
+    return data || [];
+  }
+
+  async buscarBarrioMarcoPostalPorNombre(nombre, { codigoPostal = null } = {}) {
+    if (!nombre) return null;
+    const norm = normalizeText(nombre);
+
+    const { data, error } = await supabase
+      .from('localidades_ues')
+      .select('id, nombre, marcopostal_id, marcopostal_nombre, marcopostal_cp')
+      .eq('departamento_id', 18)
+      .not('marcopostal_id', 'is', null);
+    if (error) throw error;
+
+    if (!data || data.length === 0) return null;
+
+    let candidates = data.filter((row) => normalizeText(row.nombre) === norm);
+    if (candidates.length === 0) {
+      candidates = data.filter((row) => normalizeText(row.nombre).includes(norm) || norm.includes(normalizeText(row.nombre)));
+    }
+    if (candidates.length === 0) return null;
+
+    if (codigoPostal && candidates.length > 1) {
+      const cpStr = String(codigoPostal).trim();
+      const byCp = candidates.find((row) => String(row.marcopostal_cp || '').trim() === cpStr);
+      if (byCp) return byCp;
+    }
+    return candidates[0];
+  }
+
+  async setMarcoPostalParaBarrio(id, mpId, mpNombre, mpCp = null) {
+    const { data, error } = await supabase
+      .from('localidades_ues')
+      .update({
+        marcopostal_id: mpId ? String(mpId) : null,
+        marcopostal_nombre: mpNombre || null,
+        marcopostal_cp: mpCp ? String(mpCp) : null,
+        marcopostal_mapped_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async bulkSetMarcoPostal(rows) {
+    if (!rows || rows.length === 0) return [];
+    const now = new Date().toISOString();
+    const results = [];
+    for (const r of rows) {
+      const { data, error } = await supabase
+        .from('localidades_ues')
+        .update({
+          marcopostal_id: r.marcopostal_id ? String(r.marcopostal_id) : null,
+          marcopostal_nombre: r.marcopostal_nombre || null,
+          marcopostal_cp: r.marcopostal_cp ? String(r.marcopostal_cp) : null,
+          marcopostal_mapped_at: now,
+        })
+        .eq('id', r.id)
+        .select()
+        .single();
+      if (error) throw error;
+      results.push(data);
+    }
+    return results;
   }
 }
 

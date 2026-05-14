@@ -5,6 +5,7 @@ import {
   obtenerCatalogoLocalidadesUES,
   obtenerPayloadPreviewUES,
   obtenerPuntosRetiroUES,
+  previewGuiaMarcoPostal,
 } from '../../services/api';
 
 function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex = 0, onReviewedChange, onClose, onConfirm, isReclamoMode = false, onUpdateRevisionContacto }) {
@@ -16,6 +17,7 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
   const [formsByPedidoId, setFormsByPedidoId] = useState({});
   const [validationError, setValidationError] = useState('');
   const [showTechnicalDetails, setShowTechnicalDetails] = useState(false);
+  const [mpPreviewByPedidoId, setMpPreviewByPedidoId] = useState({});
   const [geocodificando, setGeocodificando] = useState(false);
   const [geoResultadoByPedidoId, setGeoResultadoByPedidoId] = useState({});
   const [geoAplicadoByPedidoId, setGeoAplicadoByPedidoId] = useState({});
@@ -25,6 +27,34 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
   const currentPedido = pedidos[currentIndex] || null;
   const currentPreview = currentPedido ? previewByPedidoId[currentPedido.id] : null;
   const currentForm = currentPedido ? formsByPedidoId[currentPedido.id] : null;
+  const currentMpPreview = currentPedido ? mpPreviewByPedidoId[currentPedido.id] : null;
+
+  const currentEsMarcoPostal = (() => {
+    const dep = String(
+      currentForm?.payloadDireccion?.departamento ||
+        currentPedido?.departamento ||
+        ''
+    ).trim().toLowerCase();
+    return dep === 'montevideo';
+  })();
+
+  // Lazy-load del preview MarcoPostal cuando se abre el detalle técnico para MV.
+  useEffect(() => {
+    if (!showTechnicalDetails) return;
+    if (!currentPedido || !currentEsMarcoPostal) return;
+    if (mpPreviewByPedidoId[currentPedido.id]) return; // cacheado
+    const pedidoId = currentPedido.id;
+    setMpPreviewByPedidoId((prev) => ({ ...prev, [pedidoId]: { loading: true } }));
+    (async () => {
+      try {
+        const r = await previewGuiaMarcoPostal(pedidoId);
+        if (!r?.success) throw new Error(r?.error || 'Error obteniendo preview MarcoPostal');
+        setMpPreviewByPedidoId((prev) => ({ ...prev, [pedidoId]: { loading: false, data: r.data } }));
+      } catch (err) {
+        setMpPreviewByPedidoId((prev) => ({ ...prev, [pedidoId]: { loading: false, error: err.message } }));
+      }
+    })();
+  }, [showTechnicalDetails, currentPedido?.id, currentEsMarcoPostal]);
 
   const currentDepartamentoId = String(currentForm?.payloadDireccion?.departamento_id || '');
   const localidadesActuales = useMemo(() => {
@@ -225,6 +255,17 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     }
   }, [isBatch, pedidos, currentIndex, pedidosConsolidadosOcultos, visibleIndexes]);
 
+  // Detecta si el form corresponde a un pedido que se va a procesar por MarcoPostal Web
+  // (todos los pedidos con departamento Montevideo).
+  const formEsMarcoPostalWeb = (form) => {
+    const depTexto = String(
+      form?.payloadDireccion?.departamento ||
+        form?.pedidoRaw?.departamento ||
+        ''
+    ).trim().toLowerCase();
+    return depTexto === 'montevideo';
+  };
+
   const getFormValidation = (form) => {
     if (!form) {
       return { blockers: ['Cargando datos del pedido'], warnings: [] };
@@ -234,6 +275,7 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     const warnings = [];
 
     const tipoEntrega = form.tipoEntrega || 'domicilio';
+    const viaMP = formEsMarcoPostalWeb(form);
 
     if (tipoEntrega === 'domicilio') {
       if (!String(form.payloadDireccion?.calle || '').trim()) blockers.push('Falta calle');
@@ -243,17 +285,24 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
         blockers.push('Falta número de puerta');
       }
 
-      if (!String(form.payloadDireccion?.departamento_id || '').trim()) blockers.push('Falta departamento');
-      if (!String(form.payloadDireccion?.localidad_id || '').trim()) blockers.push('Falta localidad');
+      // Catálogo UES (departamento_id / localidad_id) sólo aplica al interior.
+      if (!viaMP) {
+        if (!String(form.payloadDireccion?.departamento_id || '').trim()) blockers.push('Falta departamento');
+        if (!String(form.payloadDireccion?.localidad_id || '').trim()) blockers.push('Falta localidad');
+      }
     } else if (tipoEntrega === 'pickup') {
       if (!form.puntoRetiroId) blockers.push('Falta seleccionar punto de retiro');
     }
 
     if (!String(form.payloadEnvio?.nombre_recibe || '').trim()) blockers.push('Falta nombre destinatario');
-    if (!String(form.payloadEnvio?.telefono_recibe || '').trim()) blockers.push('Falta teléfono destinatario');
+    if (!String(form.payloadEnvio?.telefono_recibe || '').trim()) {
+      // Para MarcoPostal el teléfono es opcional; sólo aviso. UES sigue exigiéndolo.
+      if (viaMP) warnings.push('Sin teléfono destinatario');
+      else blockers.push('Falta teléfono destinatario');
+    }
     if (!String(form.payloadEnvio?.email_recibe || '').trim()) warnings.push('Sin email destinatario');
 
-    return { blockers, warnings };
+    return { blockers, warnings, viaMarcoPostal: viaMP };
   };
 
   useEffect(() => {
@@ -354,6 +403,7 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
               latitud: preview?.payloadDireccion?.latitud || '',
               longitud: preview?.payloadDireccion?.longitud || '',
               departamento_id: detectedDepartamentoId,
+              departamento: pedidoData?.departamento || '',
               localidad_id: detectedLocalidadId,
               observaciones: preview?.payloadDireccion?.observaciones || '',
             },
@@ -370,6 +420,13 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
               peso: guia.peso || '',
               ci: guia.ci || '',
               valor_declarado: guia.valor_declarado || '',
+            },
+            // Campos específicos de MarcoPostal (solo aplican a pedidos Montevideo).
+            // Quedan vacíos por default — si el operador los carga, se mandan en el form.
+            mpFields: {
+              hora_desde: '',
+              hora_hasta: '',
+              fecha_servicio: '',
             },
           },
         };
@@ -426,6 +483,7 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
               latitud: pedidoData.latitud || '',
               longitud: pedidoData.longitud || '',
               departamento_id: '', // Se autodetectará después
+              departamento: pedidoData?.departamento || '',
               localidad_id: '',
               observaciones: direccionParseada?.observaciones || '',
             },
@@ -442,6 +500,11 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
               peso: '',
               ci: '',
               valor_declarado: '',
+            },
+            mpFields: {
+              hora_desde: '',
+              hora_hasta: '',
+              fecha_servicio: '',
             },
           },
         };
@@ -766,6 +829,8 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
         payloadDireccion: form.payloadDireccion || {},
         payloadEnvio: form.payloadEnvio || {},
         guia: form.guia || {},
+        // Campos para MarcoPostal (sólo se usan si el pedido es de Montevideo)
+        mpFields: form.mpFields || {},
       } : null;
 
       return {
@@ -1135,6 +1200,25 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
             </aside>
 
             <div className="preview-content">
+          {currentValidation.viaMarcoPostal && (
+            <div
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                background: '#e3f2fd',
+                color: '#0d47a1',
+                border: '1px solid #64b5f6',
+                padding: '4px 10px',
+                borderRadius: 999,
+                fontSize: 12,
+                fontWeight: 600,
+                marginBottom: 8,
+              }}
+            >
+              🏙️ Envío MarcoPostal
+            </div>
+          )}
           <div className={`preview-validation-banner ${currentValidation.blockers.length > 0 ? 'error' : currentValidation.warnings.length > 0 ? 'warn' : 'ok'}`}>
             {currentValidation.blockers.length > 0 && `${currentValidation.blockers.length} error(es) bloqueante(s)`}
             {currentValidation.blockers.length === 0 && currentValidation.warnings.length > 0 && `${currentValidation.warnings.length} advertencia(s)`}
@@ -1199,6 +1283,42 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
               <span>{currentPedido.cliente_email}</span>
             </div>
           </div>
+
+          {/* Horario de entrega MarcoPostal (solo MV, opcional) */}
+          {currentEsMarcoPostal && (
+            <div className="preview-section" style={{ background: '#f4faff', borderLeft: '3px solid #0d47a1' }}>
+              <h4>🕒 Horario de entrega (MarcoPostal)</h4>
+              <p style={{ fontSize: 13, color: '#555', margin: '0 0 12px' }}>
+                Opcional. Si el cliente indicó un rango horario para recibir, cargalo acá. Se manda a MarcoPostal en los campos <code>hora_desde</code> / <code>hora_hasta</code>.
+              </p>
+              <div className="preview-edit-grid">
+                <div className="preview-field">
+                  <strong>Hora desde:</strong>
+                  <input
+                    type="time"
+                    value={currentForm?.mpFields?.hora_desde || ''}
+                    onChange={(e) => updateCurrentForm('mpFields', 'hora_desde', e.target.value)}
+                  />
+                </div>
+                <div className="preview-field">
+                  <strong>Hora hasta:</strong>
+                  <input
+                    type="time"
+                    value={currentForm?.mpFields?.hora_hasta || ''}
+                    onChange={(e) => updateCurrentForm('mpFields', 'hora_hasta', e.target.value)}
+                  />
+                </div>
+                <div className="preview-field">
+                  <strong>Fecha (opcional):</strong>
+                  <input
+                    type="date"
+                    value={currentForm?.mpFields?.fecha_servicio || ''}
+                    onChange={(e) => updateCurrentForm('mpFields', 'fecha_servicio', e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Dirección */}
           <div className="preview-section">
@@ -1420,7 +1540,7 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                   </button>
                 </div>
 
-                {showTechnicalDetails && (
+                {showTechnicalDetails && !currentEsMarcoPostal && (
                 <div className="preview-edit-grid preview-edit-grid-spaced">
                   <h5>guardarEnvio</h5>
 
@@ -1476,6 +1596,128 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                     <input value={currentForm.guia?.valor_declarado || ''} onChange={(e) => updateCurrentForm('guia', 'valor_declarado', e.target.value)} />
                   </div>
                 </div>
+                )}
+
+                {showTechnicalDetails && currentEsMarcoPostal && (
+                  <div className="preview-edit-grid preview-edit-grid-spaced">
+                    <h5>🏙️ MarcoPostal — POST /guias/store_multiitems</h5>
+                    {currentMpPreview?.loading && <p>Obteniendo preview de MarcoPostal…</p>}
+                    {currentMpPreview?.error && (
+                      <div style={{ background: '#ffe5e5', padding: 8, borderRadius: 4, fontSize: 12 }}>
+                        <strong>Error:</strong> {currentMpPreview.error}
+                      </div>
+                    )}
+                    {currentMpPreview?.data && (() => {
+                      const baseSummary = currentMpPreview.data.summary || {};
+                      const r = currentMpPreview.data.resolved || {};
+                      const basePayload = currentMpPreview.data.payload || {};
+
+                      // Aplicar las ediciones del form ENCIMA del preview cargado del backend.
+                      // Si el operador editó algo en la UI, lo reflejamos en vivo acá.
+                      const dir = currentForm?.payloadDireccion || {};
+                      const env = currentForm?.payloadEnvio || {};
+                      const mp = currentForm?.mpFields || {};
+                      const orig = (v) => (v == null ? '' : String(v));
+                      const pick = (edited, fallback) => {
+                        const e = orig(edited).trim();
+                        return e !== '' ? e : fallback;
+                      };
+
+                      // Celular: aplicar misma sanitización que el backend
+                      let celularEditado = pick(env.telefono_recibe, baseSummary.destinatario?.celular || '');
+                      const celDigits = String(celularEditado || '').replace(/\D/g, '');
+                      if (celDigits.length < 6) celularEditado = '';
+
+                      const s = {
+                        ...baseSummary,
+                        destinatario: {
+                          ...baseSummary.destinatario,
+                          nombre: pick(env.nombre_recibe, baseSummary.destinatario?.nombre),
+                          email: pick(env.email_recibe, baseSummary.destinatario?.email),
+                          celular: celularEditado,
+                          calle: pick(dir.calle, baseSummary.destinatario?.calle),
+                          altura: pick(dir.nro_puerta, baseSummary.destinatario?.altura),
+                          piso: pick(dir.numero_apartamento, baseSummary.destinatario?.piso),
+                          observaciones: pick(dir.observaciones, baseSummary.destinatario?.observaciones),
+                        },
+                        envio: {
+                          ...baseSummary.envio,
+                          referencia: pick(env.referencia, baseSummary.envio?.referencia),
+                          fecha: pick(mp.fecha_servicio, baseSummary.envio?.fecha),
+                        },
+                      };
+
+                      // Payload efectivo (mismo merge en cada key MP del form-url-encoded)
+                      const overridesFlat = {
+                        calle: pick(dir.calle, ''),
+                        altura: pick(dir.nro_puerta, ''),
+                        piso: pick(dir.numero_apartamento, ''),
+                        other_info: pick(dir.observaciones, ''),
+                        apellido_nombre: pick(env.nombre_recibe, ''),
+                        email: pick(env.email_recibe, ''),
+                        celular: celularEditado,
+                        obs1: pick(env.referencia, ''),
+                        hora_desde: pick(mp.hora_desde, ''),
+                        hora_hasta: pick(mp.hora_hasta, ''),
+                        fecha_servicio: pick(mp.fecha_servicio, ''),
+                      };
+                      const payload = { ...basePayload };
+                      for (const [k, v] of Object.entries(overridesFlat)) {
+                        if (v !== '') payload[k] = v;
+                      }
+
+                      return (
+                        <>
+                          <div style={{ background: '#e3f2fd', padding: 8, borderRadius: 4, fontSize: 12, marginBottom: 8 }}>
+                            Destino resuelto vía <strong>{r.destino?.source}</strong>
+                            {r.destino?.geoSource && <> (geo: {r.destino.geoSource})</>}
+                            {' — '}
+                            barrio MP: <strong>{r.destino?.marcopostal_nombre || '(sin resolver)'}</strong>
+                            {r.destino?.marcopostal_cp && <> · CP {r.destino.marcopostal_cp}</>}
+                          </div>
+
+                          <h6 style={{ margin: '8px 0 4px' }}>Destinatario</h6>
+                          <div className="preview-field"><strong>Nombre:</strong><span>{s.destinatario?.nombre}</span></div>
+                          <div className="preview-field"><strong>Email:</strong><span>{s.destinatario?.email || '—'}</span></div>
+                          <div className="preview-field"><strong>Celular:</strong><span>{s.destinatario?.celular || <em style={{ color: '#999' }}>(vacío)</em>}</span></div>
+                          <div className="preview-field"><strong>Calle:</strong><span>{s.destinatario?.calle}</span></div>
+                          <div className="preview-field"><strong>Altura:</strong><span>{s.destinatario?.altura || '—'}</span></div>
+                          <div className="preview-field"><strong>Piso:</strong><span>{s.destinatario?.piso || '—'}</span></div>
+                          <div className="preview-field"><strong>Provincia:</strong><span>{s.destinatario?.provincia}</span></div>
+                          <div className="preview-field"><strong>Localidad (MP):</strong><span>{s.destinatario?.localidad}</span></div>
+                          <div className="preview-field"><strong>CP:</strong><span>{s.destinatario?.cp || '—'}</span></div>
+                          <div className="preview-field"><strong>Observaciones:</strong><span>{s.destinatario?.observaciones || '—'}</span></div>
+
+                          <h6 style={{ margin: '8px 0 4px' }}>Envío</h6>
+                          <div className="preview-field"><strong>Fecha:</strong><span>{s.envio?.fecha}</span></div>
+                          <div className="preview-field"><strong>Hora desde:</strong><span>{overridesFlat.hora_desde || <em style={{ color: '#999' }}>(sin definir)</em>}</span></div>
+                          <div className="preview-field"><strong>Hora hasta:</strong><span>{overridesFlat.hora_hasta || <em style={{ color: '#999' }}>(sin definir)</em>}</span></div>
+                          <div className="preview-field"><strong>Servicio ID:</strong><span>{s.envio?.servicio_id}</span></div>
+                          <div className="preview-field"><strong>Tipo operación:</strong><span>{s.envio?.tipo_operacion_id}</span></div>
+                          <div className="preview-field"><strong>Sector:</strong><span>{s.envio?.sector}</span></div>
+                          <div className="preview-field"><strong>Pago en:</strong><span>{s.envio?.pago_en}</span></div>
+                          <div className="preview-field"><strong>Referencia (obs1):</strong><span>{s.envio?.referencia}</span></div>
+                          <div className="preview-field"><strong>Cliente ID:</strong><span>{s.envio?.cliente_id}</span></div>
+                          <div className="preview-field"><strong>Sucursal ID:</strong><span>{s.envio?.sucursal_id}</span></div>
+
+                          <h6 style={{ margin: '8px 0 4px' }}>Remitente (sucursal)</h6>
+                          <div className="preview-field"><strong>Empresa:</strong><span>{s.remitente?.empresa}</span></div>
+                          <div className="preview-field"><strong>Contacto:</strong><span>{s.remitente?.contacto}</span></div>
+                          <div className="preview-field"><strong>Dirección:</strong><span>{s.remitente?.direccion}</span></div>
+                          <div className="preview-field"><strong>Localidad:</strong><span>{s.remitente?.localidad} ({s.remitente?.cp})</span></div>
+
+                          <details style={{ marginTop: 10 }}>
+                            <summary style={{ cursor: 'pointer', fontSize: 12, color: '#555' }}>
+                              Ver payload completo (form-url-encoded) — refleja tus ediciones
+                            </summary>
+                            <pre style={{ background: '#f4f4f4', padding: 8, fontSize: 11, marginTop: 6, maxHeight: 240, overflow: 'auto' }}>
+{Object.entries(payload).map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join('\n')}
+                            </pre>
+                          </details>
+                        </>
+                      );
+                    })()}
+                  </div>
                 )}
               </>
             )}

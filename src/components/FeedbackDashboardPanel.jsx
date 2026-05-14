@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { obtenerFeedbackDashboard, analizarRazonesCompra, reintentarFollowup } from '../services/api';
+import { obtenerFeedbackDashboard, analizarRazonesCompra, reintentarFollowup } from '../services/api';
 
 function percent(part, total) {
   if (!total) return 0;
@@ -245,7 +246,7 @@ function stateTone(rawState) {
   return STATE_META[String(rawState || '').trim().toLowerCase()]?.tone || 'neutral';
 }
 
-const PER_PAGE = 15;
+const CAMPAIGN_CONTACTS_PAGE_SIZE = 25;
 const MS_24H = 24 * 60 * 60 * 1000;
 
 function isRetryEligible(contact) {
@@ -301,7 +302,6 @@ function RetryPanel({ contact, templates = [], onRetrySuccess }) {
     } finally {
       setSaving(false);
     }
-    // Abrir WhatsApp siempre, aunque falle el registro
     window.open(waLink, '_blank', 'noopener,noreferrer');
     setSent(true);
   };
@@ -358,8 +358,6 @@ function CampaignContactsList({ contacts = [], campaignSent = 0, templates = [],
   const [expanded, setExpanded] = useState(null);
   const [page, setPage] = useState(1);
 
-  const isNoLoUso = (c) => String(c.state || '').toLowerCase() === 'no_lo_uso';
-
   const filtered = contacts.filter((c) => {
     if (filter === 'respondio'     && !c.responded) return false;
     if (filter === 'sin_respuesta' && c.responded)  return false;
@@ -400,8 +398,19 @@ function CampaignContactsList({ contacts = [], campaignSent = 0, templates = [],
     sin_respuesta: contacts.filter((c) => !c.responded).length,
     positivo:      contacts.filter((c) => stateTone(c.state) === 'positive').length,
     negativo:      contacts.filter((c) => stateTone(c.state) === 'negative').length,
-    no_lo_uso:     contacts.filter(isNoLoUso).length,
   };
+
+  useEffect(() => {
+    setPage(1);
+  }, [filter, search, contacts]);
+
+  const totalPages  = Math.max(1, Math.ceil(filtered.length / CAMPAIGN_CONTACTS_PAGE_SIZE));
+  const safePage    = Math.min(page, totalPages);
+  const startIdx    = (safePage - 1) * CAMPAIGN_CONTACTS_PAGE_SIZE;
+  const pageItems   = filtered.slice(startIdx, startIdx + CAMPAIGN_CONTACTS_PAGE_SIZE);
+  const showingFrom = filtered.length === 0 ? 0 : startIdx + 1;
+  const showingTo   = Math.min(startIdx + CAMPAIGN_CONTACTS_PAGE_SIZE, filtered.length);
+  const showPagination = filtered.length > CAMPAIGN_CONTACTS_PAGE_SIZE;
 
   return (
     <article className="fdx-card fdx-contacts-card">
@@ -439,38 +448,38 @@ function CampaignContactsList({ contacts = [], campaignSent = 0, templates = [],
       {filtered.length === 0 ? (
         <p className="fdx-contacts-empty">No hay resultados para este filtro.</p>
       ) : (
-        <>
-          <ul className="fdx-contacts-list">
-            {pageItems.map((c) => {
-              const isOpen = expanded === c.customerId;
-              return (
-                <li key={c.customerId} className={`fdx-contact-row${isOpen ? ' is-open' : ''}`}>
-                  <button
-                    type="button"
-                    className="fdx-contact-main"
-                    onClick={() => setExpanded(isOpen ? null : c.customerId)}
-                    aria-expanded={isOpen}
-                  >
-                    <span className="fdx-contact-name">{c.name}</span>
-                    <span className="fdx-contact-phone">{maskPhone(c.phone)}</span>
-                    <span className="fdx-contact-state-col">
-                      <StateBadge state={c.state} />
-                      {c.requiresHuman && <span className="fdx-contact-human">👤</span>}
+        <ul className="fdx-contacts-list">
+          {pageItems.map((c) => {
+            const isOpen = expanded === c.customerId;
+            return (
+              <li key={c.customerId} className={`fdx-contact-row${isOpen ? ' is-open' : ''}`}>
+                {/* Fila principal — siempre 5 columnas fijas */}
+                <button
+                  type="button"
+                  className="fdx-contact-main"
+                  onClick={() => setExpanded(isOpen ? null : c.customerId)}
+                  aria-expanded={isOpen}
+                >
+                  <span className="fdx-contact-name">{c.name}</span>
+                  <span className="fdx-contact-phone">{maskPhone(c.phone)}</span>
+                  <span className="fdx-contact-state-col">
+                    <StateBadge state={c.state} />
+                    {c.requiresHuman && <span className="fdx-contact-human">👤</span>}
+                  </span>
+                  <span className={`fdx-contact-responded ${c.responded ? 'yes' : 'no'}`}>
+                    {c.responded ? '✓ Respondió' : '✗ Sin resp.'}
+                  </span>
+                  <span className="fdx-contact-date">{formatRelativeDate(c.followupSentAt)}</span>
+                  {isRetryEligible(c) && (
+                    <span
+                      className="fdx-retry-badge"
+                      title="Sin respuesta hace más de 24 horas — podés reintentar"
+                      onClick={(e) => { e.stopPropagation(); setExpanded(c.customerId); }}
+                    >
+                      ⟳ Reintentar
                     </span>
-                    <span className={`fdx-contact-responded ${c.responded ? 'yes' : 'no'}`}>
-                      {c.responded ? '✓ Respondió' : '✗ Sin resp.'}
-                    </span>
-                    <span className="fdx-contact-date">{formatRelativeDate(c.followupSentAt)}</span>
-                    {isRetryEligible(c) && (
-                      <span
-                        className="fdx-retry-badge"
-                        title="Sin respuesta hace más de 24 horas — podés reintentar"
-                        onClick={(e) => { e.stopPropagation(); setExpanded(c.customerId); }}
-                      >
-                        ⟳ Reintentar
-                      </span>
-                    )}
-                  </button>
+                  )}
+                </button>
 
                   {isOpen && (
                     <div className="fdx-contact-detail">
@@ -514,79 +523,82 @@ function CampaignContactsList({ contacts = [], campaignSent = 0, templates = [],
                         </div>
                       )}
 
-                      {!c.notes?.length && !c.stateUpdatedAt && (
-                        <p className="fdx-contact-nodata">Sin notas ni estado registrado en base de datos.</p>
-                      )}
+                    {!c.notes?.length && !c.stateUpdatedAt && (
+                      <p className="fdx-contact-nodata">Sin notas ni estado registrado en base de datos.</p>
+                    )}
 
-                      {c.retryCount > 0 && (
-                        <div className="fdx-retry-count-row">
-                          <span className="fdx-retry-count-label">Reintentos registrados</span>
-                          <span className="fdx-retry-count-badge">{c.retryCount}</span>
-                        </div>
-                      )}
+                    {c.retryCount > 0 && (
+                      <div className="fdx-retry-count-row">
+                        <span className="fdx-retry-count-label">Reintentos registrados</span>
+                        <span className="fdx-retry-count-badge">{c.retryCount}</span>
+                      </div>
+                    )}
 
-                      {c.profileSummary && (
-                        <details className="fdx-contact-summary">
-                          <summary>Ver perfil del bot</summary>
-                          <p>{c.profileSummary}</p>
-                        </details>
-                      )}
+                    {c.profileSummary && (
+                      <details className="fdx-contact-summary">
+                        <summary>Ver perfil del bot</summary>
+                        <p>{c.profileSummary}</p>
+                      </details>
+                    )}
 
-                      {isRetryEligible(c) && (
-                        <RetryPanel contact={c} templates={templates} onRetrySuccess={onRetrySuccess} />
-                      )}
-                    </div>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+                    {isRetryEligible(c) && (
+                      <RetryPanel contact={c} templates={templates} onRetrySuccess={onRetrySuccess} />
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
 
-          {totalPages > 1 && (
-            <div className="fdx-pagination">
-              <button
-                type="button"
-                className="fdx-page-btn"
-                onClick={() => changePage(safePage - 1)}
-                disabled={safePage === 1}
-              >
-                ‹ Anterior
-              </button>
-              <div className="fdx-page-numbers">
-                {Array.from({ length: totalPages }, (_, i) => i + 1)
-                  .filter((p) => p === 1 || p === totalPages || Math.abs(p - safePage) <= 1)
-                  .reduce((acc, p, idx, arr) => {
-                    if (idx > 0 && p - arr[idx - 1] > 1) acc.push('…');
-                    acc.push(p);
-                    return acc;
-                  }, [])
-                  .map((p, i) =>
-                    p === '…' ? (
-                      <span key={`ellipsis-${i}`} className="fdx-page-ellipsis">…</span>
-                    ) : (
-                      <button
-                        key={p}
-                        type="button"
-                        className={`fdx-page-btn fdx-page-num${p === safePage ? ' is-active' : ''}`}
-                        onClick={() => changePage(p)}
-                      >
-                        {p}
-                      </button>
-                    )
-                  )}
-              </div>
-              <button
-                type="button"
-                className="fdx-page-btn"
-                onClick={() => changePage(safePage + 1)}
-                disabled={safePage === totalPages}
-              >
-                Siguiente ›
-              </button>
-              <span className="fdx-page-info">{(safePage - 1) * PER_PAGE + 1}–{Math.min(safePage * PER_PAGE, filtered.length)} de {filtered.length}</span>
-            </div>
-          )}
-        </>
+      {showPagination && (
+        <div className="fdx-pagination" role="navigation" aria-label="Paginación de contactos">
+          <span className="fdx-page-info">
+            Mostrando {showingFrom}–{showingTo} de {filtered.length}
+          </span>
+          <div className="fdx-page-controls">
+            <button
+              type="button"
+              className="fdx-page-btn"
+              onClick={() => setPage(1)}
+              disabled={safePage === 1}
+              aria-label="Primera página"
+            >
+              «
+            </button>
+            <button
+              type="button"
+              className="fdx-page-btn"
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={safePage === 1}
+              aria-label="Página anterior"
+            >
+              ‹ Anterior
+            </button>
+            <span className="fdx-page-indicator">
+              Página {safePage} de {totalPages}
+            </span>
+            <button
+              type="button"
+              className="fdx-page-btn"
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={safePage === totalPages}
+              aria-label="Página siguiente"
+            >
+              Siguiente ›
+            </button>
+            <button
+              type="button"
+              className="fdx-page-btn"
+              onClick={() => setPage(totalPages)}
+              disabled={safePage === totalPages}
+              aria-label="Última página"
+            >
+              »
+            </button>
+          </div>
+        </div>
       )}
     </article>
   );
@@ -754,6 +766,7 @@ function RazonesDeCompra({ razones, loading, onAnalizar }) {
 }
 
 function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
+function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
@@ -762,6 +775,10 @@ function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
   const [loadingRazones, setLoadingRazones] = useState(false);
   // Parche local para actualizar contactos tras un reintento sin recargar todo
   const [retryPatch, setRetryPatch] = useState({});
+
+  const handleRetrySuccess = ({ customerId, followupSentAt, retryCount }) => {
+    setRetryPatch((prev) => ({ ...prev, [customerId]: { followupSentAt, retryCount } }));
+  };
 
   const loadDashboard = async () => {
     try {
@@ -806,8 +823,6 @@ function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
   const campaign = data?.campaignFeedback?.kpis || { sent: 0, responded: 0, ok: 0, notOk: 0, noResponse: 0 };
   const campaignSentiment = data?.campaignFeedback?.sentiment || { positive: 0, neutral: 0, negative: 0 };
   const rawCampaignContacts = data?.campaignFeedback?.contacts || [];
-
-  // Aplicar parche local de reintentos sin recargar desde el servidor
   const campaignContacts = useMemo(
     () => rawCampaignContacts.map((c) => {
       const patch = retryPatch[c.customerId];
@@ -816,7 +831,6 @@ function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
     }),
     [rawCampaignContacts, retryPatch]
   );
-  const noLoUsoCount = campaignContacts.filter((c) => String(c.state || '').toLowerCase() === 'no_lo_uso').length;
   const timeline = data?.campaignFeedback?.timeline || [];
   const hotOverview = data?.hotRedis?.overview || { contacts: 0, activeLast24h: 0, requiresHuman: 0, paused: 0, blacklisted: 0, botActive: 0 };
   const hotSentiment = data?.hotRedis?.sentiment || { positive: 0, neutral: 0, negative: 0 };
@@ -1020,6 +1034,12 @@ function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
 
       {/* Lista de contactos de campaña */}
       {activeTab === 'campanas' && (
+        <CampaignContactsList
+          contacts={campaignContacts}
+          campaignSent={campaign.sent}
+          templates={templates}
+          onRetrySuccess={handleRetrySuccess}
+        />
         <CampaignContactsList
           contacts={campaignContacts}
           campaignSent={campaign.sent}

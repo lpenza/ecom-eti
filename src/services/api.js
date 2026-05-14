@@ -198,6 +198,31 @@ export async function descartarEtiqueta(pedidoId) {
   });
 }
 
+export async function generarEtiquetaMarcoPostal(pedidoId) {
+  return await fetchAPI(`/generar-etiqueta-marcopostal/${pedidoId}`, { method: 'POST' });
+}
+
+// MarcoPostal Web (sesión + CSRF): preview + generación
+export async function previewGuiaMarcoPostal(pedidoIdOrNumero) {
+  return await fetchAPI(`/marcopostal/preview-guia/${pedidoIdOrNumero}`, { method: 'POST' });
+}
+
+export async function generarGuiaMarcoPostalWeb(pedidoIdOrNumero, payloadOverrides = null) {
+  return await fetchAPI(`/marcopostal/generar-guia-web/${pedidoIdOrNumero}`, {
+    method: 'POST',
+    body: JSON.stringify({ payloadOverrides }),
+  });
+}
+
+// Asocia manualmente un guiaId existente de MarcoPostal a un pedido (renderiza
+// el PDF y guarda tracking + link en BD).
+export async function asociarGuiaMarcoPostal(pedidoIdOrNumero, guiaId) {
+  return await fetchAPI(`/marcopostal/asociar-guia/${pedidoIdOrNumero}`, {
+    method: 'POST',
+    body: JSON.stringify({ guiaId }),
+  });
+}
+
 /**
  * Generar etiqueta para un pedido
  */
@@ -487,6 +512,27 @@ export async function obtenerPedidosEnviados() {
 export async function obtenerReclamosPendientes() {
   const data = await fetchAPI('/reclamos-pendientes', { method: 'GET' });
   return Array.isArray(data?.data) ? data.data : [];
+}
+
+// ==================== BÚSQUEDA PEDIDOS ====================
+
+export async function buscarPedidos(q) {
+  const data = await fetchAPI(`/pedidos/buscar?q=${encodeURIComponent(q)}`, { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+// ==================== REENVÍOS ====================
+
+export async function obtenerPedidosReenvio() {
+  const data = await fetchAPI('/pedidos-reenvio', { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+export async function crearReenvio(pedidoId, datos) {
+  return await fetchAPI(`/pedidos/${pedidoId}/crear-reenvio`, {
+    method: 'POST',
+    body: JSON.stringify(datos),
+  });
 }
 
 // ==================== PICK-UP / RECIBILO HOY ====================

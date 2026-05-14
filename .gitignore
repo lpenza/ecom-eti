@@ -27,4 +27,5 @@ C:\VELINNE\
 tmp-*.js
 ues_*.json
 public/generated/
+public/etiquetas-marcopostal/*.pdf
 pedido_revision_contacto.json

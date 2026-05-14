@@ -347,6 +347,38 @@ export function usePedidos() {
     }
   }, []);
 
+  // Generar etiqueta via Marco Postal (express y pickup)
+  const generarEtiquetaMarcoPostal = useCallback(async (pedidoId) => {
+    console.log(`📦 Generando etiqueta Marco Postal para pedido ${pedidoId}...`);
+    setLoading(true);
+    setLoadingText('Generando etiqueta Marco Postal...');
+
+    try {
+      const result = await api.generarEtiquetaMarcoPostal(pedidoId);
+
+      setPedidos(prevPedidos =>
+        prevPedidos.map(p =>
+          p.id === pedidoId
+            ? {
+                ...p,
+                estado: 'etiqueta_generada',
+                numero_seguimiento_ues: String(result.guiaId),
+                etiqueta_generada: true,
+                link_etiqueta_drive: result.labelUrl || null,
+              }
+            : p
+        )
+      );
+
+      return { success: true, guiaId: result.guiaId, labelUrl: result.labelUrl };
+    } catch (error) {
+      console.error('❌ Error generando etiqueta Marco Postal:', error);
+      return { success: false, error: error.message };
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   // Generar etiqueta de colaboracion
   const generarEtiquetaColaboracion = useCallback(async (data) => {
     console.log('📦 Generando etiqueta de colaboracion...');
@@ -458,6 +490,8 @@ export function usePedidos() {
     pedidos,
     loading,
     loadingText,
+    setLoading,
+    setLoadingText,
     selectedPedidos,
     stats,
     uesAuthenticated,
@@ -471,6 +505,7 @@ export function usePedidos() {
     enviarEmailMasivoPendientesContacto,
     descartarEtiqueta,
     generarEtiqueta,
+    generarEtiquetaMarcoPostal,
     consolidarEtiqueta,
     generarEtiquetaReclamo,
     generarEtiquetaColaboracion,

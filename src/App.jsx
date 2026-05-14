@@ -3,6 +3,7 @@ import Header from './components/Header';
 import Toolbar from './components/Toolbar';
 import PedidosTable from './components/PedidosTable';
 import DatosPreviewModal from './components/modals/DatosPreviewModal';
+import MarcoPostalPreviewModal from './components/modals/MarcoPostalPreviewModal';
 import PDFPreviewModal from './components/modals/PDFPreviewModal';
 import LoadingModal from './components/modals/LoadingModal';
 import Toast from './components/Toast';
@@ -39,7 +40,11 @@ import {
   obtenerPedidosReenvio,
   crearReenvio,
   buscarPedidos,
+  obtenerPedidosReenvio,
+  crearReenvio,
+  buscarPedidos,
   reprocesarPedidoShopify,
+  generarGuiaMarcoPostalWeb,
 } from './services/api';
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
 import ArmadorPanel from './components/ArmadorPanel';
@@ -94,6 +99,8 @@ function AppContent({ user, logout }) {
     pedidos,
     loading,
     loadingText,
+    setLoading,
+    setLoadingText,
     selectedPedidos,
     uesAuthenticated,
     cargarPedidos,
@@ -106,6 +113,7 @@ function AppContent({ user, logout }) {
     enviarEmailMasivoPendientesContacto,
     descartarEtiqueta,
     generarEtiqueta,
+    generarEtiquetaMarcoPostal,
     consolidarEtiqueta,
     generarEtiquetaReclamo,
     generarEtiquetaColaboracion,
@@ -155,7 +163,7 @@ function AppContent({ user, logout }) {
   const [pickupList,    setPickupList]    = useState([]);
   const [recibiloList,  setRecibiloList]  = useState([]);
   const [reenvioList,   setReenvioList]   = useState([]);
-  const [reenvioModal,  setReenvioModal]  = useState(null); // pedido origen seleccionado
+  const [reenvioModal,  setReenvioModal]  = useState(null);
   const [reenvioForm,   setReenvioForm]   = useState({
     cliente_nombre: '', cliente_email: '', cliente_telefono: '',
     direccion_envio: '', localidad: '', departamento: '', codigo_postal: '',
@@ -165,6 +173,7 @@ function AppContent({ user, logout }) {
   const [reenvioSearchResults, setReenvioSearchResults] = useState([]);
   const [reenvioSearchLoading, setReenvioSearchLoading] = useState(false);
   const [reenvioCreating,      setReenvioCreating]      = useState(false);
+  const [reenvioMpModal,       setReenvioMpModal]       = useState(null); // { id, numero }
   const [templates, setTemplates] = useState([]);
   const [activeTemplateId, setActiveTemplateId] = useState('');
   const [activeTrackingTemplateId, setActiveTrackingTemplateId] = useState('');
@@ -279,6 +288,7 @@ function AppContent({ user, logout }) {
     enviados: pedidosEnviadosList.length,
     pickup: pickupList.length,
     recibilo: recibiloList.length,
+    reenvios: reenvioList.length,
     reenvios: reenvioList.length,
     trackingAlert: hayDescuadreTracking || pedidosRevisionManual.length > 0,
     trackingBreakdown: {
@@ -550,6 +560,15 @@ function AppContent({ user, logout }) {
     }
   }, []);
 
+  const cargarPedidosReenvio = useCallback(async () => {
+    try {
+      const data = await obtenerPedidosReenvio();
+      setReenvioList(Array.isArray(data) ? data : []);
+    } catch (error) {
+      console.error('❌ Error cargando pedidos reenvio:', error);
+    }
+  }, []);
+
   const cargarPedidosArmadoOperario = useCallback(async () => {
     try {
       const data = await obtenerPedidosArmado();
@@ -567,6 +586,24 @@ function AppContent({ user, logout }) {
     cargarPedidosRecibilo();
     cargarPedidosReenvio();
   }, [cargarPedidosDespachados, cargarPedidosEnviados, cargarPedidosPickup, cargarPedidosRecibilo, cargarPedidosReenvio]);
+
+  // Búsqueda debounced para crear reenvíos
+  useEffect(() => {
+    const q = reenvioSearch.trim();
+    if (q.length < 2) { setReenvioSearchResults([]); return; }
+    const timer = setTimeout(async () => {
+      setReenvioSearchLoading(true);
+      try {
+        const resultados = await buscarPedidos(q);
+        setReenvioSearchResults(resultados);
+      } catch {
+        setReenvioSearchResults([]);
+      } finally {
+        setReenvioSearchLoading(false);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [reenvioSearch]);
 
   useEffect(() => {
     if (!esAdmin) {
@@ -601,52 +638,155 @@ function AppContent({ user, logout }) {
       cargarPedidosPickup(),
       cargarPedidosRecibilo(),
       cargarPedidosReenvio(),
+      cargarPedidosReenvio(),
     ]);
-  }, [cargarPedidos, cargarPedidosDespachados, cargarPedidosEnviados, cargarPedidosPickup, cargarPedidosRecibilo]);
+  }, [cargarPedidos, cargarPedidosDespachados, cargarPedidosEnviados, cargarPedidosPickup, cargarPedidosRecibilo, cargarPedidosReenvio]);
 
   // Confirmación desde modal (uno o múltiples pedidos)
   const handleConfirmarGeneracion = async (items) => {
     if (!Array.isArray(items) || items.length === 0) return;
-    if (!uesAuthenticated) {
-      mostrarToast('Debes iniciar sesión en UES antes de generar etiquetas', 'warning');
+
+    // Helper: identifica si un pedido debe ir por MarcoPostal Web (Montevideo)
+    const pedidosMap = new Map(pedidos.map((p) => [p.id, p]));
+    const esMontevideo = (pedidoId) => {
+      const p = pedidosMap.get(pedidoId);
+      return String(p?.departamento || '').trim().toLowerCase() === 'montevideo';
+    };
+
+    // Sólo bloqueamos por falta de login UES si HAY pedidos no-Montevideo (interior).
+    const necesitaUes = items.some((it) => !esMontevideo(it.pedidoId));
+    if (necesitaUes && !uesAuthenticated) {
+      mostrarToast('Debes iniciar sesión en UES antes de generar etiquetas de interior', 'warning');
       return;
     }
-    
+
     // Si estamos en modo reclamo, usar el handler específico
     if (previewMode === 'reclamo') {
       return handleConfirmarReclamo(items);
     }
-    
+
     setShowDatosModal(false);
     setPreviewMode('normal');
 
-    if (items.length === 1) {
-      const item = items[0];
-      const resultado = await generarEtiqueta(item.pedidoId, item.payloadOverrides || null);
+    // Loader bloqueante mientras se generan TODAS las etiquetas.
+    const totalPedidos = items.length;
+    const cantidadMV = items.filter((it) => esMontevideo(it.pedidoId)).length;
+    setLoadingText(
+      cantidadMV > 0
+        ? `Generando ${totalPedidos} etiqueta(s) — ${cantidadMV} via MarcoPostal (puede tardar)...`
+        : `Generando ${totalPedidos} etiqueta(s)...`
+    );
+    setLoading(true);
 
-      if (resultado.success && resultado.pdfUrl) {
-        setPdfUrl(resultado.pdfUrl);
-        setShowPDFModal(true);
-        if (resultado.warning) {
-          mostrarToast(`⚠️ ${resultado.warning}. Tracking: ${resultado.tracking}`, 'warning');
+    // Wrapper que decide qué service usar según departamento, normalizando el resultado
+    // al shape esperado por el flujo bulk: { success, tracking, pdfUrl, error? }.
+    let procesados = 0;
+    const generarPedido = async (pedidoId, payloadOverrides) => {
+      procesados += 1;
+      setLoadingText(`Generando etiqueta ${procesados}/${totalPedidos}...`);
+      if (esMontevideo(pedidoId)) {
+        // Mapeo de campos UES-style editados en el modal → form-fields de MarcoPostal.
+        // Sólo se incluyen los que el operador realmente cargó (no vacíos), para no
+        // pisar con strings vacíos los defaults que arma buildPayload en el backend.
+        const dir = payloadOverrides?.payloadDireccion || {};
+        const env = payloadOverrides?.payloadEnvio || {};
+        const mpRaw = payloadOverrides?.mpFields || {};
+
+        // MarcoPostal (Carbon/PHP) espera fecha en DD/MM/YYYY, pero el input type="date"
+        // devuelve YYYY-MM-DD. Convertir si aplica.
+        const toMpDate = (isoOrEmpty) => {
+          const s = String(isoOrEmpty || '').trim();
+          if (!s) return '';
+          const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+          if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+          return s; // ya viene en DD/MM/YYYY o algo custom — lo dejamos
+        };
+
+        const candidateOverrides = {
+          // Dirección
+          calle: String(dir.calle || '').trim(),
+          altura: String(dir.nro_puerta || '').trim(),
+          piso: String(dir.numero_apartamento || '').trim(),
+          other_info: String(dir.observaciones || '').trim(),
+          // Datos de contacto del destinatario
+          apellido_nombre: String(env.nombre_recibe || '').trim(),
+          email: String(env.email_recibe || '').trim(),
+          celular: String(env.telefono_recibe || '').trim(),
+          obs1: String(env.referencia || '').trim(),
+          // Horario MP (de la sección dedicada). Time queda HH:MM (Carbon lo acepta).
+          hora_desde: String(mpRaw.hora_desde || '').trim(),
+          hora_hasta: String(mpRaw.hora_hasta || '').trim(),
+          fecha_servicio: toMpDate(mpRaw.fecha_servicio),
+        };
+
+        // Sanitizar celular igual que en el backend: < 6 dígitos = string vacío.
+        if (candidateOverrides.celular) {
+          const digits = candidateOverrides.celular.replace(/\D/g, '');
+          if (digits.length < 6) candidateOverrides.celular = '';
         }
-      } else if (resultado.success) {
-        mostrarToast(
-          resultado.warning || `✅ Etiqueta generada correctamente. Tracking: ${resultado.tracking}`,
-          resultado.warning ? 'warning' : 'success'
-        );
-      } else {
-        mostrarToast(resultado.error || 'Error al generar etiqueta', 'error');
+
+        const mpOverrides = {};
+        for (const [k, v] of Object.entries(candidateOverrides)) {
+          if (v) mpOverrides[k] = v;
+        }
+        const overrides = Object.keys(mpOverrides).length > 0 ? mpOverrides : null;
+
+        const r = await generarGuiaMarcoPostalWeb(pedidoId, overrides);
+        if (!r?.success) {
+          return { success: false, error: r?.error || 'Error MarcoPostal Web' };
+        }
+        // Defensa: aunque el backend devuelva success, si no hay guiaId no es éxito real
+        if (!r.data?.guiaId) {
+          console.error('MP devolvió success pero sin guiaId. Raw:', r.data?.raw);
+          return {
+            success: false,
+            error: 'MarcoPostal no devolvió número de guía (ver consola para el raw)',
+          };
+        }
+        return {
+          success: true,
+          tracking: String(r.data.guiaId),
+          pdfUrl: r.data?.pdfUrl || r.data?.labelUrl || null,
+          via: 'marcopostal-web',
+        };
+      }
+      return await generarEtiqueta(pedidoId, payloadOverrides);
+    };
+
+    if (items.length === 1) {
+      try {
+        const item = items[0];
+        const resultado = await generarPedido(item.pedidoId, item.payloadOverrides || null);
+
+        if (resultado.success && resultado.pdfUrl) {
+          setPdfUrl(resultado.pdfUrl);
+          setShowPDFModal(true);
+          if (resultado.warning) {
+            mostrarToast(`⚠️ ${resultado.warning}. Tracking: ${resultado.tracking}`, 'warning');
+          }
+        } else if (resultado.success) {
+          mostrarToast(
+            resultado.warning || `✅ Etiqueta generada correctamente. Tracking: ${resultado.tracking}`,
+            resultado.warning ? 'warning' : 'success'
+          );
+        } else {
+          mostrarToast(resultado.error || 'Error al generar etiqueta', 'error');
+        }
+      } finally {
+        setLoadingText('Actualizando lista de pedidos...');
+        try { await cargarPedidos(); } catch (_) {}
+        setLoading(false);
       }
       return;
     }
 
     let exitosos = 0;
     let fallidos = 0;
-    const pdfUrlsExitosas = [];
+    const pdfUrlsExitosas = []; // PDFs reales (UES Drive + MarcoPostal local)
     let exitososSinPdf = 0;
     const totalMarcados = items.length;
 
+    try {
     const itemById = new Map(items.map((item) => [item.pedidoId, item]));
     const pedidoById = new Map(pedidos.map((p) => [p.id, p]));
     const resultadosPorPedidoId = new Map();
@@ -700,7 +840,7 @@ function AppContent({ user, logout }) {
         }
       }
 
-      const resultado = await generarEtiqueta(item.pedidoId, payloadOverridesFinal);
+      const resultado = await generarPedido(item.pedidoId, payloadOverridesFinal);
       resultadosPorPedidoId.set(item.pedidoId, resultado);
 
       if (resultado.success) {
@@ -772,6 +912,11 @@ function AppContent({ user, logout }) {
     } else {
       const sinPdfTexto = exitososSinPdf > 0 ? `, ${exitososSinPdf} sin PDF` : '';
       mostrarToast(`⚠️ ${exitosos}/${totalMarcados} exitosas${sinPdfTexto} y ${fallidos} con error`, 'warning');
+    }
+    } finally {
+      setLoadingText('Actualizando lista de pedidos...');
+      try { await cargarPedidos(); } catch (_) {}
+      setLoading(false);
     }
   };
 
@@ -1133,6 +1278,67 @@ function AppContent({ user, logout }) {
     }
   };
 
+  // ==================== HANDLERS REENVÍOS ====================
+
+  const handleAbrirModalReenvio = (pedido) => {
+    setReenvioForm({
+      cliente_nombre:   pedido.cliente_nombre   || '',
+      cliente_email:    pedido.cliente_email    || '',
+      cliente_telefono: pedido.cliente_telefono || '',
+      direccion_envio:  pedido.direccion_envio  || '',
+      localidad:        pedido.localidad        || '',
+      departamento:     pedido.departamento     || '',
+      codigo_postal:    pedido.codigo_postal    || '',
+      tipo_envio:       'estandar',
+      motivo_reenvio:   '',
+    });
+    setReenvioModal(pedido);
+  };
+
+  const handleCerrarModalReenvio = () => {
+    setReenvioModal(null);
+    setReenvioSearch('');
+  };
+
+  const handleConfirmarReenvio = async () => {
+    if (!reenvioModal) return;
+    if (!reenvioForm.motivo_reenvio.trim()) {
+      mostrarToast('Completá el motivo del reenvío', 'warning');
+      return;
+    }
+    setReenvioCreating(true);
+    try {
+      const resultado = await crearReenvio(reenvioModal.id, reenvioForm);
+      if (!resultado.success) {
+        mostrarToast(resultado.error || 'Error al crear reenvío', 'error');
+        return;
+      }
+      mostrarToast(`✅ Reenvío ${resultado.data.numero_pedido} creado`, 'success');
+      handleCerrarModalReenvio();
+      cargarPedidosReenvio();
+    } catch (err) {
+      mostrarToast(`Error: ${err.message}`, 'error');
+    } finally {
+      setReenvioCreating(false);
+    }
+  };
+
+  const handleGenerarEtiquetaMP = async (pedidoId) => {
+    const resultado = await generarEtiquetaMarcoPostal(pedidoId);
+    if (!resultado.success) {
+      mostrarToast(resultado.error || 'Error generando etiqueta Marco Postal', 'error');
+      return { success: false, error: resultado.error };
+    }
+    mostrarToast(`Etiqueta MP generada — Guía #${resultado.guiaId}`, 'success');
+    // Devolvemos el resultado completo para que el caller (DeliveryEspecialTable)
+    // pueda usar guiaId/labelUrl y disparar preview + refresh.
+    return {
+      success: true,
+      guiaId: resultado.guiaId,
+      labelUrl: resultado.labelUrl,
+    };
+  };
+
   const handleDescargarEtiqueta = (pedidoId) => {
     const pedido = pedidos.find((p) => p.id === pedidoId);
     const etiquetaUrl = String(pedido?.link_etiqueta_drive || '').trim();
@@ -1180,6 +1386,15 @@ function AppContent({ user, logout }) {
       return;
     }
 
+    // Heurística para mostrar texto útil en el loader.
+    const hayMP = pdfUrls.some((u) => /marcopostal|etiquetas-marcopostal/i.test(u));
+    setLoadingText(
+      hayMP
+        ? `Generando y combinando ${pdfUrls.length} etiquetas (puede tardar)...`
+        : `Combinando ${pdfUrls.length} etiquetas...`
+    );
+    setLoading(true);
+
     try {
       const combinado = await combinarPdfsEtiquetas(pdfUrls);
       if (!combinado?.success || !combinado?.pdfUrl) {
@@ -1206,6 +1421,8 @@ function AppContent({ user, logout }) {
     } catch (error) {
       console.error('Error combinando etiquetas seleccionadas:', error);
       mostrarToast('No se pudieron combinar las etiquetas seleccionadas', 'error');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -2130,6 +2347,7 @@ function AppContent({ user, logout }) {
                 onProcesar={(id) => handleProcesarEspecial(id, 'pickup_local')}
                 onProcesarBulk={(ids) => handleProcesarBulkEspecial(ids, 'pickup_local')}
                 onActualizar={cargarPedidosPickup}
+                onGenerarEtiquetaMP={handleGenerarEtiquetaMP}
                 mostrarToast={mostrarToast}
               />
             </div>
@@ -2234,7 +2452,82 @@ function AppContent({ user, logout }) {
             </div>
           )}
 
+          {/* ── Reenvíos ──────────────────────────────────────────────── */}
+          {tableFilter === 'reenvios' && (
+            <div className="main-content">
+              {/* Buscador para crear un reenvío desde cualquier pedido */}
+              <div className="module-panel module-panel-tight-top" style={{ marginBottom: 16 }}>
+                <h3 style={{ marginBottom: 6 }}>Nuevo Reenvío</h3>
+                <p style={{ marginBottom: 8, color: '#666', fontSize: 13 }}>
+                  Buscá un pedido (activo o finalizado) para generar un reenvío con nueva etiqueta.
+                </p>
+                <input
+                  className="module-input"
+                  placeholder="Buscar por N° pedido, cliente, email o teléfono…"
+                  value={reenvioSearch}
+                  onChange={(e) => setReenvioSearch(e.target.value)}
+                  style={{ marginBottom: 8 }}
+                />
+                {reenvioSearch.trim().length >= 2 && (
+                  <div className="module-search-results">
+                    {reenvioSearchLoading ? (
+                      <div className="module-search-empty">Buscando…</div>
+                    ) : reenvioSearchResults.length === 0 ? (
+                      <div className="module-search-empty">No se encontraron pedidos</div>
+                    ) : reenvioSearchResults.map(p => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        className="module-search-item"
+                        onClick={() => { handleAbrirModalReenvio(p); setReenvioSearch(''); setReenvioSearchResults([]); }}
+                      >
+                        <strong>#{p.numero_pedido}</strong> — {p.cliente_nombre || 'Sin nombre'}
+                        <span style={{ color: '#888', fontSize: 12, marginLeft: 8 }}>
+                          {p.localidad || p.direccion_envio || ''}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <PedidosTable
+                pedidos={reenvioList}
+                selectedPedidos={[]}
+                onToggleSelect={() => {}}
+                onToggleSelectAll={() => {}}
+                onDescargarEtiqueta={handleDescargarEtiqueta}
+                onDescartarEtiqueta={handleDescartarEtiqueta}
+                onGenerarEtiquetaMP={(pedidoId) => {
+                  const p = reenvioList.find((x) => x.id === pedidoId);
+                  setReenvioMpModal({ id: pedidoId, numero: p?.numero_pedido });
+                }}
+                onGenerarEtiquetaUES={(pedido) => {
+                  setPreviewPedidos([pedido]);
+                  setPreviewInitialIndex(0);
+                  setShowDatosModal(true);
+                }}
+                onMarcarNotificado={async (pedidoId) => { await marcarPedidoNotificado(pedidoId); cargarPedidosReenvio(); }}
+                onProcesarDirecto={async (pedidoId) => {
+                  const ids = Array.isArray(pedidoId) ? pedidoId : [pedidoId];
+                  try {
+                    const resultado = await marcarProcesados(ids);
+                    if (!resultado.success) { mostrarToast(resultado.error || 'Error al procesar', 'error'); return; }
+                    mostrarToast('✅ Reenvío marcado como procesado', 'success');
+                    cargarPedidosReenvio();
+                  } catch (err) {
+                    mostrarToast(`Error al procesar: ${err.message}`, 'error');
+                  }
+                }}
+                channelPriority={channelPriority}
+                showNotifyColumn={true}
+                showTrackingColumn={true}
+              />
+            </div>
+          )}
+
           {/* Tabla de pedidos */}
+          {tableFilter !== 'reclamosPendientes' && tableFilter !== 'pickup' && tableFilter !== 'recibilo' && tableFilter !== 'reenvios' && (
           {tableFilter !== 'reclamosPendientes' && tableFilter !== 'pickup' && tableFilter !== 'recibilo' && tableFilter !== 'reenvios' && (
           <div className="main-content">
             <PedidosTable
@@ -2256,7 +2549,7 @@ function AppContent({ user, logout }) {
               onMarcarNotificado={async (pedidoId) => { await marcarPedidoNotificado(pedidoId); cargarPedidosEnviados(); cargarPedidosDespachados(); }}
               onDescargarEtiqueta={handleDescargarEtiqueta}
               onDescartarEtiqueta={handleDescartarEtiqueta}
-              onGuardarLinkDrive={handleGuardarLinkDrivePedidos}
+              onGenerarEtiquetaMP={handleGenerarEtiquetaMP}
               onProcesarDirecto={async (pedidoId) => {
                 const ids = Array.isArray(pedidoId) ? pedidoId : [pedidoId];
                 try {
@@ -2452,6 +2745,7 @@ function AppContent({ user, logout }) {
 
       {activeView === 'feedback' && (
         <FeedbackDashboardPanel mostrarToast={mostrarToast} templates={templatesWhatsapp} />
+        <FeedbackDashboardPanel mostrarToast={mostrarToast} templates={templatesWhatsapp} />
       )}
 
       {activeView === 'plantillas' && (
@@ -2524,6 +2818,19 @@ function AppContent({ user, logout }) {
 
       {/* Modal de loading */}
       {loading && <LoadingModal text={loadingText} />}
+
+      {/* Modal MarcoPostal para reenvíos */}
+      {reenvioMpModal && (
+        <MarcoPostalPreviewModal
+          pedidoId={reenvioMpModal.id}
+          numeroPedido={reenvioMpModal.numero}
+          onClose={() => setReenvioMpModal(null)}
+          onGenerada={async () => {
+            mostrarToast('✅ Etiqueta MP generada', 'success');
+            await cargarPedidosReenvio();
+          }}
+        />
+      )}
 
       {/* Modal crear reenvío */}
       {reenvioModal && (

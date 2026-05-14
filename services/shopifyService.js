@@ -86,7 +86,8 @@ class ShopifyService {
   }
 
   // Marcar orden como cumplida usando la Fulfillment Orders API (2024-01)
-  async marcarComoCumplida(orderId, trackingNumber = null) {
+  // options: { trackingUrl, trackingCompany } sobrescriben los defaults (UES env var).
+  async marcarComoCumplida(orderId, trackingNumber = null, notifyCustomer = true, options = {}) {
     try {
       // Obtener los fulfillment_orders abiertos para esta orden
       const fulfillmentOrders = await this.obtenerFulfillmentOrders(orderId);
@@ -96,9 +97,12 @@ class ShopifyService {
         throw new Error('No hay fulfillment_orders abiertos para esta orden');
       }
 
-      const trackingUrl = process.env.UES_TRACKING_URL_TEMPLATE
-        ? process.env.UES_TRACKING_URL_TEMPLATE.replace('{tracking}', encodeURIComponent(String(trackingNumber || '')))
-        : null;
+      // Resolver tracking URL: prioridad al override (ej: MarcoPostal), si no UES env var.
+      const trackingUrl = options.trackingUrl
+        ?? (process.env.UES_TRACKING_URL_TEMPLATE
+            ? process.env.UES_TRACKING_URL_TEMPLATE.replace('{tracking}', encodeURIComponent(String(trackingNumber || '')))
+            : null);
+      const trackingCompany = options.trackingCompany || null;
 
       const body = {
         fulfillment: {
@@ -108,8 +112,9 @@ class ShopifyService {
           tracking_info: {
             number: trackingNumber || '',
             ...(trackingUrl ? { url: trackingUrl } : {}),
+            ...(trackingCompany ? { company: trackingCompany } : {}),
           },
-          notify_customer: true,
+          notify_customer: notifyCustomer,
         },
       };
 

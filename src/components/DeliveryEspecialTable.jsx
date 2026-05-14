@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import { buscarEtiquetaDrive, guardarLinkDriveEnPedido, mergePedidosPDF } from '../services/api';
+import { buscarEtiquetaDrive, guardarLinkDriveEnPedido, mergePedidosPDF, asociarGuiaMarcoPostal } from '../services/api';
+import MarcoPostalPreviewModal from './modals/MarcoPostalPreviewModal';
 
 const DRIVE_FOLDER_URL = 'https://drive.google.com/drive/folders/1lp7dpwdCg49nvqbGhW0efvXGV49q2lWQ';
 
@@ -65,12 +66,18 @@ export default function DeliveryEspecialTable({
   onProcesar,
   onProcesarBulk,
   onActualizar,
+  onGenerarEtiquetaMP,
   mostrarToast,
 }) {
   const [driveState, setDriveState]       = useState({});
   const [previewPedidoId, setPreviewPedidoId] = useState(null);
   const [selectedIds, setSelectedIds]     = useState(new Set());
   const [bulkLoading, setBulkLoading]     = useState(false);
+  const [bulkLoadingText, setBulkLoadingText] = useState('');
+  const [mpModalPedido, setMpModalPedido] = useState(null);
+  // Input manual para asociar un guiaId existente a un pedido sin etiqueta.
+  // Mapa: { pedidoId: { open: bool, guiaId: '', loading: bool } }
+  const [asociarState, setAsociarState]   = useState({});
 
   const tipoLabel = tipo === 'pickup_local' ? 'Pick-UP' : tipo === 'recibilo_hoy' ? 'Recibilo Hoy' : 'Reenvíos';
   const tipoIcon  = tipo === 'pickup_local' ? '🏪' : tipo === 'recibilo_hoy' ? '⚡' : '📦';
@@ -225,6 +232,93 @@ export default function DeliveryEspecialTable({
     }
   }, [pedidosOrdenados, selectedIds, tipo, mostrarToast]);
 
+  // ── Generar etiquetas MarcoPostal en bulk (solo pickup) ────────────────────
+  const handleGenerarEtiquetasMPBulk = useCallback(async () => {
+    if (tipo !== 'pickup_local' || !onGenerarEtiquetaMP) return;
+    const pedidosSel = pedidosOrdenados.filter((p) => selectedIds.has(p.id));
+    if (pedidosSel.length === 0) return;
+
+    const pendientes = pedidosSel.filter((p) => !p.link_etiqueta_drive);
+    const yaGenerados = pedidosSel.filter((p) => p.link_etiqueta_drive);
+    let exitosos = 0;
+    let fallidos = 0;
+    // Coleccionamos los labelUrl en orden: primero los ya generados, después los nuevos.
+    const linksParaCombinar = yaGenerados.map((p) => p.link_etiqueta_drive);
+
+    setBulkLoading(true);
+    setBulkLoadingText(
+      pendientes.length > 0
+        ? `Generando ${pendientes.length} etiqueta(s) MP...`
+        : 'Combinando PDFs...'
+    );
+
+    try {
+      // 1) Generar las que falten, capturando labelUrl de cada respuesta
+      for (let i = 0; i < pendientes.length; i += 1) {
+        const p = pendientes[i];
+        setBulkLoadingText(`Generando etiqueta ${i + 1}/${pendientes.length} — #${p.numero_pedido}...`);
+        try {
+          const res = await onGenerarEtiquetaMP(p.id);
+          if (res?.success && res?.labelUrl) {
+            linksParaCombinar.push(res.labelUrl);
+            exitosos += 1;
+          } else {
+            fallidos += 1;
+            console.error(`Error generando MP para pedido ${p.id}:`, res?.error);
+          }
+        } catch (err) {
+          fallidos += 1;
+          console.error(`Excepción generando MP para pedido ${p.id}:`, err);
+        }
+      }
+
+      // 2) Refrescar la lista para reflejar nuevos tracking/estado en la tabla
+      try { await onActualizar?.(); } catch (_) {}
+
+      if (linksParaCombinar.length === 0) {
+        mostrarToast?.(
+          fallidos > 0 ? `⚠️ Todas fallaron (${fallidos})` : 'No hay etiquetas para combinar',
+          'warning'
+        );
+        return;
+      }
+
+      // 3) Combinar PDFs en uno solo
+      setBulkLoadingText(`Combinando ${linksParaCombinar.length} etiqueta(s) en un PDF...`);
+      const blob = await mergePedidosPDF(linksParaCombinar);
+      const url = URL.createObjectURL(blob);
+
+      // 4) Abrir en nueva pestaña — el browser muestra el PDF con su botón Imprimir nativo
+      const win = window.open(url, '_blank');
+      if (!win) {
+        // Popup bloqueado → forzar descarga
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `etiquetas-pickup-${new Date().toISOString().slice(0, 10)}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        mostrarToast?.('🔒 Popups bloqueados. Descargué el PDF en vez de abrirlo.', 'warning');
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+
+      const msgPartes = [];
+      if (yaGenerados.length > 0) msgPartes.push(`${yaGenerados.length} ya existían`);
+      if (exitosos > 0) msgPartes.push(`${exitosos} nuevas`);
+      if (fallidos > 0) msgPartes.push(`${fallidos} con error`);
+      mostrarToast?.(
+        `📄 PDF combinado con ${linksParaCombinar.length} etiqueta(s). ${msgPartes.join(' · ')}`,
+        fallidos > 0 ? 'warning' : 'success'
+      );
+      setSelectedIds(new Set());
+    } catch (err) {
+      mostrarToast?.(`Error en bulk MP: ${err.message}`, 'error');
+    } finally {
+      setBulkLoading(false);
+      setBulkLoadingText('');
+    }
+  }, [tipo, onGenerarEtiquetaMP, pedidosOrdenados, selectedIds, onActualizar, mostrarToast]);
+
   // ── Marcar despachados (bulk) ───────────────────────────────────────────────
   const handleDespacharBulk = useCallback(async () => {
     const ids = [...selectedIds]; // selectedIds ya contiene IDs reales expandidos
@@ -265,9 +359,25 @@ export default function DeliveryEspecialTable({
               <div className="de-modal-header">
                 <span>📄 Etiqueta — Pedido #{pedido?.numero_pedido}</span>
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  {urls?.previewUrl && (
+                    <button
+                      className="btn btn-primary btn-sm"
+                      onClick={() => {
+                        const iframe = document.querySelector('iframe[title="Etiqueta PDF"]');
+                        if (iframe?.contentWindow) {
+                          try { iframe.contentWindow.focus(); iframe.contentWindow.print(); }
+                          catch (_) { window.open(urls.previewUrl, '_blank'); }
+                        } else {
+                          window.open(urls.previewUrl, '_blank');
+                        }
+                      }}
+                      title="Abrir diálogo de impresión del browser">
+                      🖨 Imprimir
+                    </button>
+                  )}
                   {urls?.downloadUrl && (
                     <a href={urls.downloadUrl} target="_blank" rel="noopener noreferrer"
-                      className="btn btn-primary btn-sm">⬇️ Descargar PDF</a>
+                      className="btn btn-secondary btn-sm">⬇️ Descargar PDF</a>
                   )}
                   <button className="btn btn-secondary btn-sm" onClick={() => setPreviewPedidoId(null)}>✕ Cerrar</button>
                 </div>
@@ -285,7 +395,19 @@ export default function DeliveryEspecialTable({
       {someSelected && (
         <div className="de-bulk-bar">
           <span className="de-bulk-count">{selectedIds.size} seleccionado{selectedIds.size !== 1 ? 's' : ''}</span>
+          {bulkLoading && bulkLoadingText && (
+            <span style={{ fontSize: 12, color: '#555', marginLeft: 8 }}>{bulkLoadingText}</span>
+          )}
           <div className="de-bulk-actions">
+            {tipo === 'pickup_local' && onGenerarEtiquetaMP && (
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleGenerarEtiquetasMPBulk}
+                disabled={bulkLoading}
+                title="Generar etiquetas MP para los seleccionados que falten + combinar e imprimir">
+                {bulkLoading ? '⏳ Procesando…' : '📮 Generar e imprimir MP'}
+              </button>
+            )}
             <button
               className="btn btn-primary btn-sm"
               onClick={handleDescargarPDFsBulk}
@@ -341,7 +463,7 @@ export default function DeliveryEspecialTable({
                 {esReenvio && <th>Motivo / Producto</th>}
                 <th>Estado</th>
                 <th>Fecha</th>
-                <th>Etiqueta Drive</th>
+                <th>{tipo === 'pickup_local' ? 'Etiqueta' : 'Etiqueta Drive'}</th>
                 <th>Acciones</th>
               </tr>
             </thead>
@@ -394,7 +516,7 @@ export default function DeliveryEspecialTable({
                     </td>
                     <td>{fmtDate(pedido.created_at)}</td>
 
-                    {/* Etiqueta Drive */}
+                    {/* Etiqueta Drive (o Etiqueta MP local en pickup) */}
                     <td className="de-etiqueta-cell">
                       {urls ? (
                         <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
@@ -408,6 +530,96 @@ export default function DeliveryEspecialTable({
                             ⬇️ PDF
                           </a>
                         </div>
+                      ) : tipo === 'pickup_local' ? (
+                        (() => {
+                          const as = asociarState[pedido.id] || {};
+                          if (!as.open) {
+                            return (
+                              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                <span style={{ color: '#999', fontSize: 12 }}>
+                                  Generá con "Etiqueta MP" →
+                                </span>
+                                <button
+                                  className="btn btn-secondary btn-sm"
+                                  style={{ fontSize: 11, padding: '2px 8px' }}
+                                  onClick={() => setAsociarState((s) => ({
+                                    ...s,
+                                    [pedido.id]: { open: true, guiaId: '', loading: false },
+                                  }))}
+                                  title="Asociar manualmente un nº de guía ya generado">
+                                  🔗 Asociar nº existente
+                                </button>
+                              </div>
+                            );
+                          }
+                          return (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                placeholder="Nº de guía MP (ej: 187118)"
+                                value={as.guiaId}
+                                disabled={as.loading}
+                                onChange={(e) => setAsociarState((s) => ({
+                                  ...s,
+                                  [pedido.id]: { ...s[pedido.id], guiaId: e.target.value.replace(/\D/g, '') },
+                                }))}
+                                onKeyDown={async (e) => {
+                                  if (e.key === 'Enter' && as.guiaId) {
+                                    setAsociarState((s) => ({ ...s, [pedido.id]: { ...s[pedido.id], loading: true } }));
+                                    try {
+                                      const r = await asociarGuiaMarcoPostal(pedido.id, as.guiaId);
+                                      if (r?.success) {
+                                        mostrarToast?.(`✅ Guía ${as.guiaId} asociada al pedido #${pedido.numero_pedido}`, 'success');
+                                        setAsociarState((s) => ({ ...s, [pedido.id]: { open: false, guiaId: '', loading: false } }));
+                                        try { await onActualizar?.(); } catch (_) {}
+                                      } else {
+                                        mostrarToast?.(r?.error || 'No se pudo asociar', 'error');
+                                        setAsociarState((s) => ({ ...s, [pedido.id]: { ...s[pedido.id], loading: false } }));
+                                      }
+                                    } catch (err) {
+                                      mostrarToast?.(`Error: ${err.message}`, 'error');
+                                      setAsociarState((s) => ({ ...s, [pedido.id]: { ...s[pedido.id], loading: false } }));
+                                    }
+                                  }
+                                }}
+                                style={{ fontSize: 12, padding: '4px 8px', width: 160 }}
+                              />
+                              <div style={{ display: 'flex', gap: 4 }}>
+                                <button
+                                  className="btn btn-primary btn-sm"
+                                  style={{ fontSize: 11, padding: '2px 8px' }}
+                                  disabled={!as.guiaId || as.loading}
+                                  onClick={async () => {
+                                    setAsociarState((s) => ({ ...s, [pedido.id]: { ...s[pedido.id], loading: true } }));
+                                    try {
+                                      const r = await asociarGuiaMarcoPostal(pedido.id, as.guiaId);
+                                      if (r?.success) {
+                                        mostrarToast?.(`✅ Guía ${as.guiaId} asociada al pedido #${pedido.numero_pedido}`, 'success');
+                                        setAsociarState((s) => ({ ...s, [pedido.id]: { open: false, guiaId: '', loading: false } }));
+                                        try { await onActualizar?.(); } catch (_) {}
+                                      } else {
+                                        mostrarToast?.(r?.error || 'No se pudo asociar', 'error');
+                                        setAsociarState((s) => ({ ...s, [pedido.id]: { ...s[pedido.id], loading: false } }));
+                                      }
+                                    } catch (err) {
+                                      mostrarToast?.(`Error: ${err.message}`, 'error');
+                                      setAsociarState((s) => ({ ...s, [pedido.id]: { ...s[pedido.id], loading: false } }));
+                                    }
+                                  }}>
+                                  {as.loading ? '⏳' : '✓ Asociar'}
+                                </button>
+                                <button
+                                  className="btn btn-secondary btn-sm"
+                                  style={{ fontSize: 11, padding: '2px 8px' }}
+                                  disabled={as.loading}
+                                  onClick={() => setAsociarState((s) => ({ ...s, [pedido.id]: { open: false, guiaId: '', loading: false } }))}>
+                                  ✕
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })()
                       ) : ds.showManualInput ? (
                         <div className="de-manual-link-wrap">
                           <p className="de-manual-link-hint">
@@ -463,6 +675,15 @@ export default function DeliveryEspecialTable({
 
                     {/* Acciones individuales */}
                     <td className="reclamo-actions">
+                      {tipo === 'pickup_local' && (
+                        <button
+                          className="btn btn-primary btn-sm"
+                          title="Previsualizar y generar etiqueta Marco Postal"
+                          onClick={() => setMpModalPedido({ id: pedido.id, numero: pedido.numero_pedido })}
+                        >
+                          📮 Etiqueta MP
+                        </button>
+                      )}
                       <button className={`btn btn-sm ${isDespachado ? 'btn-secondary' : 'btn-primary'}`}
                         disabled={isDespachado}
                         title={isDespachado ? 'Ya despachado' : 'Marcar como despachado'}
@@ -487,6 +708,18 @@ export default function DeliveryEspecialTable({
             </tbody>
           </table>
         </div>
+      )}
+
+      {mpModalPedido && (
+        <MarcoPostalPreviewModal
+          pedidoId={mpModalPedido.id}
+          numeroPedido={mpModalPedido.numero}
+          onClose={() => setMpModalPedido(null)}
+          onGenerada={async () => {
+            mostrarToast?.('✅ Etiqueta generada', 'success');
+            try { await onActualizar?.(); } catch (_) {}
+          }}
+        />
       )}
     </div>
   );
