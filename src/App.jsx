@@ -598,23 +598,6 @@ function AppContent({ user, logout }) {
     }
   }, [esAdmin, cargarPedidosArmadoOperario]);
 
-  useEffect(() => {
-    const q = reenvioSearch.trim();
-    if (q.length < 2) { setReenvioSearchResults([]); return; }
-    const timer = setTimeout(async () => {
-      setReenvioSearchLoading(true);
-      try {
-        const resultados = await buscarPedidos(q);
-        setReenvioSearchResults(resultados);
-      } catch {
-        setReenvioSearchResults([]);
-      } finally {
-        setReenvioSearchLoading(false);
-      }
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [reenvioSearch]);
-
   const handleActualizarOperativa = useCallback(async () => {
     await cargarPedidos();
     // Mantener sincronizadas las vistas secundarias (Despachados/Enviados/Pickup/Recibilo)
