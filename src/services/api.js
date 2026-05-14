@@ -547,27 +547,6 @@ export async function obtenerPedidosRecibilo() {
   return Array.isArray(data?.data) ? data.data : [];
 }
 
-// ==================== BÚSQUEDA PEDIDOS ====================
-
-export async function buscarPedidos(q) {
-  const data = await fetchAPI(`/pedidos/buscar?q=${encodeURIComponent(q)}`, { method: 'GET' });
-  return Array.isArray(data?.data) ? data.data : [];
-}
-
-// ==================== REENVÍOS ====================
-
-export async function obtenerPedidosReenvio() {
-  const data = await fetchAPI('/pedidos-reenvio', { method: 'GET' });
-  return Array.isArray(data?.data) ? data.data : [];
-}
-
-export async function crearReenvio(pedidoId, datos) {
-  return await fetchAPI(`/pedidos/${pedidoId}/crear-reenvio`, {
-    method: 'POST',
-    body: JSON.stringify(datos),
-  });
-}
-
 export async function buscarEtiquetaDrive(numeroPedido) {
   return await fetchAPI(`/drive-etiqueta/${encodeURIComponent(numeroPedido)}`, { method: 'GET' });
 }

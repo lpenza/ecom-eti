@@ -765,7 +765,6 @@ function RazonesDeCompra({ razones, loading, onAnalizar }) {
 }
 
 function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
-function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
   const [days, setDays] = useState(30);
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState(null);
@@ -1039,12 +1038,7 @@ function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
           templates={templates}
           onRetrySuccess={handleRetrySuccess}
         />
-        <CampaignContactsList
-          contacts={campaignContacts}
-          campaignSent={campaign.sent}
-          templates={templates}
-          onRetrySuccess={handleRetrySuccess}
-        />
+       
       )}
 
       {/* ════════════════════════════════

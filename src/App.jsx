@@ -2528,7 +2528,6 @@ function AppContent({ user, logout }) {
 
           {/* Tabla de pedidos */}
           {tableFilter !== 'reclamosPendientes' && tableFilter !== 'pickup' && tableFilter !== 'recibilo' && tableFilter !== 'reenvios' && (
-          {tableFilter !== 'reclamosPendientes' && tableFilter !== 'pickup' && tableFilter !== 'recibilo' && tableFilter !== 'reenvios' && (
           <div className="main-content">
             <PedidosTable
               pedidos={fulfillmentPreviewIds !== null
@@ -2744,7 +2743,6 @@ function AppContent({ user, logout }) {
       )}
 
       {activeView === 'feedback' && (
-        <FeedbackDashboardPanel mostrarToast={mostrarToast} templates={templatesWhatsapp} />
         <FeedbackDashboardPanel mostrarToast={mostrarToast} templates={templatesWhatsapp} />
       )}
 

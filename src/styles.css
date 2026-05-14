@@ -377,7 +377,7 @@ body {
   padding: 0.8rem 1.5rem;
   border-bottom: 1px solid var(--brand-border);
   background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(8px);
+  /* backdrop-filter: blur(8px); */
 }
 
 .module-nav-btn {
@@ -700,7 +700,7 @@ body {
   border-radius: 999px;
   background: var(--brand-surface);
   cursor: pointer;
-  user-select: none;
+  /* user-select: none; */
 }
 
 .followup-switch input {
