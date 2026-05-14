@@ -1774,6 +1774,32 @@ async function handleFulfillmentShopify(req, res) {
         logService.info(`Fulfillment pedido #${pedido.numero_pedido} | shopifyOrderId=${shopifyOrderId} | tracking=${pedido.numero_seguimiento_ues}`);
 
         const tieneEmail = !!(pedido.cliente_email || pedido.email);
+        const esPickup = pedido.tipo_envio === 'pickup_local';
+
+        if (esPickup) {
+          await shopifyService.marcarListoParaRetirar(shopifyOrderId);
+
+          await supabaseService.actualizarPedido(pedido.id, {
+            estado: 'enviado',
+            notificacion_enviada_at: new Date().toISOString(),
+          });
+
+          logService.info(`✅ Listo para retirar OK pedido #${pedido.numero_pedido} | shopifyOrderId=${shopifyOrderId}`);
+
+          shopifyService.agregarTagAOrden(shopifyOrderId, 'LISTO_PARA_RETIRAR').catch((e) =>
+            logService.warning(`No se pudo agregar tag LISTO_PARA_RETIRAR a orden ${shopifyOrderId}: ${e.message}`)
+          );
+
+          resultados.push({
+            pedidoId: pedido.id,
+            shopifyOrderId,
+            success: true,
+            fulfillmentId: null,
+            listoParaRetirar: true,
+            pedido: pedido
+          });
+          continue;
+        }
 
         // URL de tracking según departamento. MV → MarcoPostal, resto → UES (env template).
         // No mandamos tracking_company para no depender de carriers registrados en Shopify.

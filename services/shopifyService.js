@@ -137,6 +137,56 @@ class ShopifyService {
     }
   }
 
+  // Marcar como "Listo para retirar" (pickup local) sin cerrar el fulfillment.
+  // Usa la mutation GraphQL fulfillmentOrderLineItemsPreparedForPickup (Admin API 2024-01).
+  // Requisito: la sucursal asignada al fulfillment_order debe tener "Local pickup"
+  // habilitado en Shopify (Settings → Locations); si no, la mutation devuelve userErrors.
+  async marcarListoParaRetirar(orderId) {
+    try {
+      const fulfillmentOrders = await this.obtenerFulfillmentOrders(orderId);
+      const openFOs = fulfillmentOrders.filter((fo) => fo.status === 'open' || fo.status === 'in_progress');
+
+      if (openFOs.length === 0) {
+        throw new Error('No hay fulfillment_orders abiertos para esta orden');
+      }
+
+      const lineItemsByFulfillmentOrder = openFOs.map((fo) => ({
+        fulfillmentOrderId: `gid://shopify/FulfillmentOrder/${fo.id}`,
+        lineItemIds: (fo.line_items || []).map((li) => `gid://shopify/FulfillmentOrderLineItem/${li.id}`),
+      }));
+
+      const query = `mutation prep($input: FulfillmentOrderLineItemsPreparedForPickupInput!) {
+        fulfillmentOrderLineItemsPreparedForPickup(input: $input) {
+          userErrors { field message }
+        }
+      }`;
+
+      const response = await axios.post(
+        `https://${this.domain}/admin/api/2024-01/graphql.json`,
+        { query, variables: { input: { lineItemsByFulfillmentOrder } } },
+        { headers: this.getHeaders() }
+      );
+
+      const data = response.data;
+      const userErrors = data?.data?.fulfillmentOrderLineItemsPreparedForPickup?.userErrors || [];
+      const topErrors = data?.errors || [];
+      if (userErrors.length > 0 || topErrors.length > 0) {
+        throw new Error(
+          `userErrors: ${JSON.stringify(userErrors)} | errors: ${JSON.stringify(topErrors)}`
+        );
+      }
+
+      return { ok: true, fulfillmentOrderIds: openFOs.map((fo) => fo.id) };
+    } catch (error) {
+      const shopifyBody = error.response?.data;
+      const httpStatus = error.response?.status;
+      const detalle = shopifyBody ? JSON.stringify(shopifyBody) : error.message;
+      throw new Error(
+        `Error marcando orden como lista para retirar (HTTP ${httpStatus ?? 'N/A'}): ${detalle}`
+      );
+    }
+  }
+
   // Actualizar número de seguimiento
   async actualizarTracking(orderId, fulfillmentId, trackingNumber, trackingUrl = null) {
     try {

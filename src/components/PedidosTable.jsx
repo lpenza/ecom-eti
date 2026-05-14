@@ -17,6 +17,63 @@ function getDriveUrls(link) {
   return { previewUrl: link, downloadUrl: link };
 }
 
+// Supabase devuelve timestamptz como ISO; pero algunas filas viejas / vistas pueden
+// venir sin sufijo de zona ("2026-05-13 20:30:50.171378"). En ese caso new Date()
+// lo interpreta como hora LOCAL y aparece un offset fantasma (en UY, +3h al SLA).
+// Esta función fuerza el parseo como UTC cuando no hay zona explícita.
+function parseTimestampUtc(value) {
+  if (!value) return NaN;
+  const s = String(value).trim();
+  const tieneZona = /([zZ]|[+-]\d{2}:?\d{2})$/.test(s);
+  // Normaliza espacio→T y agrega Z si no hay zona, para forzar UTC.
+  const iso = tieneZona ? s.replace(' ', 'T') : s.replace(' ', 'T') + 'Z';
+  return new Date(iso).getTime();
+}
+
+// SLA MarcoPostal: 48h desde created_at (pago). Devuelve datos para pintar el badge.
+// Devuelve null si el pedido no es MarcoPostal o no tiene created_at.
+function calcularSlaMarcoPostal(pedido) {
+  const link = String(pedido?.link_etiqueta_drive || '');
+  const esMarcoPostal = /marcopostal|etiquetas-marcopostal/i.test(link);
+  if (!esMarcoPostal) return null;
+  const createdAt = pedido?.created_at;
+  if (!createdAt) return null;
+  const t = parseTimestampUtc(createdAt);
+  if (!Number.isFinite(t)) return null;
+  const h = (Date.now() - t) / 3600000;
+  const restantes = 48 - h;
+  let bg, label;
+  if (h >= 48)      { bg = '#7f1d1d'; label = `VENCIDO +${Math.floor(h - 48)}h`; }
+  else if (h >= 36) { bg = '#dc2626'; label = `${Math.ceil(restantes)}h — CRÍTICO`; }
+  else if (h >= 24) { bg = '#ea580c'; label = `${Math.ceil(restantes)}h — URGENTE`; }
+  else if (h >= 12) { bg = '#eab308'; label = `${Math.ceil(restantes)}h`; }
+  else              { bg = '#16a34a'; label = `${Math.ceil(restantes)}h`; }
+  return { bg, label, horasTranscurridas: h };
+}
+
+function SlaBadge({ pedido }) {
+  const sla = calcularSlaMarcoPostal(pedido);
+  if (!sla) return <span style={{ color: '#aaa' }}>-</span>;
+  return (
+    <span
+      title={`SLA MarcoPostal 48h desde pago (${new Date(parseTimestampUtc(pedido.created_at)).toLocaleString('es-UY', { timeZone: 'America/Montevideo' })})`}
+      style={{
+        display: 'inline-block',
+        background: sla.bg,
+        color: '#fff',
+        fontWeight: 700,
+        fontSize: '0.75rem',
+        lineHeight: 1.15,
+        padding: '3px 8px',
+        borderRadius: 4,
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {sla.label}
+    </span>
+  );
+}
+
 function groupPedidosByTracking(pedidos) {
   const trackingGroups = new Map();
   for (const p of pedidos) {
@@ -171,6 +228,7 @@ function PedidosTable({
               <th>Cliente</th>
               <th>Dirección</th>
               <th>Estado</th>
+              <th title="MarcoPostal — tiempo restante para cumplir el plazo de entrega (48h desde el pago)">Plazo entrega</th>
               {showTrackingColumn && <th>Seguimiento</th>}
               {showNotifyColumn && <th>Notificar</th>}
               {showProcesarButton && <th>Acción</th>}
@@ -179,7 +237,7 @@ function PedidosTable({
           <tbody>
             {pedidosToRender.length === 0 ? (
               <tr>
-                <td colSpan={5 + (showTrackingColumn ? 1 : 0) + (showNotifyColumn ? 1 : 0) + (showProcesarButton ? 1 : 0)} className="table-empty-state">
+                <td colSpan={6 + (showTrackingColumn ? 1 : 0) + (showNotifyColumn ? 1 : 0) + (showProcesarButton ? 1 : 0)} className="table-empty-state">
                   No hay pedidos para mostrar
                 </td>
               </tr>
@@ -428,6 +486,7 @@ function PedidoRow({
           {tieneRevisionContacto ? 'Pendiente Contacto' : estadoText}
         </span>
       </td>
+      <td><SlaBadge pedido={pedido} /></td>
       {showTrackingColumn && <td>{pedido.numero_seguimiento_ues || '-'}</td>}
       {showNotifyColumn && (
         <td>
