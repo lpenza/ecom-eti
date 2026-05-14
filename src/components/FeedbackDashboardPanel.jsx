@@ -245,6 +245,10 @@ function stateTone(rawState) {
   return STATE_META[String(rawState || '').trim().toLowerCase()]?.tone || 'neutral';
 }
 
+function isNoLoUso(contact) {
+  return String(contact?.state || '').trim().toLowerCase() === 'no_lo_uso';
+}
+
 const CAMPAIGN_CONTACTS_PAGE_SIZE = 25;
 const MS_24H = 24 * 60 * 60 * 1000;
 
@@ -369,10 +373,6 @@ function CampaignContactsList({ contacts = [], campaignSent = 0, templates = [],
     }
     return true;
   });
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
-  const safePage   = Math.min(page, totalPages);
-  const pageItems  = filtered.slice((safePage - 1) * PER_PAGE, safePage * PER_PAGE);
 
   const changePage = (next) => {
     setPage(next);
@@ -814,10 +814,6 @@ function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
     }
   };
 
-  const handleRetrySuccess = ({ customerId, followupSentAt, retryCount }) => {
-    setRetryPatch((prev) => ({ ...prev, [customerId]: { followupSentAt, retryCount } }));
-  };
-
   const campaign = data?.campaignFeedback?.kpis || { sent: 0, responded: 0, ok: 0, notOk: 0, noResponse: 0 };
   const campaignSentiment = data?.campaignFeedback?.sentiment || { positive: 0, neutral: 0, negative: 0 };
   const rawCampaignContacts = data?.campaignFeedback?.contacts || [];
@@ -828,6 +824,10 @@ function FeedbackDashboardPanel({ mostrarToast, templates = [] }) {
       return { ...c, followupSentAt: patch.followupSentAt, retryCount: patch.retryCount };
     }),
     [rawCampaignContacts, retryPatch]
+  );
+  const noLoUsoCount = useMemo(
+    () => campaignContacts.filter(isNoLoUso).length,
+    [campaignContacts]
   );
   const timeline = data?.campaignFeedback?.timeline || [];
   const hotOverview = data?.hotRedis?.overview || { contacts: 0, activeLast24h: 0, requiresHuman: 0, paused: 0, blacklisted: 0, botActive: 0 };

@@ -40,9 +40,6 @@ import {
   obtenerPedidosReenvio,
   crearReenvio,
   buscarPedidos,
-  obtenerPedidosReenvio,
-  crearReenvio,
-  buscarPedidos,
   reprocesarPedidoShopify,
   generarGuiaMarcoPostalWeb,
 } from './services/api';
@@ -288,7 +285,6 @@ function AppContent({ user, logout }) {
     enviados: pedidosEnviadosList.length,
     pickup: pickupList.length,
     recibilo: recibiloList.length,
-    reenvios: reenvioList.length,
     reenvios: reenvioList.length,
     trackingAlert: hayDescuadreTracking || pedidosRevisionManual.length > 0,
     trackingBreakdown: {
@@ -548,15 +544,6 @@ function AppContent({ user, logout }) {
       setRecibiloList(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('❌ Error cargando pedidos recibilo:', error);
-    }
-  }, []);
-
-  const cargarPedidosReenvio = useCallback(async () => {
-    try {
-      const data = await obtenerPedidosReenvio();
-      setReenvioList(Array.isArray(data) ? data : []);
-    } catch (error) {
-      console.error('❌ Error cargando pedidos reenvio:', error);
     }
   }, []);
 
@@ -1702,51 +1689,6 @@ function AppContent({ user, logout }) {
     actualizarLinkDrivePedidos(ids, link);
     mostrarToast('✅ Link de Drive guardado', 'success');
   }, [actualizarLinkDrivePedidos]);
-
-  // ==================== HANDLERS REENVÍOS ====================
-
-  const handleAbrirModalReenvio = (pedido) => {
-    setReenvioForm({
-      cliente_nombre:   pedido.cliente_nombre   || '',
-      cliente_email:    pedido.cliente_email    || '',
-      cliente_telefono: pedido.cliente_telefono || '',
-      direccion_envio:  pedido.direccion_envio  || '',
-      localidad:        pedido.localidad        || '',
-      departamento:     pedido.departamento     || '',
-      codigo_postal:    pedido.codigo_postal    || '',
-      tipo_envio:       'estandar',
-      motivo_reenvio:   '',
-    });
-    setReenvioModal(pedido);
-  };
-
-  const handleCerrarModalReenvio = () => {
-    setReenvioModal(null);
-    setReenvioSearch('');
-  };
-
-  const handleConfirmarReenvio = async () => {
-    if (!reenvioModal) return;
-    if (!reenvioForm.motivo_reenvio.trim()) {
-      mostrarToast('Completá el motivo del reenvío', 'warning');
-      return;
-    }
-    setReenvioCreating(true);
-    try {
-      const resultado = await crearReenvio(reenvioModal.id, reenvioForm);
-      if (!resultado.success) {
-        mostrarToast(resultado.error || 'Error al crear reenvío', 'error');
-        return;
-      }
-      mostrarToast(`✅ Reenvío ${resultado.data.numero_pedido} creado`, 'success');
-      handleCerrarModalReenvio();
-      cargarPedidosReenvio();
-    } catch (err) {
-      mostrarToast(`Error: ${err.message}`, 'error');
-    } finally {
-      setReenvioCreating(false);
-    }
-  };
 
   // ==================== HANDLERS RECLAMOS PENDIENTES ====================
 
