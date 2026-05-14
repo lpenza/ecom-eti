@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { obtenerFeedbackDashboard, analizarRazonesCompra, reintentarFollowup } from '../services/api';
-import { obtenerFeedbackDashboard, analizarRazonesCompra, reintentarFollowup } from '../services/api';
 
 function percent(part, total) {
   if (!total) return 0;
