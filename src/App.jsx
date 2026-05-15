@@ -15,6 +15,7 @@ import MisPedidosPanel from './components/MisPedidosPanel';
 import { useAuth } from './context/AuthContext';
 import BotControlPanel from './components/BotControlPanel';
 import FeedbackDashboardPanel from './components/FeedbackDashboardPanel';
+import ColorTrendsPanel from './components/ColorTrendsPanel';
 import { usePedidos } from './hooks/usePedidos';
 import {
   generarLinkWhatsApp,
@@ -1884,6 +1885,14 @@ function AppContent({ user, logout }) {
               </button>
               <button
                 type="button"
+                className={`side-nav-item ${activeView === 'colorTrends' ? 'side-nav-item-active' : ''}`}
+                onClick={() => setActiveView('colorTrends')}
+              >
+                <span className="side-nav-icon">🎨</span>
+                Tendencias de Colores
+              </button>
+              <button
+                type="button"
                 className={`side-nav-item ${activeView === 'plantillas' ? 'side-nav-item-active' : ''}`}
                 onClick={() => setActiveView('plantillas')}
               >
@@ -2617,6 +2626,10 @@ function AppContent({ user, logout }) {
 
       {activeView === 'feedback' && (
         <FeedbackDashboardPanel mostrarToast={mostrarToast} templates={templatesWhatsapp} />
+      )}
+
+      {activeView === 'colorTrends' && (
+        <ColorTrendsPanel />
       )}
 
       {activeView === 'plantillas' && (

@@ -7,6 +7,7 @@ const axios = require('axios');
 const { google } = require('googleapis');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const cron = require('node-cron');
 require('dotenv').config();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'velinne-jwt-secret-2024';
@@ -2142,6 +2143,38 @@ app.post('/api/marcar-armados-bulk', requireAuth, async (req, res) => {
     res.json({ success: true, ok, total: pedidoIds.length, resultados: resultadosPrimarios });
   } catch (error) {
     logService.error('Error en marcar-armados-bulk', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Analytics: tendencias de compra por color
+// ─────────────────────────────────────────────────────────────────────────────
+app.get('/api/analytics/color-trends', requireAuth, async (req, res) => {
+  try {
+    const { desde, hasta, contexto, granularidad, comparativa } = req.query;
+    const data = await supabaseService.obtenerColorTrends({
+      desde, hasta, contexto, granularidad: granularidad || 'dia',
+    });
+    let comp = null;
+    if (String(comparativa) === '1' && desde && hasta) {
+      comp = await supabaseService.compararPeriodosColor({ desde, hasta, contexto });
+    }
+    res.json({ success: true, ...data, comparativa: comp });
+  } catch (error) {
+    logService.error('Error en /api/analytics/color-trends', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/analytics/color-trends/refresh', requireAuth, async (req, res) => {
+  try {
+    const { desde = null, hasta = null } = req.body || {};
+    const result = await supabaseService.rebuildColorTrendsCache({ desde, hasta });
+    logService.info('Color trends cache rebuilt', result);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    logService.error('Error refrescando color_trends_cache', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -4413,6 +4446,21 @@ app.listen(PORT, async () => {
 
   // Arranca cleanup diario de PDFs MarcoPostal (retención env-configurable, default 7 días)
   etiquetaPdfCleanup.startScheduler();
+
+  // Cron: refresh diario del cache de tendencias por color (ventana movil de 7 dias).
+  // 03:00 AM hora del server. Recalcula los ultimos 7 dias para tolerar pedidos retrasados.
+  cron.schedule('0 3 * * *', async () => {
+    try {
+      const hoy = new Date();
+      const desde = new Date(hoy.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const hasta = hoy.toISOString().slice(0, 10);
+      logService.info(`[cron] Refrescando color_trends_cache (${desde} .. ${hasta})`);
+      const result = await supabaseService.rebuildColorTrendsCache({ desde, hasta });
+      logService.info('[cron] color_trends_cache OK', result);
+    } catch (err) {
+      logService.error('[cron] Error refrescando color_trends_cache', err);
+    }
+  });
 
   // Inicializar plantillas por defecto al arrancar el servidor
   supabaseService.inicializarPlantillasDefecto().catch(err => {

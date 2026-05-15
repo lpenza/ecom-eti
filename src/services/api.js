@@ -291,6 +291,23 @@ export async function obtenerFeedbackDashboard({ days = 30, from = '', to = '' }
   return await fetchAPI(`/feedback/dashboard?${params.toString()}`, { method: 'GET' });
 }
 
+export async function obtenerColorTrends({ desde, hasta, contexto = 'todos', granularidad = 'dia', comparativa = true } = {}) {
+  const params = new URLSearchParams();
+  if (desde) params.set('desde', desde);
+  if (hasta) params.set('hasta', hasta);
+  if (contexto) params.set('contexto', contexto);
+  if (granularidad) params.set('granularidad', granularidad);
+  if (comparativa) params.set('comparativa', '1');
+  return await fetchAPI(`/analytics/color-trends?${params.toString()}`, { method: 'GET' });
+}
+
+export async function refrescarColorTrends({ desde = null, hasta = null } = {}) {
+  return await fetchAPI('/analytics/color-trends/refresh', {
+    method: 'POST',
+    body: JSON.stringify({ desde, hasta }),
+  });
+}
+
 export async function analizarRazonesCompra(force = false) {
   const qs = force ? '?refresh=true' : '';
   return await fetchAPI(`/feedback/purchase-reasons${qs}`, { method: 'GET' });

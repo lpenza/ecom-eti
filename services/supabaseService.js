@@ -1647,6 +1647,342 @@ class SupabaseService {
     }
     return results;
   }
+
+  // ── Color Trends ────────────────────────────────────────────────────────────
+  //
+  // Reconstruye el cache color_trends_cache leyendo movimientos_stock (tipo='venta')
+  // como fuente de verdad (captura tanto ventas sueltas como colores embebidos en kits).
+  //
+  // Parametros:
+  //   desde, hasta: ISO date strings (YYYY-MM-DD). Si ambos son null => full rebuild.
+  //   Si solo `desde` esta seteado => recalcula [desde, hoy].
+  //
+  // Estrategia: borra el rango afectado y reinserta. Idempotente.
+  async rebuildColorTrendsCache({ desde = null, hasta = null } = {}) {
+    const startedAt = Date.now();
+
+    // 1) Traer productos de categoria color (mapa id->label)
+    const { data: productosColor, error: errProd } = await supabase
+      .from('productos')
+      .select('id, nombre, categoria')
+      .ilike('categoria', 'color');
+    if (errProd) throw errProd;
+    const colorMap = new Map(); // producto_id -> { color_key, color_label }
+    for (const p of productosColor || []) {
+      const label = (p.nombre || '').trim();
+      const key = label.toLowerCase();
+      if (!label) continue;
+      colorMap.set(p.id, { color_key: key, color_label: label });
+    }
+    if (colorMap.size === 0) {
+      return { ok: true, productosColor: 0, filas: 0, ms: Date.now() - startedAt };
+    }
+
+    // 2) Traer movimientos de venta en el rango (paginar para no romper limites)
+    const productoIds = Array.from(colorMap.keys());
+    let movimientos = [];
+    const pageSize = 1000;
+    let offset = 0;
+    while (true) {
+      let q = supabase
+        .from('movimientos_stock')
+        .select('producto_id, cantidad, referencia_id, fecha_movimiento')
+        .eq('tipo', 'venta')
+        .in('producto_id', productoIds)
+        .order('fecha_movimiento', { ascending: true })
+        .range(offset, offset + pageSize - 1);
+      if (desde) q = q.gte('fecha_movimiento', desde);
+      if (hasta) q = q.lte('fecha_movimiento', hasta + 'T23:59:59');
+      const { data, error } = await q;
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      movimientos = movimientos.concat(data);
+      if (data.length < pageSize) break;
+      offset += pageSize;
+    }
+
+    if (movimientos.length === 0) {
+      return { ok: true, productosColor: colorMap.size, filas: 0, ms: Date.now() - startedAt };
+    }
+
+    // 3) Para clasificar contexto, necesitamos saber que pedidos tienen items de kit
+    //    y cuantos colores distintos hay por pedido.
+    const pedidoIds = Array.from(new Set(movimientos.map(m => m.referencia_id).filter(Boolean)));
+    const pedidosConKit = new Set();
+    if (pedidoIds.length > 0) {
+      // Buscar pedido_items cuyos productos sean es_kit=true, agrupado por pedido_id
+      // Hacemos chunks chicos: cada UUID son ~37 chars, PostgREST corta arriba de ~16KB de URL.
+      const chunkSize = 100;
+      for (let i = 0; i < pedidoIds.length; i += chunkSize) {
+        const chunk = pedidoIds.slice(i, i + chunkSize);
+        const { data: items, error: errItems } = await supabase
+          .from('pedido_items')
+          .select('pedido_id, producto_id, productos!inner(es_kit)')
+          .in('pedido_id', chunk)
+          .eq('productos.es_kit', true);
+        if (errItems) throw errItems;
+        for (const it of items || []) {
+          if (it.pedido_id) pedidosConKit.add(it.pedido_id);
+        }
+      }
+    }
+
+    // Contar colores distintos por pedido (con kit) para distinguir kit vs set
+    const coloresPorPedido = new Map(); // pedido_id -> Set<producto_id>
+    for (const m of movimientos) {
+      if (!m.referencia_id) continue;
+      if (!coloresPorPedido.has(m.referencia_id)) coloresPorPedido.set(m.referencia_id, new Set());
+      coloresPorPedido.get(m.referencia_id).add(m.producto_id);
+    }
+
+    // 4) Agregar en memoria: (fecha, producto_id, contexto) -> { unidades, pedidos:Set }
+    const agg = new Map();
+    const toFecha = (ts) => String(ts || '').slice(0, 10);
+    for (const m of movimientos) {
+      const fecha = toFecha(m.fecha_movimiento);
+      if (!fecha) continue;
+      const tieneKit = m.referencia_id ? pedidosConKit.has(m.referencia_id) : false;
+      let contexto = 'individual';
+      if (tieneKit) {
+        const nColores = (coloresPorPedido.get(m.referencia_id) || new Set()).size;
+        contexto = nColores >= 2 ? 'set' : 'kit';
+      }
+      const key = `${fecha}|${m.producto_id}|${contexto}`;
+      let row = agg.get(key);
+      if (!row) {
+        const meta = colorMap.get(m.producto_id);
+        row = {
+          fecha,
+          producto_id: m.producto_id,
+          color_key: meta.color_key,
+          color_label: meta.color_label,
+          contexto,
+          unidades: 0,
+          pedidosSet: new Set(),
+        };
+        agg.set(key, row);
+      }
+      // movimientos_stock.cantidad para ventas viene negativa (egreso). Tomamos abs.
+      row.unidades += Math.abs(Number(m.cantidad) || 0);
+      if (m.referencia_id) row.pedidosSet.add(m.referencia_id);
+    }
+
+    // 5) Borrar rango afectado y reinsertar
+    const fechasInsertadas = Array.from(new Set(Array.from(agg.values()).map(r => r.fecha)));
+    if (fechasInsertadas.length > 0) {
+      let delQ = supabase.from('color_trends_cache').delete();
+      if (desde) delQ = delQ.gte('fecha', desde);
+      if (hasta) delQ = delQ.lte('fecha', hasta);
+      if (!desde && !hasta) delQ = delQ.neq('id', -1); // borrar todo
+      const { error: errDel } = await delQ;
+      if (errDel) throw errDel;
+    }
+
+    const filas = Array.from(agg.values()).map(r => ({
+      fecha: r.fecha,
+      producto_id: r.producto_id,
+      color_key: r.color_key,
+      color_label: r.color_label,
+      contexto: r.contexto,
+      unidades: r.unidades,
+      pedidos: r.pedidosSet.size,
+    }));
+
+    // Insert en lotes
+    const insertBatch = 500;
+    for (let i = 0; i < filas.length; i += insertBatch) {
+      const batch = filas.slice(i, i + insertBatch);
+      const { error: errIns } = await supabase.from('color_trends_cache').insert(batch);
+      if (errIns) throw errIns;
+    }
+
+    return {
+      ok: true,
+      productosColor: colorMap.size,
+      movimientos: movimientos.length,
+      filas: filas.length,
+      desde,
+      hasta,
+      ms: Date.now() - startedAt,
+    };
+  }
+
+  // Lee el cache y arma payload para el dashboard.
+  async obtenerColorTrends({ desde, hasta, contexto = null, granularidad = 'dia' } = {}) {
+    if (!desde || !hasta) {
+      const now = new Date();
+      const d30 = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      hasta = hasta || now.toISOString().slice(0, 10);
+      desde = desde || d30.toISOString().slice(0, 10);
+    }
+
+    let q = supabase
+      .from('color_trends_cache')
+      .select('fecha, producto_id, color_key, color_label, contexto, unidades, pedidos')
+      .gte('fecha', desde)
+      .lte('fecha', hasta);
+    if (contexto && contexto !== 'todos') q = q.eq('contexto', contexto);
+    const { data, error } = await q;
+    if (error) throw error;
+    const filas = data || [];
+
+    // Dias del rango (inclusive)
+    const d0 = new Date(desde + 'T00:00:00');
+    const dN = new Date(hasta + 'T00:00:00');
+    const diasRango = Math.max(1, Math.round((dN.getTime() - d0.getTime()) / 86400000) + 1);
+    const mitadFecha = new Date(d0.getTime() + Math.floor((dN.getTime() - d0.getTime()) / 2))
+      .toISOString().slice(0, 10);
+
+    // Ranking agregado por color + serie diaria por color (para metricas de velocidad)
+    const ranking = new Map(); // color_key -> { ..., diasSet, unidades1, unidades2, serieDia: Map<fecha, ud> }
+    for (const r of filas) {
+      let row = ranking.get(r.color_key);
+      if (!row) {
+        row = {
+          color_key: r.color_key,
+          color_label: r.color_label,
+          producto_id: r.producto_id,
+          unidades: 0,
+          diasSet: new Set(),
+          unidades1: 0, // 1a mitad del rango
+          unidades2: 0, // 2a mitad
+          serieDia: new Map(), // fecha -> unidades (todos los dias, no solo top colores)
+        };
+        ranking.set(r.color_key, row);
+      }
+      const u = r.unidades || 0;
+      row.unidades += u;
+      if (u > 0) row.diasSet.add(r.fecha);
+      if (r.fecha <= mitadFecha) row.unidades1 += u; else row.unidades2 += u;
+      row.serieDia.set(r.fecha, (row.serieDia.get(r.fecha) || 0) + u);
+    }
+    const totalUnidades = Array.from(ranking.values()).reduce((s, r) => s + r.unidades, 0);
+    const rankingArr = Array.from(ranking.values())
+      .map(r => {
+        const diasActivos = r.diasSet.size;
+        const velocidad = diasRango > 0 ? r.unidades / diasRango : 0;
+        const intensidad = diasActivos > 0 ? r.unidades / diasActivos : 0;
+        let tendenciaPct = null;
+        if (r.unidades1 > 0) {
+          tendenciaPct = ((r.unidades2 - r.unidades1) / r.unidades1) * 100;
+        } else if (r.unidades2 > 0) {
+          tendenciaPct = null; // arranca de 0, no se puede %
+        } else {
+          tendenciaPct = 0;
+        }
+        return {
+          color_key: r.color_key,
+          color_label: r.color_label,
+          producto_id: r.producto_id,
+          unidades: r.unidades,
+          pct: totalUnidades > 0 ? Number(((r.unidades / totalUnidades) * 100).toFixed(2)) : 0,
+          dias_activos: diasActivos,
+          dias_rango: diasRango,
+          velocidad: Number(velocidad.toFixed(2)),
+          intensidad: Number(intensidad.toFixed(2)),
+          tendencia_pct: tendenciaPct === null ? null : Number(tendenciaPct.toFixed(1)),
+          unidades_1a_mitad: r.unidades1,
+          unidades_2a_mitad: r.unidades2,
+          serie_dia: Array.from(r.serieDia.entries())
+            .map(([fecha, unidades]) => ({ fecha, unidades }))
+            .sort((a, b) => a.fecha.localeCompare(b.fecha)),
+        };
+      })
+      .sort((a, b) => b.unidades - a.unidades);
+
+    // Top 5 colores para la serie
+    const topColors = rankingArr.slice(0, 5);
+    const topKeys = new Set(topColors.map(c => c.color_key));
+
+    // Serie temporal: bucket por granularidad
+    const bucketOf = (fechaISO) => {
+      const d = new Date(fechaISO + 'T00:00:00');
+      if (granularidad === 'mes') return fechaISO.slice(0, 7);
+      if (granularidad === 'semana') {
+        // ISO week start (lunes)
+        const dt = new Date(d);
+        const dayOfWeek = (dt.getDay() + 6) % 7;
+        dt.setDate(dt.getDate() - dayOfWeek);
+        return dt.toISOString().slice(0, 10);
+      }
+      return fechaISO; // dia
+    };
+
+    const serieMap = new Map(); // bucket -> { fecha, [color_key]: unidades }
+    for (const r of filas) {
+      if (!topKeys.has(r.color_key)) continue;
+      const b = bucketOf(r.fecha);
+      let row = serieMap.get(b);
+      if (!row) { row = { fecha: b }; serieMap.set(b, row); }
+      row[r.color_key] = (row[r.color_key] || 0) + (r.unidades || 0);
+    }
+    const serie = Array.from(serieMap.values()).sort((a, b) => a.fecha.localeCompare(b.fecha));
+
+    // KPIs
+    const kpis = {
+      totalUnidades,
+      colorTop: rankingArr[0] || null,
+      coloresUnicos: rankingArr.length,
+    };
+
+    // Refrescado mas reciente
+    const { data: refData } = await supabase
+      .from('color_trends_cache')
+      .select('refreshed_at')
+      .order('refreshed_at', { ascending: false })
+      .limit(1);
+    const refreshed_at = refData && refData[0] ? refData[0].refreshed_at : null;
+
+    return {
+      rangoFechas: { desde, hasta },
+      contexto: contexto || 'todos',
+      granularidad,
+      kpis,
+      ranking: rankingArr,
+      topColors,
+      serie,
+      refreshed_at,
+    };
+  }
+
+  // Compara dos periodos contiguos del mismo largo y devuelve variacion por color.
+  async compararPeriodosColor({ desde, hasta, contexto = null } = {}) {
+    if (!desde || !hasta) throw new Error('compararPeriodosColor requiere desde y hasta');
+    const d1 = new Date(desde + 'T00:00:00');
+    const d2 = new Date(hasta + 'T00:00:00');
+    const diasMs = d2.getTime() - d1.getTime();
+    const desdeAnterior = new Date(d1.getTime() - diasMs - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const hastaAnterior = new Date(d1.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+    const [actual, anterior] = await Promise.all([
+      this.obtenerColorTrends({ desde, hasta, contexto }),
+      this.obtenerColorTrends({ desde: desdeAnterior, hasta: hastaAnterior, contexto }),
+    ]);
+
+    const map = new Map();
+    for (const r of actual.ranking) {
+      map.set(r.color_key, { color_key: r.color_key, color_label: r.color_label, actual: r.unidades, anterior: 0 });
+    }
+    for (const r of anterior.ranking) {
+      let row = map.get(r.color_key);
+      if (!row) {
+        row = { color_key: r.color_key, color_label: r.color_label, actual: 0, anterior: 0 };
+        map.set(r.color_key, row);
+      }
+      row.anterior = r.unidades;
+    }
+    const comparativa = Array.from(map.values()).map(r => ({
+      ...r,
+      variacion_abs: r.actual - r.anterior,
+      variacion_pct: r.anterior > 0 ? Number((((r.actual - r.anterior) / r.anterior) * 100).toFixed(2)) : (r.actual > 0 ? null : 0),
+    })).sort((a, b) => b.actual - a.actual);
+
+    return {
+      periodoActual: { desde, hasta },
+      periodoAnterior: { desde: desdeAnterior, hasta: hastaAnterior },
+      comparativa,
+    };
+  }
 }
 
 module.exports = new SupabaseService();
