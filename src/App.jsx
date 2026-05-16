@@ -617,9 +617,16 @@ function AppContent({ user, logout }) {
   const handleConfirmarGeneracion = async (items) => {
     if (!Array.isArray(items) || items.length === 0) return;
 
-    // Helper: identifica si un pedido debe ir por MarcoPostal Web (Montevideo)
+    // Helper: identifica si un pedido debe ir por MarcoPostal Web (Montevideo).
+    // Prioriza el departamento editado por el operador en el modal sobre el de DB.
     const pedidosMap = new Map(pedidos.map((p) => [p.id, p]));
+    const overridesMap = new Map(items.map((it) => [it.pedidoId, it.payloadOverrides || null]));
     const esMontevideo = (pedidoId) => {
+      const ov = overridesMap.get(pedidoId);
+      const depEditado = ov?.payloadDireccion?.departamento;
+      if (depEditado) {
+        return String(depEditado).trim().toLowerCase() === 'montevideo';
+      }
       const p = pedidosMap.get(pedidoId);
       return String(p?.departamento || '').trim().toLowerCase() === 'montevideo';
     };

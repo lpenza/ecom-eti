@@ -740,7 +740,9 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
   };
 
   const handleDepartamentoChange = async (value) => {
+    const depNombre = departamentos.find((d) => String(d.id) === String(value))?.nombre || '';
     updateCurrentForm('payloadDireccion', 'departamento_id', value);
+    updateCurrentForm('payloadDireccion', 'departamento', depNombre);
     updateCurrentForm('payloadDireccion', 'localidad_id', '');
     await loadLocalidades(value);
   };

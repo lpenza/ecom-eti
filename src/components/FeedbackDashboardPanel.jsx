@@ -277,18 +277,24 @@ function buildRetryWALink(phone, renderedMessage) {
   return `https://api.whatsapp.com/send?phone=${numero}&text=${encodeURIComponent(renderedMessage)}`;
 }
 
-function RetryPanel({ contact, templates = [], onRetrySuccess }) {
+function RetryPanel({ contact, templates = [], onRetrySuccess, variant = 'retry' }) {
   const [selectedTemplateId, setSelectedTemplateId] = useState(templates[0]?.id || '');
   const [saving, setSaving] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
 
+  const isPositive = variant === 'positive';
   const activeTemplate = templates.find((t) => t.id === selectedTemplateId) || templates[0];
   const previewText = activeTemplate ? renderRetryTemplate(activeTemplate.content, contact) : '';
   const waLink = contact.phone ? buildRetryWALink(contact.phone, previewText) : null;
 
   const handleOpen = async () => {
     if (!waLink) return;
+    if (isPositive) {
+      window.open(waLink, '_blank', 'noopener,noreferrer');
+      setSent(true);
+      return;
+    }
     setError('');
     setSaving(true);
     try {
@@ -320,7 +326,7 @@ function RetryPanel({ contact, templates = [], onRetrySuccess }) {
   return (
     <div className="fdx-retry-panel">
       <div className="fdx-retry-header">
-        <span className="fdx-retry-title">⟳ Reintentar contacto</span>
+        <span className="fdx-retry-title">{isPositive ? '💬 Enviar WhatsApp' : '⟳ Reintentar contacto'}</span>
         {sent && <span className="fdx-retry-sent-badge">✓ WhatsApp abierto</span>}
       </div>
       <div className="fdx-retry-controls">
@@ -542,6 +548,10 @@ function CampaignContactsList({ contacts = [], campaignSent = 0, templates = [],
 
                     {isRetryEligible(c) && (
                       <RetryPanel contact={c} templates={templates} onRetrySuccess={onRetrySuccess} />
+                    )}
+
+                    {stateTone(c.state) === 'positive' && c.phone && (
+                      <RetryPanel contact={c} templates={templates} variant="positive" />
                     )}
                   </div>
                 )}

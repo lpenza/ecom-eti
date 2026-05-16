@@ -1658,39 +1658,38 @@ app.post('/api/reprocess-shopify-order', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Se requiere orderNumber' });
     }
 
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_KEY;
-
-    if (!supabaseUrl || !supabaseKey) {
-      return res.status(500).json({ success: false, error: 'SUPABASE_URL o SUPABASE_KEY no configurados' });
-    }
-
     const num = String(orderNumber).replace(/^#/, '').trim();
 
-    const response = await fetch(`${supabaseUrl}/functions/v1/shopify-proxy`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${supabaseKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ action: 'reprocessOrder', orderNumber: num }),
-    });
-
-    const data = await response.json().catch(() => ({}));
-    logService.info(`[reprocess] Edge Function respondió status=${response.status} body=${JSON.stringify(data)}`);
-
-    if (response.ok && data?.success) {
-      return res.json({
-        success: true,
-        pedido_id: data.pedido_id,
-        numero_pedido: data.numero_pedido,
-        es_envio_express: data.es_envio_express,
-        mensaje: data.mensaje,
-      });
+    const orderId = await shopifyService.obtenerIdPorNumeroPedido(num);
+    if (!orderId) {
+      return res.status(404).json({ success: false, error: `Pedido #${num} no encontrado en Shopify` });
     }
 
-    const errorMsg = data?.error || `Error reprocesando pedido #${num} (status ${response.status})`;
-    return res.status(response.status || 500).json({ success: false, error: errorMsg });
+    const orden = await shopifyService.obtenerOrden(orderId);
+
+    const shippingTitle = String(orden.shipping_lines?.[0]?.title || '').toLowerCase();
+    const esEnvioExpress = shippingTitle.includes('recibilo');
+
+    const resultados = await supabaseService.sincronizarOrdenes([orden]);
+    const pedido = resultados[0];
+
+    if (!pedido?.id) {
+      return res.status(500).json({ success: false, error: `No se pudo crear/actualizar el pedido #${num} en BD` });
+    }
+
+    shopifyService.agregarTagAOrden(orderId, 'ETIQUETA CREADA').catch((e) =>
+      logService.warning(`No se pudo agregar tag a orden ${orderId}: ${e.message}`)
+    );
+
+    logService.info(`[reprocess] Pedido #${num} procesado localmente — id=${pedido.id} express=${esEnvioExpress}`);
+
+    return res.json({
+      success: true,
+      pedido_id: pedido.id,
+      numero_pedido: String(orden.order_number),
+      es_envio_express: esEnvioExpress,
+      mensaje: `Pedido #${num} reprocesado exitosamente`,
+    });
   } catch (error) {
     logService.error('Error al reprocesar pedido Shopify', error);
     res.status(500).json({ success: false, error: error.message });

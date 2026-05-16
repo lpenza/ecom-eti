@@ -152,7 +152,6 @@ class ShopifyService {
 
       const lineItemsByFulfillmentOrder = openFOs.map((fo) => ({
         fulfillmentOrderId: `gid://shopify/FulfillmentOrder/${fo.id}`,
-        lineItemIds: (fo.line_items || []).map((li) => `gid://shopify/FulfillmentOrderLineItem/${li.id}`),
       }));
 
       const query = `mutation prep($input: FulfillmentOrderLineItemsPreparedForPickupInput!) {
