@@ -1,18 +1,15 @@
 import React from 'react';
 
-function Header({ stats, activeFilter, onFilterChange, onActualizar, onLoginUES, uesAuthenticated, currentUser }) {
+function Header({ stats, activeFilter, onFilterChange, onLoginUES, uesAuthenticated, currentUser }) {
   const esAdmin = currentUser?.role === 'admin';
   return (
     <header className="header">
       <div className="header-top">
         <div className="logo">
           <p>Sistema de Gestión de Envíos</p>
-          {esAdmin && <p className="header-flow">Flujo: Sincronizar → Validar → Crear etiquetas → Marcar despachado → Enviar Fulfillment</p>}
+          {esAdmin && <p className="header-flow">Flujo: Validar → Crear etiquetas → Marcar despachado → Enviar Fulfillment</p>}
         </div>
         <div className="header-actions">
-          <button className="btn btn-secondary header-btn" onClick={onActualizar}>
-            ♻️ Actualizar
-          </button>
           {esAdmin && (
             <>
               <button

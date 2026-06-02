@@ -599,20 +599,6 @@ function AppContent({ user, logout }) {
     }
   }, [esAdmin, cargarPedidosArmadoOperario]);
 
-  const handleActualizarOperativa = useCallback(async () => {
-    await cargarPedidos();
-    // Mantener sincronizadas las vistas secundarias (Despachados/Enviados/Pickup/Recibilo)
-    // para evitar tablas vacías por cache local desactualizado.
-    await Promise.all([
-      cargarPedidosDespachados(),
-      cargarPedidosEnviados(),
-      cargarPedidosPickup(),
-      cargarPedidosRecibilo(),
-      cargarPedidosReenvio(),
-      cargarPedidosReenvio(),
-    ]);
-  }, [cargarPedidos, cargarPedidosDespachados, cargarPedidosEnviados, cargarPedidosPickup, cargarPedidosRecibilo, cargarPedidosReenvio]);
-
   // Confirmación desde modal (uno o múltiples pedidos)
   const handleConfirmarGeneracion = async (items) => {
     if (!Array.isArray(items) || items.length === 0) return;
@@ -1944,7 +1930,6 @@ function AppContent({ user, logout }) {
             stats={headerStats}
             activeFilter={tableFilter}
             onFilterChange={setTableFilter}
-            onActualizar={handleActualizarOperativa}
             onLoginUES={handleLoginUES}
             uesAuthenticated={uesAuthenticated}
             currentUser={user}

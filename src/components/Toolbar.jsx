@@ -8,15 +8,12 @@ function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillme
 
   return (
     <div className="toolbar">
-      <button className="btn btn-primary" onClick={onSincronizar}>
-        1) 🔄 Sincronizar Shopify
-      </button>
-      <button 
-        className="btn btn-success" 
+      <button
+        className="btn btn-success"
         onClick={onValidar}
         disabled={pendingCount === 0 || !uesAuthenticated}
       >
-        2) ✅ Validar Pedidos
+        1) ✅ Validar Pedidos
       </button>
 
       {fulfillmentPreviewCount !== null ? (
@@ -49,7 +46,7 @@ function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillme
             </div>
           )}
           <button className="btn btn-success" onClick={onConfirmarFulfillment}>
-            3) 📨 Confirmar Envio Tracking ({fulfillmentPreviewCount}/{fulfillmentPreviewTotalCount})
+            2) 📨 Confirmar Envio Tracking ({fulfillmentPreviewCount}/{fulfillmentPreviewTotalCount})
           </button>
           <button className="btn btn-secondary" onClick={onCancelarFulfillment}>
             ✗ Cancelar
@@ -58,7 +55,7 @@ function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillme
       ) : (
         <>
           <button className="btn btn-primary" onClick={onFulfillment} disabled={fulfillmentReadyCount === 0}>
-            3) 📨 Enviar Tracking {fulfillmentReadyCount > 0 && `(${fulfillmentReadyCount})`}
+            2) 📨 Enviar Tracking {fulfillmentReadyCount > 0 && `(${fulfillmentReadyCount})`}
           </button>
           
           {/* Control de prioridad de canal */}
