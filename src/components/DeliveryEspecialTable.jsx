@@ -82,6 +82,7 @@ export default function DeliveryEspecialTable({
   const tipoLabel = tipo === 'pickup_local' ? 'Pick-UP' : tipo === 'recibilo_hoy' ? 'Recibilo Hoy' : 'Reenvíos';
   const tipoIcon  = tipo === 'pickup_local' ? '🏪' : tipo === 'recibilo_hoy' ? '⚡' : '📦';
   const esReenvio = tipo === 'reenvio';
+  const esPickup  = tipo === 'pickup_local';
 
   const pedidosOrdenados = groupByTracking(
     [...pedidos].sort((a, b) => {
@@ -426,8 +427,10 @@ export default function DeliveryEspecialTable({
               className="btn btn-success btn-sm"
               onClick={handleProcesarBulk}
               disabled={bulkLoading}
-              title="Marcar todos los seleccionados como procesados (sin fulfillment Shopify)">
-              ✅ Procesar todos
+              title={esPickup
+                ? 'Marcar listos para retirar y notificar a los clientes'
+                : 'Marcar todos los seleccionados como procesados (sin fulfillment Shopify)'}>
+              {esPickup ? '🏪 Marcar listos para retirar' : '✅ Procesar todos'}
             </button>
             <button
               className="btn btn-outline btn-sm"
@@ -694,12 +697,13 @@ export default function DeliveryEspecialTable({
                         className={`btn btn-sm ${estado === 'enviado' ? 'btn-secondary' : 'btn-success'}`}
                         disabled={estado === 'enviado' || !urls}
                         title={
-                          estado === 'enviado' ? 'Ya procesado'
-                          : !urls ? 'Necesita etiqueta Drive para procesar'
+                          estado === 'enviado' ? (esPickup ? 'Ya listo para retirar' : 'Ya procesado')
+                          : !urls ? (esPickup ? 'Generá la etiqueta MP antes de marcar listo para retirar' : 'Necesita etiqueta Drive para procesar')
+                          : esPickup ? 'Marcar listo para retirar y notificar al cliente'
                           : 'Marcar como procesado (sin fulfillment Shopify)'
                         }
                         onClick={() => onProcesar?.(pedido.id)}>
-                        ✅ Procesar
+                        {esPickup ? '🏪 Listo para retirar' : '✅ Procesar'}
                       </button>
                     </td>
                   </tr>

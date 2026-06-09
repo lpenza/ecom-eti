@@ -1789,11 +1789,58 @@ function AppContent({ user, logout }) {
   };
 
   const handleFulfillmentEspecial = async (pedidoId, tipoEnvio) => {
+    const esPickup = tipoEnvio === 'pickup_local';
     try {
       const resultado = await ejecutarFulfillmentShopify([pedidoId]);
       if (!resultado.success) { mostrarToast(resultado.error || 'Error en fulfillment', 'error'); return; }
-      mostrarToast('✅ Fulfillment enviado a Shopify', 'success');
-      if (tipoEnvio === 'pickup_local') cargarPedidosPickup();
+      // El backend procesa por pedido — revisar el resultado individual para no
+      // mostrar éxito si el fulfillment/traslado falló.
+      const r = (resultado.data || [])[0];
+      if (resultado.count === 0) {
+        mostrarToast('⚠️ El pedido no tiene etiqueta/tracking para procesar', 'warning');
+        return;
+      }
+      if (resultado.successCount === 0 || (r && r.success === false)) {
+        mostrarToast(`❌ ${r?.error || 'No se pudo completar el fulfillment'}`, 'error');
+      } else {
+        mostrarToast(
+          esPickup
+            ? '🏪 Marcado listo para retirar — cliente notificado'
+            : '✅ Fulfillment enviado a Shopify',
+          'success'
+        );
+      }
+      if (esPickup) cargarPedidosPickup();
+      else cargarPedidosRecibilo();
+      cargarPedidosEnviados();
+    } catch { mostrarToast('Error al ejecutar fulfillment', 'error'); }
+  };
+
+  const handleFulfillmentBulkEspecial = async (pedidoIds, tipoEnvio) => {
+    const esPickup = tipoEnvio === 'pickup_local';
+    try {
+      const resultado = await ejecutarFulfillmentShopify(pedidoIds);
+      if (!resultado.success) { mostrarToast(resultado.error || 'Error en fulfillment', 'error'); return; }
+      const ok = resultado.successCount || 0;
+      const fail = resultado.failCount || 0;
+      if (resultado.count === 0) {
+        mostrarToast('⚠️ Ninguno tiene etiqueta/tracking para procesar', 'warning');
+      } else if (fail > 0) {
+        mostrarToast(
+          esPickup
+            ? `⚠️ ${ok}/${resultado.count} listos para retirar — ${fail} con error`
+            : `⚠️ Fulfillment: ${ok}/${resultado.count} OK — ${fail} con error`,
+          'warning'
+        );
+      } else {
+        mostrarToast(
+          esPickup
+            ? `🏪 ${ok} pedido(s) listos para retirar — clientes notificados`
+            : `✅ ${ok} fulfillment(s) enviados`,
+          'success'
+        );
+      }
+      if (esPickup) cargarPedidosPickup();
       else cargarPedidosRecibilo();
       cargarPedidosEnviados();
     } catch { mostrarToast('Error al ejecutar fulfillment', 'error'); }
@@ -2270,8 +2317,8 @@ function AppContent({ user, logout }) {
                 tipo="pickup_local"
                 onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'pickup_local')}
                 onMarcarDespachadosBulk={(ids) => handleMarcarDespachadosBulkEspecial(ids, 'pickup_local')}
-                onProcesar={(id) => handleProcesarEspecial(id, 'pickup_local')}
-                onProcesarBulk={(ids) => handleProcesarBulkEspecial(ids, 'pickup_local')}
+                onProcesar={(id) => handleFulfillmentEspecial(id, 'pickup_local')}
+                onProcesarBulk={(ids) => handleFulfillmentBulkEspecial(ids, 'pickup_local')}
                 onActualizar={cargarPedidosPickup}
                 onGenerarEtiquetaMP={handleGenerarEtiquetaMP}
                 mostrarToast={mostrarToast}

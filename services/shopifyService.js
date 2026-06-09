@@ -137,12 +137,136 @@ class ShopifyService {
     }
   }
 
-  // Marcar como "Listo para retirar" (pickup local) sin cerrar el fulfillment.
-  // Usa la mutation GraphQL fulfillmentOrderLineItemsPreparedForPickup (Admin API 2024-01).
-  // Requisito: la sucursal asignada al fulfillment_order debe tener "Local pickup"
-  // habilitado en Shopify (Settings → Locations); si no, la mutation devuelve userErrors.
+  // Resolver la locación de retiro (con "Local pickup" habilitado) y cachearla.
+  // Prioridad: env SHOPIFY_PICKUP_LOCATION_ID (numérico o GID); si no, autodetecta
+  // la primera locación activa con localPickupSettingsV2 definido.
+  async obtenerLocationPickup() {
+    if (this._pickupLocation) return this._pickupLocation;
+
+    const configurado = process.env.SHOPIFY_PICKUP_LOCATION_ID;
+    if (configurado) {
+      const numericId = String(configurado).replace('gid://shopify/Location/', '').trim();
+      this._pickupLocation = { id: numericId, gid: `gid://shopify/Location/${numericId}` };
+      return this._pickupLocation;
+    }
+
+    const query = `query {
+      locations(first: 50, includeInactive: false) {
+        edges { node { id name localPickupSettingsV2 { pickupTime } } }
+      }
+    }`;
+
+    const response = await axios.post(
+      `https://${this.domain}/admin/api/2024-01/graphql.json`,
+      { query },
+      { headers: this.getHeaders() }
+    );
+
+    const edges = response.data?.data?.locations?.edges || [];
+    const pickupNode = edges.map((e) => e.node).find((n) => n?.localPickupSettingsV2);
+    if (!pickupNode) {
+      throw new Error(
+        'No se encontró ninguna locación con "Local pickup" habilitado en Shopify. ' +
+        'Habilite el retiro en una sucursal o configure SHOPIFY_PICKUP_LOCATION_ID en el .env'
+      );
+    }
+
+    const numericId = String(pickupNode.id).replace('gid://shopify/Location/', '');
+    this._pickupLocation = { id: numericId, gid: pickupNode.id };
+    return this._pickupLocation;
+  }
+
+  // Conecta un inventory item a una locación (con cantidad 0) para que quede "stockeado"
+  // ahí. Es requisito para que fulfillmentOrderMove pueda trasladar el FO al punto de
+  // retiro (sin esto devuelve "None of the items are stocked at the new location").
+  // No suma stock (qty 0) ni cambia el total vendible. Best-effort: si ya estaba activo,
+  // Shopify devuelve userErrors que ignoramos.
+  async activarInventarioEnLocation(inventoryItemId, locationGid) {
+    const query = `mutation act($inventoryItemId: ID!, $locationId: ID!) {
+      inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) {
+        inventoryLevel { id }
+        userErrors { field message }
+      }
+    }`;
+    try {
+      const response = await axios.post(
+        `https://${this.domain}/admin/api/2024-01/graphql.json`,
+        {
+          query,
+          variables: {
+            inventoryItemId: `gid://shopify/InventoryItem/${inventoryItemId}`,
+            locationId: locationGid,
+          },
+        },
+        { headers: this.getHeaders() }
+      );
+      const userErrors = response.data?.data?.inventoryActivate?.userErrors || [];
+      if (userErrors.length > 0) {
+        console.warn(`inventoryActivate item ${inventoryItemId} en retiro: ${JSON.stringify(userErrors)}`);
+      }
+    } catch (error) {
+      console.warn(`No se pudo activar inventario item ${inventoryItemId} en retiro: ${error.message}`);
+    }
+  }
+
+  // Trasladar un fulfillment_order al punto de retiro (equivale al "transferir a lugar de
+  // retiro" del admin de Shopify). Antes de mover, conecta los items a la locación destino.
+  // Devuelve el GID del fulfillment_order resultante.
+  async moverFulfillmentOrder(fo, newLocationGid) {
+    const inventoryItemIds = [
+      ...new Set((fo.line_items || []).map((li) => li.inventory_item_id).filter(Boolean)),
+    ];
+    for (const invId of inventoryItemIds) {
+      await this.activarInventarioEnLocation(invId, newLocationGid);
+    }
+
+    const query = `mutation moverFO($id: ID!, $newLocationId: ID!) {
+      fulfillmentOrderMove(id: $id, newLocationId: $newLocationId) {
+        movedFulfillmentOrder { id status }
+        userErrors { field message }
+      }
+    }`;
+
+    const response = await axios.post(
+      `https://${this.domain}/admin/api/2024-01/graphql.json`,
+      {
+        query,
+        variables: {
+          id: `gid://shopify/FulfillmentOrder/${fo.id}`,
+          newLocationId: newLocationGid,
+        },
+      },
+      { headers: this.getHeaders() }
+    );
+
+    const data = response.data;
+    const result = data?.data?.fulfillmentOrderMove;
+    const userErrors = result?.userErrors || [];
+    const topErrors = data?.errors || [];
+    if (userErrors.length > 0 || topErrors.length > 0) {
+      throw new Error(
+        `Error trasladando fulfillment_order ${fo.id} al punto de retiro — ` +
+        `userErrors: ${JSON.stringify(userErrors)} | errors: ${JSON.stringify(topErrors)}`
+      );
+    }
+
+    const movedGid = result?.movedFulfillmentOrder?.id;
+    if (!movedGid) {
+      throw new Error(`fulfillmentOrderMove no devolvió movedFulfillmentOrder para ${fo.id}`);
+    }
+    return movedGid;
+  }
+
+  // Marcar como "Listo para retirar" (pickup local) — automatiza los 2 pasos manuales del
+  // admin: 1) traslada el FO a la sucursal Pick-UP si todavía no está ahí (Shopify exige
+  // que el FO esté en una locación con local pickup para poder prepararlo); 2) lo marca
+  // como preparado con fulfillmentOrderLineItemsPreparedForPickup, que dispara la
+  // notificación nativa de Shopify. Marcar listo NO descuenta on_hand (solo mueve la
+  // reserva); el stock baja de Bvar España al cumplir el retiro.
   async marcarListoParaRetirar(orderId) {
     try {
+      const pickup = await this.obtenerLocationPickup();
+
       const fulfillmentOrders = await this.obtenerFulfillmentOrders(orderId);
       const openFOs = fulfillmentOrders.filter((fo) => fo.status === 'open' || fo.status === 'in_progress');
 
@@ -150,8 +274,21 @@ class ShopifyService {
         throw new Error('No hay fulfillment_orders abiertos para esta orden');
       }
 
-      const lineItemsByFulfillmentOrder = openFOs.map((fo) => ({
-        fulfillmentOrderId: `gid://shopify/FulfillmentOrder/${fo.id}`,
+      // Paso 1: trasladar cada FO al punto de retiro si todavía no está ahí.
+      const targetFoGids = [];
+      for (const fo of openFOs) {
+        const currentLocationId = String(fo.assigned_location_id || fo.assigned_location?.location_id || '');
+        if (currentLocationId === String(pickup.id)) {
+          targetFoGids.push(`gid://shopify/FulfillmentOrder/${fo.id}`);
+        } else {
+          const movedGid = await this.moverFulfillmentOrder(fo, pickup.gid);
+          targetFoGids.push(movedGid);
+        }
+      }
+
+      // Paso 2: marcar listo para retirar (notifica al cliente).
+      const lineItemsByFulfillmentOrder = targetFoGids.map((gid) => ({
+        fulfillmentOrderId: gid,
       }));
 
       const query = `mutation prep($input: FulfillmentOrderLineItemsPreparedForPickupInput!) {
@@ -175,7 +312,7 @@ class ShopifyService {
         );
       }
 
-      return { ok: true, fulfillmentOrderIds: openFOs.map((fo) => fo.id) };
+      return { ok: true, fulfillmentOrderIds: targetFoGids };
     } catch (error) {
       const shopifyBody = error.response?.data;
       const httpStatus = error.response?.status;
