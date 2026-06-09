@@ -440,7 +440,7 @@ class UESService {
           const value = override[key];
           
           // Campos que siempre deben sobrescribirse incluso si están vacíos
-          const alwaysOverride = ['observaciones', 'comentario'];
+          const alwaysOverride = ['observaciones', 'comentario', 'numero_apartamento'];
           
           if (alwaysOverride.includes(key)) {
             merged[key] = value;

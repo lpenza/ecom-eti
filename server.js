@@ -2187,13 +2187,22 @@ app.get('/api/pedido-detalle/:numeroPedido', requireAuth, async (req, res) => {
       return res.status(404).json({ success: false, error: `Orden #${numeroPedido} no encontrada en Shopify` });
     }
     const orden = await shopifyService.obtenerOrden(shopifyOrderId);
-    const lineItems = (orden.line_items || []).map((item) => ({
-      id: item.id,
-      title: item.title,
-      variant_title: item.variant_title || null,
-      quantity: item.quantity,
-      sku: item.sku || null,
-    }));
+    const lineItems = (orden.line_items || [])
+      // Filtrar items eliminados vía order editing en Shopify.
+      // Shopify mantiene los items en el array pero pone current_quantity = 0.
+      // Si current_quantity no viene definido (pedidos viejos sin editar), usamos quantity.
+      .filter((item) => {
+        const qty = item.current_quantity !== undefined ? item.current_quantity : item.quantity;
+        return qty > 0;
+      })
+      .map((item) => ({
+        id: item.id,
+        title: item.title,
+        variant_title: item.variant_title || null,
+        // Usar current_quantity si está disponible (refleja ediciones del pedido)
+        quantity: item.current_quantity !== undefined ? item.current_quantity : item.quantity,
+        sku: item.sku || null,
+      }));
     res.json({ success: true, lineItems });
   } catch (error) {
     logService.error('Error obteniendo detalle de pedido', error);

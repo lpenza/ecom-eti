@@ -296,9 +296,9 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
 
     if (!String(form.payloadEnvio?.nombre_recibe || '').trim()) blockers.push('Falta nombre destinatario');
     if (!String(form.payloadEnvio?.telefono_recibe || '').trim()) {
-      // Para MarcoPostal el teléfono es opcional; sólo aviso. UES sigue exigiéndolo.
-      if (viaMP) warnings.push('Sin teléfono destinatario');
-      else blockers.push('Falta teléfono destinatario');
+      // Tanto para MP como para UES es sólo aviso: MP acepta vacío, y UES tiene
+      // fallback a UES_TELEFONO_DEFAULT en el backend cuando el override viene vacío.
+      warnings.push('Sin teléfono destinatario');
     }
     if (!String(form.payloadEnvio?.email_recibe || '').trim()) warnings.push('Sin email destinatario');
 
@@ -410,7 +410,11 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
             payloadEnvio: {
               referencia: preview?.payloadEnvio?.referencia || '',
               nombre_recibe: preview?.payloadEnvio?.nombre_recibe || '',
-              telefono_recibe: preview?.payloadEnvio?.telefono_recibe || '',
+              // Pre-llenar con el teléfono real del cliente, NO con el default UES
+              // que viene en preview.payloadEnvio.telefono_recibe. Para MP no queremos
+              // mandar nuestro número; para UES el backend hace fallback al default
+              // cuando el override viene vacío.
+              telefono_recibe: pedidoData?.cliente_telefono || '',
               email_recibe: preview?.payloadEnvio?.email_recibe || '',
               servicio_id: preview?.payloadEnvio?.servicio_id || '',
               direccion_remitente_id: preview?.payloadEnvio?.direccion_remitente_id || '',
