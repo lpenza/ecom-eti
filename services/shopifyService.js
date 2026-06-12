@@ -257,6 +257,10 @@ class ShopifyService {
       porItem.set(li.inventory_item_id, (porItem.get(li.inventory_item_id) || 0) + qty);
     }
 
+    // inventoryMoveQuantities NO sirve acá: solo mueve entre estados de la MISMA
+    // sucursal ("The quantities can't be moved between different locations").
+    // La transferencia entre sucursales se hace con inventoryAdjustQuantities en una
+    // sola operación atómica: -N available en el origen y +N available en Pick-UP.
     const changes = [];
     const transferencias = [];
     for (const [inventoryItemId, necesario] of porItem) {
@@ -264,19 +268,25 @@ class ShopifyService {
       const yaCubierto = Math.min(Math.max(available ?? 0, 0), necesario);
       const aTransferir = necesario - yaCubierto;
       if (aTransferir <= 0) continue;
-      changes.push({
-        inventoryItemId: `gid://shopify/InventoryItem/${inventoryItemId}`,
-        quantity: aTransferir,
-        from: { locationId: `gid://shopify/Location/${origenLocationId}`, name: 'available' },
-        to: { locationId: pickup.gid, name: 'available' },
-      });
+      changes.push(
+        {
+          inventoryItemId: `gid://shopify/InventoryItem/${inventoryItemId}`,
+          locationId: `gid://shopify/Location/${origenLocationId}`,
+          delta: -aTransferir,
+        },
+        {
+          inventoryItemId: `gid://shopify/InventoryItem/${inventoryItemId}`,
+          locationId: pickup.gid,
+          delta: aTransferir,
+        }
+      );
       transferencias.push({ inventoryItemId, cantidad: aTransferir });
     }
 
     if (changes.length === 0) return transferencias;
 
-    const query = `mutation MoveToPickup($input: InventoryMoveQuantitiesInput!) {
-      inventoryMoveQuantities(input: $input) {
+    const query = `mutation TransferToPickup($input: InventoryAdjustQuantitiesInput!) {
+      inventoryAdjustQuantities(input: $input) {
         userErrors { field message }
       }
     }`;
@@ -287,7 +297,8 @@ class ShopifyService {
         query,
         variables: {
           input: {
-            reason: 'movement_created',
+            reason: 'correction',
+            name: 'available',
             referenceDocumentUri: `gid://shopify/Order/${shopifyOrderId}`,
             changes,
           },
@@ -297,7 +308,7 @@ class ShopifyService {
     );
 
     const data = response.data;
-    const userErrors = data?.data?.inventoryMoveQuantities?.userErrors || [];
+    const userErrors = data?.data?.inventoryAdjustQuantities?.userErrors || [];
     const topErrors = data?.errors || [];
     if (userErrors.length > 0 || topErrors.length > 0) {
       throw new Error(
