@@ -115,6 +115,43 @@ export default function AtencionPanel({ mostrarToast }) {
           </button>
         </div>
 
+        <div className="atencion-info-card">
+          <div className="atencion-info-item">
+            <div className="atencion-info-item-header">
+              <span className="atencion-info-badge atencion-info-badge-mvd">Montevideo</span>
+              <span className="atencion-info-time">24-48 hs hábiles</span>
+            </div>
+            <div className="atencion-info-carrier">
+              Envíos por <strong>Marco Postal</strong>
+              {' · '}
+              <a
+                href="https://marcopostal.epresis.com/seguimiento"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Seguimiento
+              </a>
+            </div>
+          </div>
+          <div className="atencion-info-item">
+            <div className="atencion-info-item-header">
+              <span className="atencion-info-badge atencion-info-badge-interior">Interior</span>
+              <span className="atencion-info-time">24-72 hs hábiles</span>
+            </div>
+            <div className="atencion-info-carrier">
+              Envíos por <strong>UES</strong>
+              {' · '}
+              <a
+                href="https://ues.com.uy/rastreo_paquete.html"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Seguimiento
+              </a>
+            </div>
+          </div>
+        </div>
+
         {pedidos.length === 0 && !loading ? (
           <div className="de-empty">
             <span style={{ fontSize: '2rem' }}>🔍</span>
@@ -154,12 +191,20 @@ export default function AtencionPanel({ mostrarToast }) {
                         <td>{pedido.departamento || '—'}</td>
                         <td style={{ fontSize: 12 }}>{tipoLabel}</td>
                         <td>
-                          <span className={`reclamo-estado-badge ${est.cls}`}>
+                          <span
+                            className={`reclamo-estado-badge ${est.cls}`}
+                            title={est.key === 'etiqueta' ? 'El pedido está por ser armado' : undefined}
+                          >
                             {est.icon} {est.label}
                           </span>
                           {est.key === 'contacto' && pedido.revision_contacto_motivo && (
                             <div style={{ fontSize: 12, color: '#a15c00', marginTop: 4, maxWidth: 220 }}>
                               Motivo: {pedido.revision_contacto_motivo}
+                            </div>
+                          )}
+                          {est.key === 'etiqueta' && (
+                            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4, fontStyle: 'italic' }}>
+                              Por ser armado
                             </div>
                           )}
                         </td>
