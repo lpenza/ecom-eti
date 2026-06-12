@@ -33,10 +33,13 @@ function fmtFecha(iso) {
   return new Date(iso).toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit' });
 }
 
+const PEDIDOS_POR_PAGINA = 15;
+
 export default function AtencionPanel({ mostrarToast }) {
   const [pedidos, setPedidos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [busqueda, setBusqueda] = useState('');
+  const [pagina, setPagina] = useState(1);
   // Detalle por pedido: { [pedidoId]: { loading, items, error, open } }
   const [detalles, setDetalles] = useState({});
 
@@ -46,6 +49,7 @@ export default function AtencionPanel({ mostrarToast }) {
       const res = await obtenerPedidosAtencion(q);
       if (res?.success) {
         setPedidos(Array.isArray(res.data) ? res.data : []);
+        setPagina(1);
       } else {
         mostrarToast?.(res?.error || 'Error cargando pedidos', 'error');
       }
@@ -86,6 +90,13 @@ export default function AtencionPanel({ mostrarToast }) {
     }
   };
 
+  const totalPaginas = Math.max(1, Math.ceil(pedidos.length / PEDIDOS_POR_PAGINA));
+  const paginaActual = Math.min(pagina, totalPaginas);
+  const pedidosVisibles = pedidos.slice(
+    (paginaActual - 1) * PEDIDOS_POR_PAGINA,
+    paginaActual * PEDIDOS_POR_PAGINA
+  );
+
   return (
     <div className="main-content">
       <div className="de-wrapper">
@@ -118,6 +129,7 @@ export default function AtencionPanel({ mostrarToast }) {
                   <th>Cliente</th>
                   <th>Contacto</th>
                   <th>Fecha</th>
+                  <th>Departamento</th>
                   <th>Envío</th>
                   <th>Estado</th>
                   <th>N° de guía</th>
@@ -125,7 +137,7 @@ export default function AtencionPanel({ mostrarToast }) {
                 </tr>
               </thead>
               <tbody>
-                {pedidos.map((pedido) => {
+                {pedidosVisibles.map((pedido) => {
                   const est = derivarEstado(pedido);
                   const det = detalles[pedido.id] || {};
                   const tipoLabel = TIPO_ENVIO_LABELS[pedido.tipo_envio] || '📦 Estándar';
@@ -139,6 +151,7 @@ export default function AtencionPanel({ mostrarToast }) {
                           {pedido.cliente_email ? <><br />{pedido.cliente_email}</> : null}
                         </td>
                         <td>{fmtFecha(pedido.created_at)}</td>
+                        <td>{pedido.departamento || '—'}</td>
                         <td style={{ fontSize: 12 }}>{tipoLabel}</td>
                         <td>
                           <span className={`reclamo-estado-badge ${est.cls}`}>
@@ -167,7 +180,7 @@ export default function AtencionPanel({ mostrarToast }) {
                       </tr>
                       {det.open && !det.loading && (
                         <tr>
-                          <td colSpan={8} style={{ background: '#fafafa', padding: '0.6rem 1rem' }}>
+                          <td colSpan={9} style={{ background: '#fafafa', padding: '0.6rem 1rem' }}>
                             {det.error ? (
                               <span style={{ color: '#c0392b' }}>⚠️ {det.error}</span>
                             ) : (det.items || []).length === 0 ? (
@@ -191,6 +204,26 @@ export default function AtencionPanel({ mostrarToast }) {
                 })}
               </tbody>
             </table>
+
+            {totalPaginas > 1 && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', padding: '0.75rem 0' }}>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  disabled={paginaActual <= 1}
+                  onClick={() => setPagina(paginaActual - 1)}>
+                  ← Anterior
+                </button>
+                <span style={{ fontSize: 13, color: '#666' }}>
+                  Página {paginaActual} de {totalPaginas} · {pedidos.length} pedido{pedidos.length !== 1 ? 's' : ''}
+                </span>
+                <button
+                  className="btn btn-secondary btn-sm"
+                  disabled={paginaActual >= totalPaginas}
+                  onClick={() => setPagina(paginaActual + 1)}>
+                  Siguiente →
+                </button>
+              </div>
+            )}
           </div>
         )}
       </div>
