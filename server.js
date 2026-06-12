@@ -83,6 +83,14 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// Acceso de solo lectura para atención al cliente (también lo puede usar un admin)
+function requireAtencion(req, res, next) {
+  if (req.user?.role !== 'atencion' && req.user?.role !== 'admin') {
+    return res.status(403).json({ success: false, error: 'Requiere rol atención al cliente' });
+  }
+  next();
+}
+
 // ── Login endpoint ───────────────────────────────────────────────────────────
 app.post('/api/auth/login', async (req, res) => {
   try {
@@ -139,7 +147,7 @@ app.post('/api/admin/usuarios', requireAuth, requireAdmin, async (req, res) => {
     if (!email || !nombre || !password || !role) {
       return res.status(400).json({ success: false, error: 'email, nombre, contraseña y rol son requeridos' });
     }
-    if (!['admin', 'user'].includes(role)) {
+    if (!['admin', 'user', 'atencion'].includes(role)) {
       return res.status(400).json({ success: false, error: 'Rol inválido' });
     }
     const passwordHash = await bcrypt.hash(password, 10);
@@ -757,6 +765,47 @@ app.get('/api/pedidos', async (req, res) => {
     logService.error('Error al obtener pedidos', error);
     // En caso de error, devolver array vacío en lugar de objeto
     res.status(500).json([]);
+  }
+});
+
+// Vista de atención al cliente: TODOS los pedidos (cualquier estado y tipo de envío),
+// con la info de revisión de contacto (motivo) mergeada. Solo lectura.
+// Acepta ?q= para buscar por número, nombre, email o teléfono en toda la historia.
+app.get('/api/atencion/pedidos', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const [pedidos, revisionesContacto] = await Promise.all([
+      supabaseService.obtenerPedidosAtencion(q),
+      leerRevisionContacto(),
+    ]);
+
+    const data = (Array.isArray(pedidos) ? pedidos : []).map((pedido) => {
+      const revision = revisionesContacto?.[pedido.id] || null;
+      return {
+        id: pedido.id,
+        numero_pedido: pedido.numero_pedido,
+        cliente_nombre: pedido.cliente_nombre,
+        cliente_email: pedido.cliente_email,
+        cliente_telefono: pedido.cliente_telefono,
+        direccion_envio: pedido.direccion_envio,
+        localidad: pedido.localidad,
+        departamento: pedido.departamento,
+        estado: pedido.estado,
+        tipo_envio: pedido.tipo_envio,
+        etiqueta_generada: Boolean(pedido.etiqueta_generada),
+        notificacion_enviada_at: pedido.notificacion_enviada_at,
+        numero_seguimiento_ues: pedido.numero_seguimiento_ues,
+        created_at: pedido.created_at,
+        revision_contacto_pendiente: Boolean(revision),
+        revision_contacto_motivo: revision?.motivo || '',
+        revision_contacto_fecha: revision?.fecha || null,
+      };
+    });
+
+    res.json({ success: true, data });
+  } catch (error) {
+    logService.error('Error en /api/atencion/pedidos', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
   }
 });
 

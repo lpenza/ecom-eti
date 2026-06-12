@@ -503,6 +503,15 @@ export async function obtenerDetallePedido(numeroPedido) {
   return await fetchAPI(`/pedido-detalle/${encodeURIComponent(numeroPedido)}`);
 }
 
+/**
+ * Vista de atención al cliente: todos los pedidos con estado y motivo de contacto.
+ * q opcional busca por número, nombre, email o teléfono.
+ */
+export async function obtenerPedidosAtencion(q = '') {
+  const qs = q ? `?q=${encodeURIComponent(q)}` : '';
+  return await fetchAPI(`/atencion/pedidos${qs}`);
+}
+
 // ==================== PEDIDOS DESPACHADOS / PROCESADOS ====================
 
 /**

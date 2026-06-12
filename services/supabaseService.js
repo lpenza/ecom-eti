@@ -475,6 +475,31 @@ class SupabaseService {
     return data?.[0] || null;
   }
 
+  // Vista de atención al cliente: todos los pedidos sin importar estado ni tipo de envío.
+  // Sin búsqueda devuelve los más recientes; con q busca en toda la historia por
+  // número, nombre, email o teléfono.
+  async obtenerPedidosAtencion(q = '') {
+    const term = String(q || '').trim();
+    let query = supabase
+      .from('pedidos')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (term) {
+      query = query
+        .or(
+          `numero_pedido.ilike.%${term}%,cliente_nombre.ilike.%${term}%,cliente_email.ilike.%${term}%,cliente_telefono.ilike.%${term}%`
+        )
+        .limit(100);
+    } else {
+      query = query.limit(500);
+    }
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+  }
+
   // Obtener todos los pedidos activos (pendientes + con etiqueta, excluye procesados y reclamos)
   async obtenerPedidosActivos() {
     try {

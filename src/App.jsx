@@ -46,6 +46,7 @@ import {
 } from './services/api';
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
 import ArmadorPanel from './components/ArmadorPanel';
+import AtencionPanel from './components/AtencionPanel';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
 
@@ -131,6 +132,7 @@ function AppContent({ user, logout }) {
   const [toast, setToast] = useState({ show: false, message: '', type: '' });
   const [fulfillmentPreviewIds, setFulfillmentPreviewIds] = useState(null); // null = normal, array = preview mode
   const esAdmin = user.role === 'admin';
+  const esAtencion = user.role === 'atencion';
   const [tableFilter, setTableFilter] = useState(esAdmin ? 'porValidar' : 'etiquetasGeneradas');
   const [despachadosCanalFilter, setDespachadosCanalFilter] = useState(null); // null | 'whatsapp' | 'email'
   const [activeView, setActiveView] = useState('pedidos'); // pedidos | especiales | followup | feedback | plantillas | bot | admin | misArmados
@@ -594,10 +596,10 @@ function AppContent({ user, logout }) {
   }, [reenvioSearch]);
 
   useEffect(() => {
-    if (!esAdmin) {
+    if (!esAdmin && !esAtencion) {
       cargarPedidosArmadoOperario();
     }
-  }, [esAdmin, cargarPedidosArmadoOperario]);
+  }, [esAdmin, esAtencion, cargarPedidosArmadoOperario]);
 
   // Confirmación desde modal (uno o múltiples pedidos)
   const handleConfirmarGeneracion = async (items) => {
@@ -1897,7 +1899,7 @@ function AppContent({ user, logout }) {
             <span className="side-nav-icon">📦</span>
             Operativa Pedidos
           </button>
-          {!esAdmin && (
+          {!esAdmin && !esAtencion && (
             <button
               type="button"
               className={`side-nav-item ${activeView === 'misArmados' ? 'side-nav-item-active' : ''}`}
@@ -2710,7 +2712,11 @@ function AppContent({ user, logout }) {
         <MisPedidosPanel user={user} />
       )}
 
-      {activeView === 'pedidos' && !esAdmin && (
+      {activeView === 'pedidos' && esAtencion && (
+        <AtencionPanel mostrarToast={mostrarToast} />
+      )}
+
+      {activeView === 'pedidos' && !esAdmin && !esAtencion && (
         <ArmadorPanel
           pedidos={pedidosArmadoOperario}
           onActualizar={cargarPedidosArmadoOperario}

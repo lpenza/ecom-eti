@@ -307,6 +307,7 @@ export default function AdminPanel() {
                   >
                     <option value="user">Usuario</option>
                     <option value="admin">Administrador</option>
+                    <option value="atencion">Atención al cliente</option>
                   </select>
                 </div>
               </div>
