@@ -476,21 +476,17 @@ class SupabaseService {
   }
 
   // Vista de atención al cliente: todos los pedidos sin importar estado ni tipo de envío.
-  // Sin búsqueda devuelve los más recientes; con q busca en toda la historia por
-  // número, nombre, email o teléfono.
+  // Sin búsqueda devuelve los más recientes; con q busca en toda la historia SOLO por
+  // número de orden (criterio acordado: atención siempre se guía por el N° de orden).
   async obtenerPedidosAtencion(q = '') {
-    const term = String(q || '').trim();
+    const term = String(q || '').trim().replace(/^#/, '');
     let query = supabase
       .from('pedidos')
       .select('*')
       .order('created_at', { ascending: false });
 
     if (term) {
-      query = query
-        .or(
-          `numero_pedido.ilike.%${term}%,cliente_nombre.ilike.%${term}%,cliente_email.ilike.%${term}%,cliente_telefono.ilike.%${term}%`
-        )
-        .limit(100);
+      query = query.ilike('numero_pedido', `%${term}%`).limit(100);
     } else {
       query = query.limit(500);
     }

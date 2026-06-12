@@ -93,7 +93,8 @@ export default function AtencionPanel({ mostrarToast }) {
           <h2 style={{ margin: 0 }}>🎧 Atención al Cliente</h2>
           <input
             type="text"
-            placeholder="Buscar por número, nombre, email o teléfono…"
+            inputMode="numeric"
+            placeholder="Buscar por N° de orden (ej: 2252)…"
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
             style={{ flex: '1 1 280px', maxWidth: 420, padding: '0.5rem 0.75rem' }}
