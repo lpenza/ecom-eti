@@ -67,6 +67,43 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
         </button>
       </div>
 
+      <div className="atencion-info-card">
+        <div className="atencion-info-item">
+          <div className="atencion-info-item-header">
+            <span className="atencion-info-badge atencion-info-badge-mvd">Montevideo</span>
+            <span className="atencion-info-time">24-48 hs hábiles</span>
+          </div>
+          <div className="atencion-info-carrier">
+            Envíos por <strong>Marco Postal</strong>
+            {' · '}
+            <a
+              href="https://marcopostal.epresis.com/seguimiento"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Seguimiento
+            </a>
+          </div>
+        </div>
+        <div className="atencion-info-item">
+          <div className="atencion-info-item-header">
+            <span className="atencion-info-badge atencion-info-badge-interior">Interior</span>
+            <span className="atencion-info-time">24-72 hs hábiles</span>
+          </div>
+          <div className="atencion-info-carrier">
+            Envíos por <strong>UES</strong>
+            {' · '}
+            <a
+              href="https://ues.com.uy/rastreo_paquete.html"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Seguimiento
+            </a>
+          </div>
+        </div>
+      </div>
+
       {pedidos.length > 0 && (
         <div className="section-action-bar">
           <span>El detalle de productos se valida dentro del modal de revision.</span>
