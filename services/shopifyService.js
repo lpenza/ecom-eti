@@ -209,17 +209,132 @@ class ShopifyService {
     }
   }
 
-  // Trasladar un fulfillment_order al punto de retiro (equivale al "transferir a lugar de
-  // retiro" del admin de Shopify). Antes de mover, conecta los items a la locación destino.
-  // Devuelve el GID del fulfillment_order resultante.
-  async moverFulfillmentOrder(fo, newLocationGid) {
-    const inventoryItemIds = [
-      ...new Set((fo.line_items || []).map((li) => li.inventory_item_id).filter(Boolean)),
-    ];
-    for (const invId of inventoryItemIds) {
-      await this.activarInventarioEnLocation(invId, newLocationGid);
+  // Consultar el "available" de un inventory item en una locación. Devuelve null si el
+  // item no tiene nivel en esa locación.
+  async obtenerAvailableEnLocation(inventoryItemId, locationGid) {
+    const query = `query nivelPickup($inventoryItemId: ID!, $locationId: ID!) {
+      inventoryItem(id: $inventoryItemId) {
+        inventoryLevel(locationId: $locationId) {
+          quantities(names: ["available"]) { name quantity }
+        }
+      }
+    }`;
+    const response = await axios.post(
+      `https://${this.domain}/admin/api/2024-01/graphql.json`,
+      {
+        query,
+        variables: {
+          inventoryItemId: `gid://shopify/InventoryItem/${inventoryItemId}`,
+          locationId: locationGid,
+        },
+      },
+      { headers: this.getHeaders() }
+    );
+    const quantities = response.data?.data?.inventoryItem?.inventoryLevel?.quantities;
+    if (!Array.isArray(quantities)) return null;
+    return quantities.find((q) => q.name === 'available')?.quantity ?? null;
+  }
+
+  // Transferir el stock available de los items de un fulfillment_order desde su sucursal
+  // de origen (Bvar España) hacia el punto de retiro, con inventoryMoveQuantities.
+  // Así, cuando el pedido se cumple en Pick-UP, el descuento sale de unidades reales y
+  // Pick-UP vuelve a 0 (en vez de acumular negativos), y Bvar España refleja la salida
+  // física. Idempotencia: si Pick-UP ya tiene available para el item (reintento tras un
+  // fallo parcial), solo se transfiere el faltante; los negativos históricos no se tocan.
+  // Devuelve [{ inventoryItemId, cantidad }] con lo efectivamente transferido.
+  async transferirStockAPickup(fo, pickup, shopifyOrderId) {
+    const origenLocationId = String(fo.assigned_location_id || fo.assigned_location?.location_id || '');
+    if (!origenLocationId) {
+      throw new Error(`Fulfillment_order ${fo.id} sin assigned_location_id — no se puede transferir stock`);
     }
 
+    // Agrupar cantidades por inventory item (puede haber 2 line items del mismo item).
+    const porItem = new Map();
+    for (const li of fo.line_items || []) {
+      if (!li.inventory_item_id) continue;
+      const qty = Number(li.fulfillable_quantity ?? li.quantity ?? 0);
+      if (qty <= 0) continue;
+      porItem.set(li.inventory_item_id, (porItem.get(li.inventory_item_id) || 0) + qty);
+    }
+
+    const changes = [];
+    const transferencias = [];
+    for (const [inventoryItemId, necesario] of porItem) {
+      const available = await this.obtenerAvailableEnLocation(inventoryItemId, pickup.gid);
+      const yaCubierto = Math.min(Math.max(available ?? 0, 0), necesario);
+      const aTransferir = necesario - yaCubierto;
+      if (aTransferir <= 0) continue;
+      changes.push({
+        inventoryItemId: `gid://shopify/InventoryItem/${inventoryItemId}`,
+        quantity: aTransferir,
+        from: { locationId: `gid://shopify/Location/${origenLocationId}`, name: 'available' },
+        to: { locationId: pickup.gid, name: 'available' },
+      });
+      transferencias.push({ inventoryItemId, cantidad: aTransferir });
+    }
+
+    if (changes.length === 0) return transferencias;
+
+    const query = `mutation MoveToPickup($input: InventoryMoveQuantitiesInput!) {
+      inventoryMoveQuantities(input: $input) {
+        userErrors { field message }
+      }
+    }`;
+
+    const response = await axios.post(
+      `https://${this.domain}/admin/api/2024-01/graphql.json`,
+      {
+        query,
+        variables: {
+          input: {
+            reason: 'movement_created',
+            referenceDocumentUri: `gid://shopify/Order/${shopifyOrderId}`,
+            changes,
+          },
+        },
+      },
+      { headers: this.getHeaders() }
+    );
+
+    const data = response.data;
+    const userErrors = data?.data?.inventoryMoveQuantities?.userErrors || [];
+    const topErrors = data?.errors || [];
+    if (userErrors.length > 0 || topErrors.length > 0) {
+      throw new Error(
+        `Error transfiriendo stock al punto de retiro (FO ${fo.id}) — ` +
+        `userErrors: ${JSON.stringify(userErrors)} | errors: ${JSON.stringify(topErrors)}`
+      );
+    }
+
+    return transferencias;
+  }
+
+  // Crear el fulfillment final del pickup ("retirado") SIN notificar al cliente.
+  // No reutiliza marcarComoCumplida porque esa inyecta tracking URL de UES.
+  async marcarRetirado(orderId, fulfillmentOrderGids) {
+    const body = {
+      fulfillment: {
+        line_items_by_fulfillment_order: fulfillmentOrderGids.map((gid) => ({
+          fulfillment_order_id: Number(String(gid).replace('gid://shopify/FulfillmentOrder/', '')),
+        })),
+        notify_customer: false,
+      },
+    };
+
+    const response = await axios.post(
+      `${this.baseUrl}/fulfillments.json`,
+      body,
+      { headers: this.getHeaders() }
+    );
+
+    return response.data.fulfillment;
+  }
+
+  // Trasladar un fulfillment_order al punto de retiro (equivale al "transferir a lugar de
+  // retiro" del admin de Shopify). Requiere que los items ya estén activados/stockeados en
+  // la locación destino (lo hace marcarListoParaRetirar antes de llamar acá).
+  // Devuelve el GID del fulfillment_order resultante.
+  async moverFulfillmentOrder(fo, newLocationGid) {
     const query = `mutation moverFO($id: ID!, $newLocationId: ID!) {
       fulfillmentOrderMove(id: $id, newLocationId: $newLocationId) {
         movedFulfillmentOrder { id status }
@@ -257,12 +372,17 @@ class ShopifyService {
     return movedGid;
   }
 
-  // Marcar como "Listo para retirar" (pickup local) — automatiza los 2 pasos manuales del
-  // admin: 1) traslada el FO a la sucursal Pick-UP si todavía no está ahí (Shopify exige
-  // que el FO esté en una locación con local pickup para poder prepararlo); 2) lo marca
-  // como preparado con fulfillmentOrderLineItemsPreparedForPickup, que dispara la
-  // notificación nativa de Shopify. Marcar listo NO descuenta on_hand (solo mueve la
-  // reserva); el stock baja de Bvar España al cumplir el retiro.
+  // Flujo completo de pickup en un solo click:
+  //   1) transfiere el stock available de los items desde Bvar España a Pick-UP
+  //      (inventoryMoveQuantities) — así el descuento final sale de unidades reales;
+  //   2) traslada el fulfillment_order a Pick-UP (Shopify exige que esté en una locación
+  //      con local pickup para poder prepararlo);
+  //   3) lo marca "listo para retirar" (fulfillmentOrderLineItemsPreparedForPickup) →
+  //      ÚNICA notificación que recibe el cliente;
+  //   4) crea el fulfillment final "retirado" SIN notificar (el dueño no tiene forma de
+  //      saber cuándo el cliente retira) → Pick-UP descuenta y queda en 0, pedido FULFILLED.
+  // Si el paso 4 falla, no se aborta: el pedido ya quedó listo/notificado — se reporta
+  // retiradoOk:false para cerrarlo a mano en el admin.
   async marcarListoParaRetirar(orderId) {
     try {
       const pickup = await this.obtenerLocationPickup();
@@ -274,19 +394,32 @@ class ShopifyService {
         throw new Error('No hay fulfillment_orders abiertos para esta orden');
       }
 
-      // Paso 1: trasladar cada FO al punto de retiro si todavía no está ahí.
+      // Pasos 1-2: transferir stock y trasladar cada FO que no esté ya en Pick-UP.
       const targetFoGids = [];
+      const transferencias = [];
       for (const fo of openFOs) {
         const currentLocationId = String(fo.assigned_location_id || fo.assigned_location?.location_id || '');
         if (currentLocationId === String(pickup.id)) {
+          // Ya trasladado (a mano o por ejecución previa) — no transferir de nuevo.
           targetFoGids.push(`gid://shopify/FulfillmentOrder/${fo.id}`);
-        } else {
-          const movedGid = await this.moverFulfillmentOrder(fo, pickup.gid);
-          targetFoGids.push(movedGid);
+          continue;
         }
+
+        const inventoryItemIds = [
+          ...new Set((fo.line_items || []).map((li) => li.inventory_item_id).filter(Boolean)),
+        ];
+        for (const invId of inventoryItemIds) {
+          await this.activarInventarioEnLocation(invId, pickup.gid);
+        }
+
+        const movidas = await this.transferirStockAPickup(fo, pickup, orderId);
+        transferencias.push(...movidas);
+
+        const movedGid = await this.moverFulfillmentOrder(fo, pickup.gid);
+        targetFoGids.push(movedGid);
       }
 
-      // Paso 2: marcar listo para retirar (notifica al cliente).
+      // Paso 3: marcar listo para retirar (única notificación al cliente).
       const lineItemsByFulfillmentOrder = targetFoGids.map((gid) => ({
         fulfillmentOrderId: gid,
       }));
@@ -312,7 +445,17 @@ class ShopifyService {
         );
       }
 
-      return { ok: true, fulfillmentOrderIds: targetFoGids };
+      // Paso 4: cerrar como "retirado" sin notificación (best-effort).
+      let retiradoOk = true;
+      let retiradoError = null;
+      try {
+        await this.marcarRetirado(orderId, targetFoGids);
+      } catch (err) {
+        retiradoOk = false;
+        retiradoError = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      }
+
+      return { ok: true, fulfillmentOrderIds: targetFoGids, transferencias, retiradoOk, retiradoError };
     } catch (error) {
       const shopifyBody = error.response?.data;
       const httpStatus = error.response?.status;

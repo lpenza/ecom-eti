@@ -428,7 +428,7 @@ export default function DeliveryEspecialTable({
               onClick={handleProcesarBulk}
               disabled={bulkLoading}
               title={esPickup
-                ? 'Marcar listos para retirar y notificar a los clientes'
+                ? 'Transfiere el stock a Pick-UP, notifica a los clientes (listo para retirar) y cierra los pedidos como retirados sin notificación extra'
                 : 'Marcar todos los seleccionados como procesados (sin fulfillment Shopify)'}>
               {esPickup ? '🏪 Marcar listos para retirar' : '✅ Procesar todos'}
             </button>
@@ -699,7 +699,7 @@ export default function DeliveryEspecialTable({
                         title={
                           estado === 'enviado' ? (esPickup ? 'Ya listo para retirar' : 'Ya procesado')
                           : !urls ? (esPickup ? 'Generá la etiqueta MP antes de marcar listo para retirar' : 'Necesita etiqueta Drive para procesar')
-                          : esPickup ? 'Marcar listo para retirar y notificar al cliente'
+                          : esPickup ? 'Transfiere el stock a Pick-UP, notifica al cliente (listo para retirar) y cierra el pedido como retirado sin notificación extra'
                           : 'Marcar como procesado (sin fulfillment Shopify)'
                         }
                         onClick={() => onProcesar?.(pedido.id)}>

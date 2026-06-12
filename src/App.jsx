@@ -1802,10 +1802,12 @@ function AppContent({ user, logout }) {
       }
       if (resultado.successCount === 0 || (r && r.success === false)) {
         mostrarToast(`❌ ${r?.error || 'No se pudo completar el fulfillment'}`, 'error');
+      } else if (esPickup && r?.retiradoOk === false) {
+        mostrarToast('⚠️ Listo para retirar OK, pero no se pudo cerrar como retirado — cerralo en Shopify', 'warning');
       } else {
         mostrarToast(
           esPickup
-            ? '🏪 Marcado listo para retirar — cliente notificado'
+            ? '🏪 Listo para retirar + retirado — cliente notificado y stock descontado'
             : '✅ Fulfillment enviado a Shopify',
           'success'
         );
@@ -1823,6 +1825,9 @@ function AppContent({ user, logout }) {
       if (!resultado.success) { mostrarToast(resultado.error || 'Error en fulfillment', 'error'); return; }
       const ok = resultado.successCount || 0;
       const fail = resultado.failCount || 0;
+      const sinRetirar = esPickup
+        ? (resultado.data || []).filter((r) => r.success && r.retiradoOk === false).length
+        : 0;
       if (resultado.count === 0) {
         mostrarToast('⚠️ Ninguno tiene etiqueta/tracking para procesar', 'warning');
       } else if (fail > 0) {
@@ -1832,10 +1837,15 @@ function AppContent({ user, logout }) {
             : `⚠️ Fulfillment: ${ok}/${resultado.count} OK — ${fail} con error`,
           'warning'
         );
+      } else if (sinRetirar > 0) {
+        mostrarToast(
+          `⚠️ ${ok} listos para retirar, pero ${sinRetirar} no se pudieron cerrar como retirados — cerralos en Shopify`,
+          'warning'
+        );
       } else {
         mostrarToast(
           esPickup
-            ? `🏪 ${ok} pedido(s) listos para retirar — clientes notificados`
+            ? `🏪 ${ok} pedido(s) listos para retirar y retirados — clientes notificados, stock descontado`
             : `✅ ${ok} fulfillment(s) enviados`,
           'success'
         );

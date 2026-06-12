@@ -1777,14 +1777,26 @@ async function handleFulfillmentShopify(req, res) {
         const esPickup = pedido.tipo_envio === 'pickup_local';
 
         if (esPickup) {
-          await shopifyService.marcarListoParaRetirar(shopifyOrderId);
+          const resultadoPickup = await shopifyService.marcarListoParaRetirar(shopifyOrderId);
 
           await supabaseService.actualizarPedido(pedido.id, {
             estado: 'enviado',
             notificacion_enviada_at: new Date().toISOString(),
           });
 
-          logService.info(`✅ Listo para retirar OK pedido #${pedido.numero_pedido} | shopifyOrderId=${shopifyOrderId}`);
+          const resumenTransfer = (resultadoPickup.transferencias || [])
+            .map((t) => `${t.inventoryItemId}x${t.cantidad}`)
+            .join(', ') || 'sin transferencias (ya cubierto)';
+          logService.info(
+            `✅ Pickup OK pedido #${pedido.numero_pedido} | shopifyOrderId=${shopifyOrderId} | ` +
+            `stock transferido: ${resumenTransfer} | retirado: ${resultadoPickup.retiradoOk ? 'OK' : 'FALLÓ'}`
+          );
+          if (!resultadoPickup.retiradoOk) {
+            logService.warning(
+              `⚠️ Pedido #${pedido.numero_pedido} quedó listo/notificado pero NO se pudo marcar retirado — ` +
+              `cerralo a mano en Shopify. Detalle: ${resultadoPickup.retiradoError}`
+            );
+          }
 
           shopifyService.agregarTagAOrden(shopifyOrderId, 'LISTO_PARA_RETIRAR').catch((e) =>
             logService.warning(`No se pudo agregar tag LISTO_PARA_RETIRAR a orden ${shopifyOrderId}: ${e.message}`)
@@ -1796,6 +1808,7 @@ async function handleFulfillmentShopify(req, res) {
             success: true,
             fulfillmentId: null,
             listoParaRetirar: true,
+            retiradoOk: resultadoPickup.retiradoOk,
             pedido: pedido
           });
           continue;
