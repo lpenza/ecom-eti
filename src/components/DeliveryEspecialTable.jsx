@@ -423,15 +423,17 @@ export default function DeliveryEspecialTable({
               title="Marcar todos los seleccionados como despachados">
               🚀 Despachar todos
             </button>
-            <button
-              className="btn btn-success btn-sm"
-              onClick={handleProcesarBulk}
-              disabled={bulkLoading}
-              title={esPickup
-                ? 'Transfiere el stock a Pick-UP, notifica a los clientes (listo para retirar) y cierra los pedidos como retirados sin notificación extra'
-                : 'Marcar todos los seleccionados como procesados (sin fulfillment Shopify)'}>
-              {esPickup ? '🏪 Marcar listos para retirar' : '✅ Procesar todos'}
-            </button>
+            {/* Pickup no se procesa desde acá: el fulfillment se dispara desde la vista
+                Despachados (botón "Enviar Fulfillment"), que hace todo el ciclo. */}
+            {!esPickup && (
+              <button
+                className="btn btn-success btn-sm"
+                onClick={handleProcesarBulk}
+                disabled={bulkLoading}
+                title="Marcar todos los seleccionados como procesados (sin fulfillment Shopify)">
+                ✅ Procesar todos
+              </button>
+            )}
             <button
               className="btn btn-outline btn-sm"
               onClick={() => setSelectedIds(new Set())}
@@ -693,18 +695,21 @@ export default function DeliveryEspecialTable({
                         onClick={() => onMarcarDespachado?.(pedido.id)}>
                         🚀 Despachar
                       </button>
-                      <button
-                        className={`btn btn-sm ${estado === 'enviado' ? 'btn-secondary' : 'btn-success'}`}
-                        disabled={estado === 'enviado' || !urls}
-                        title={
-                          estado === 'enviado' ? (esPickup ? 'Ya listo para retirar' : 'Ya procesado')
-                          : !urls ? (esPickup ? 'Generá la etiqueta MP antes de marcar listo para retirar' : 'Necesita etiqueta Drive para procesar')
-                          : esPickup ? 'Transfiere el stock a Pick-UP, notifica al cliente (listo para retirar) y cierra el pedido como retirado sin notificación extra'
-                          : 'Marcar como procesado (sin fulfillment Shopify)'
-                        }
-                        onClick={() => onProcesar?.(pedido.id)}>
-                        {esPickup ? '🏪 Listo para retirar' : '✅ Procesar'}
-                      </button>
+                      {/* Pickup no se procesa desde acá: el fulfillment se dispara desde
+                          la vista Despachados (botón "Enviar Fulfillment"). */}
+                      {!esPickup && (
+                        <button
+                          className={`btn btn-sm ${estado === 'enviado' ? 'btn-secondary' : 'btn-success'}`}
+                          disabled={estado === 'enviado' || !urls}
+                          title={
+                            estado === 'enviado' ? 'Ya procesado'
+                            : !urls ? 'Necesita etiqueta Drive para procesar'
+                            : 'Marcar como procesado (sin fulfillment Shopify)'
+                          }
+                          onClick={() => onProcesar?.(pedido.id)}>
+                          ✅ Procesar
+                        </button>
+                      )}
                     </td>
                   </tr>
                 );

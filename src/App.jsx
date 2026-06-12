@@ -1790,75 +1790,7 @@ function AppContent({ user, logout }) {
     } catch { mostrarToast('Error al marcar como despachados', 'error'); }
   };
 
-  const handleFulfillmentEspecial = async (pedidoId, tipoEnvio) => {
-    const esPickup = tipoEnvio === 'pickup_local';
-    try {
-      const resultado = await ejecutarFulfillmentShopify([pedidoId]);
-      if (!resultado.success) { mostrarToast(resultado.error || 'Error en fulfillment', 'error'); return; }
-      // El backend procesa por pedido — revisar el resultado individual para no
-      // mostrar éxito si el fulfillment/traslado falló.
-      const r = (resultado.data || [])[0];
-      if (resultado.count === 0) {
-        mostrarToast('⚠️ El pedido no tiene etiqueta/tracking para procesar', 'warning');
-        return;
-      }
-      if (resultado.successCount === 0 || (r && r.success === false)) {
-        mostrarToast(`❌ ${r?.error || 'No se pudo completar el fulfillment'}`, 'error');
-      } else if (esPickup && r?.retiradoOk === false) {
-        mostrarToast('⚠️ Listo para retirar OK, pero no se pudo cerrar como retirado — cerralo en Shopify', 'warning');
-      } else {
-        mostrarToast(
-          esPickup
-            ? '🏪 Listo para retirar + retirado — cliente notificado y stock descontado'
-            : '✅ Fulfillment enviado a Shopify',
-          'success'
-        );
-      }
-      if (esPickup) cargarPedidosPickup();
-      else cargarPedidosRecibilo();
-      cargarPedidosEnviados();
-    } catch { mostrarToast('Error al ejecutar fulfillment', 'error'); }
-  };
-
-  const handleFulfillmentBulkEspecial = async (pedidoIds, tipoEnvio) => {
-    const esPickup = tipoEnvio === 'pickup_local';
-    try {
-      const resultado = await ejecutarFulfillmentShopify(pedidoIds);
-      if (!resultado.success) { mostrarToast(resultado.error || 'Error en fulfillment', 'error'); return; }
-      const ok = resultado.successCount || 0;
-      const fail = resultado.failCount || 0;
-      const sinRetirar = esPickup
-        ? (resultado.data || []).filter((r) => r.success && r.retiradoOk === false).length
-        : 0;
-      if (resultado.count === 0) {
-        mostrarToast('⚠️ Ninguno tiene etiqueta/tracking para procesar', 'warning');
-      } else if (fail > 0) {
-        mostrarToast(
-          esPickup
-            ? `⚠️ ${ok}/${resultado.count} listos para retirar — ${fail} con error`
-            : `⚠️ Fulfillment: ${ok}/${resultado.count} OK — ${fail} con error`,
-          'warning'
-        );
-      } else if (sinRetirar > 0) {
-        mostrarToast(
-          `⚠️ ${ok} listos para retirar, pero ${sinRetirar} no se pudieron cerrar como retirados — cerralos en Shopify`,
-          'warning'
-        );
-      } else {
-        mostrarToast(
-          esPickup
-            ? `🏪 ${ok} pedido(s) listos para retirar y retirados — clientes notificados, stock descontado`
-            : `✅ ${ok} fulfillment(s) enviados`,
-          'success'
-        );
-      }
-      if (esPickup) cargarPedidosPickup();
-      else cargarPedidosRecibilo();
-      cargarPedidosEnviados();
-    } catch { mostrarToast('Error al ejecutar fulfillment', 'error'); }
-  };
-
-  // Procesar sin Shopify fulfillment (pickup / recibilo)
+  // Procesar sin Shopify fulfillment (recibilo)
   const handleProcesarEspecial = async (pedidoId, tipoEnvio) => {
     try {
       const resultado = await marcarProcesados([pedidoId]);
@@ -2167,14 +2099,19 @@ function AppContent({ user, logout }) {
                   if (ids.length === 0) { mostrarToast('No hay pedidos para procesar', 'warning'); return; }
                   const resultado = await ejecutarFulfillmentShopify(ids);
                   if (!resultado.success) { mostrarToast(resultado.error || 'Error en fulfillment', 'error'); return; }
+                  // Pickups que quedaron listos/notificados pero sin cerrar como retirados
+                  const sinRetirar = (resultado.data || []).filter((r) => r.success && r.retiradoOk === false).length;
                   if (resultado.failCount > 0) {
                     mostrarToast(`⚠️ Fulfillment: ${resultado.successCount}/${resultado.count} OK`, 'warning');
+                  } else if (sinRetirar > 0) {
+                    mostrarToast(`⚠️ ${resultado.successCount} OK, pero ${sinRetirar} pickup(s) no se cerraron como retirados — cerralos en Shopify`, 'warning');
                   } else {
                     mostrarToast(`✅ ${resultado.successCount} fulfillment(s) enviados`, 'success');
                   }
                   limpiarSeleccion();
                   cargarPedidosDespachados();
                   cargarPedidosEnviados();
+                  cargarPedidosPickup();
                 }}
                 disabled={pedidosFiltradosPorCard.length === 0}
                 title="Enviar fulfillment a Shopify para los despachados seleccionados"
@@ -2329,8 +2266,6 @@ function AppContent({ user, logout }) {
                 tipo="pickup_local"
                 onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'pickup_local')}
                 onMarcarDespachadosBulk={(ids) => handleMarcarDespachadosBulkEspecial(ids, 'pickup_local')}
-                onProcesar={(id) => handleFulfillmentEspecial(id, 'pickup_local')}
-                onProcesarBulk={(ids) => handleFulfillmentBulkEspecial(ids, 'pickup_local')}
                 onActualizar={cargarPedidosPickup}
                 onGenerarEtiquetaMP={handleGenerarEtiquetaMP}
                 mostrarToast={mostrarToast}
