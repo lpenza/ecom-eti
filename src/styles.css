@@ -161,6 +161,27 @@ body {
   opacity: 0.9;
 }
 
+/* CTA destacado en la barra: botón StockPlanner (resalta sobre los ítems del menú) */
+.side-nav-cta {
+  margin-top: 0.6rem;
+  background: linear-gradient(135deg, #6c5ce7 0%, #534ab7 100%);
+  color: #ffffff;
+  font-weight: 700;
+  border-color: transparent;
+  box-shadow: 0 6px 16px rgba(83, 74, 183, 0.35);
+}
+
+.side-nav-cta .side-nav-icon {
+  opacity: 1;
+}
+
+.side-nav-cta:hover {
+  background: linear-gradient(135deg, #5b4fe0 0%, #463da0 100%);
+  color: #ffffff;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(83, 74, 183, 0.45);
+}
+
 .app-main {
   flex: 1;
   min-width: 0;

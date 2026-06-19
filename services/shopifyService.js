@@ -552,6 +552,136 @@ class ShopifyService {
     }
   }
 
+  // Buscar productos del catálogo (con sus variantes) para armar un pedido manual desde
+  // el panel de atención al cliente. Devuelve solo productos activos, con el id numérico de
+  // cada variante (lo que necesita la Draft Orders API en line_items.variant_id).
+  async buscarProductosParaPedido(termino = '') {
+    const q = String(termino || '').trim();
+    // Sintaxis de búsqueda de Shopify: texto libre + filtro de estado activo.
+    const queryString = q ? `${q} status:active` : 'status:active';
+
+    const query = `query buscarProductos($q: String!) {
+      products(first: 20, query: $q, sortKey: RELEVANCE) {
+        edges {
+          node {
+            id
+            title
+            status
+            featuredImage { url }
+            totalInventory
+            variants(first: 50) {
+              edges {
+                node {
+                  id
+                  title
+                  sku
+                  price
+                  availableForSale
+                  inventoryQuantity
+                }
+              }
+            }
+          }
+        }
+      }
+    }`;
+
+    const response = await axios.post(
+      `${this.baseUrl}/graphql.json`,
+      { query, variables: { q: queryString } },
+      { headers: this.getHeaders() }
+    );
+
+    const topErrors = response.data?.errors;
+    if (Array.isArray(topErrors) && topErrors.length > 0) {
+      throw new Error(`Error buscando productos en Shopify: ${JSON.stringify(topErrors)}`);
+    }
+
+    const edges = response.data?.data?.products?.edges || [];
+    return edges.map((e) => {
+      const p = e.node;
+      const variantes = (p.variants?.edges || []).map((ve) => {
+        const v = ve.node;
+        return {
+          id: String(v.id).replace('gid://shopify/ProductVariant/', ''),
+          titulo: v.title === 'Default Title' ? '' : v.title,
+          sku: v.sku || '',
+          precio: v.price,
+          disponible: Boolean(v.availableForSale),
+          stock: typeof v.inventoryQuantity === 'number' ? v.inventoryQuantity : null,
+        };
+      });
+      return {
+        id: String(p.id).replace('gid://shopify/Product/', ''),
+        titulo: p.title,
+        imagen: p.featuredImage?.url || null,
+        variantes,
+      };
+    });
+  }
+
+  // Crear un borrador de pedido (Draft Order) y devolver el link de checkout (invoice_url).
+  // Ese link es lo que atención al cliente le pasa a la persona para que complete el pago.
+  // lineItems: [{ variantId, quantity }] (catálogo) o [{ title, price, quantity }] (custom).
+  async crearDraftOrderCheckout({ lineItems = [], email = '', nombre = '', telefono = '', nota = '' } = {}) {
+    const items = (Array.isArray(lineItems) ? lineItems : [])
+      .map((li) => {
+        const quantity = Math.max(1, parseInt(li.quantity, 10) || 1);
+        if (li.variantId) {
+          return { variant_id: Number(String(li.variantId).replace('gid://shopify/ProductVariant/', '')), quantity };
+        }
+        const title = String(li.title || '').trim();
+        if (!title) return null;
+        return { title, price: String(li.price ?? '0'), quantity };
+      })
+      .filter(Boolean);
+
+    if (items.length === 0) {
+      throw new Error('No hay ítems válidos para crear el pedido');
+    }
+
+    // El teléfono y el nombre del contacto van en la nota porque el draft order sin dirección
+    // completa no persiste esos datos sueltos; el email sí queda asociado para el invoice.
+    const notasExtra = [];
+    if (nombre) notasExtra.push(`Cliente: ${nombre}`);
+    if (telefono) notasExtra.push(`Tel: ${telefono}`);
+    if (nota) notasExtra.push(String(nota).trim());
+
+    const draft = {
+      line_items: items,
+      tags: 'Atención al cliente',
+    };
+    if (email) draft.email = String(email).trim();
+    if (notasExtra.length > 0) draft.note = notasExtra.join(' · ');
+
+    try {
+      const response = await axios.post(
+        `${this.baseUrl}/draft_orders.json`,
+        { draft_order: draft },
+        { headers: this.getHeaders() }
+      );
+
+      const draftOrder = response.data?.draft_order;
+      if (!draftOrder?.invoice_url) {
+        throw new Error('Shopify no devolvió un link de checkout (invoice_url) para el pedido');
+      }
+
+      return {
+        id: draftOrder.id,
+        name: draftOrder.name,
+        checkoutUrl: draftOrder.invoice_url,
+        total: draftOrder.total_price,
+        currency: draftOrder.currency,
+        status: draftOrder.status,
+      };
+    } catch (error) {
+      const shopifyBody = error.response?.data;
+      const httpStatus = error.response?.status;
+      const detalle = shopifyBody ? JSON.stringify(shopifyBody) : error.message;
+      throw new Error(`Error creando pedido en Shopify (HTTP ${httpStatus ?? 'N/A'}): ${detalle}`);
+    }
+  }
+
   // Crear nota en orden
   async agregarNota(orderId, nota) {
     try {
