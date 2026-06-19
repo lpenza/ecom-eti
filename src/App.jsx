@@ -43,6 +43,7 @@ import {
   buscarPedidos,
   reprocesarPedidoShopify,
   generarGuiaMarcoPostalWeb,
+  obtenerStockPlannerSSO,
 } from './services/api';
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
 import ArmadorPanel from './components/ArmadorPanel';
@@ -1461,6 +1462,30 @@ function AppContent({ user, logout }) {
     }
   };
 
+  // Abrir StockPlanner con sesión iniciada automáticamente (solo admin).
+  // Abrimos la pestaña en el mismo clic para evitar el bloqueo de pop-ups y
+  // recién después le seteamos la URL con los tokens que devuelve el backend.
+  const handleAbrirStockPlanner = async () => {
+    const nuevaPestana = window.open('', '_blank');
+    try {
+      const resultado = await obtenerStockPlannerSSO();
+      if (resultado?.success && resultado.url) {
+        if (nuevaPestana) {
+          nuevaPestana.location.href = resultado.url;
+        } else {
+          // Pop-up bloqueado: navegamos en la pestaña actual como fallback.
+          window.location.href = resultado.url;
+        }
+      } else {
+        nuevaPestana?.close();
+        mostrarToast(resultado?.error || 'No se pudo abrir StockPlanner', 'error');
+      }
+    } catch (error) {
+      nuevaPestana?.close();
+      mostrarToast(error.message || 'No se pudo abrir StockPlanner', 'error');
+    }
+  };
+
   // Handler para regenerar caché de catálogo UES
   const handleRegenerarCacheUES = async () => {
     try {
@@ -1898,6 +1923,15 @@ function AppContent({ user, logout }) {
               >
                 <span className="side-nav-icon">⚙️</span>
                 Administración
+              </button>
+              <button
+                type="button"
+                className="side-nav-item side-nav-cta"
+                onClick={handleAbrirStockPlanner}
+                title="Abrir StockPlanner con sesión iniciada"
+              >
+                <span className="side-nav-icon">📊</span>
+                StockPlanner
               </button>
             </>
           )}

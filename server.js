@@ -128,6 +128,72 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
   res.json({ success: true, user: req.user });
 });
 
+// ── StockPlanner SSO (auto-login admin) ──────────────────────────────────────
+// StockPlanner es una app aparte (Next.js + Supabase). Este endpoint inicia sesión
+// contra Supabase con las credenciales del backend y devuelve una URL con los tokens
+// en el hash; el cliente Supabase de StockPlanner los detecta (flowType implicit /
+// detectSessionInUrl) y deja la sesión abierta. Las credenciales viven sólo acá
+// (idealmente en variables de entorno), nunca viajan al bundle del navegador.
+// Variables de entorno (ver .env). Sólo email/password son secretos y NO tienen
+// fallback en el código; appUrl/supabaseUrl/anonKey son públicos (la anon key ya
+// viaja en el bundle de StockPlanner), por eso se dejan como default por comodidad.
+const STOCKPLANNER = {
+  appUrl: process.env.STOCKPLANNER_URL || 'https://web-production-d90cb.up.railway.app',
+  supabaseUrl: process.env.STOCKPLANNER_SUPABASE_URL || 'https://fnfmgenoqarlwjlbpdey.supabase.co',
+  anonKey: process.env.STOCKPLANNER_SUPABASE_ANON_KEY
+    || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZuZm1nZW5vcWFybHdqbGJwZGV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE3OTQ1MzMsImV4cCI6MjA5NzM3MDUzM30.kULVEBwNNVayduVbpkWNNTSks3g-Kg_YhIKdozDUYYI',
+  email: process.env.STOCKPLANNER_EMAIL || '',
+  password: process.env.STOCKPLANNER_PASSWORD || '',
+  // Ruta de StockPlanner que recibe los tokens en el hash y llama a
+  // supabase.auth.setSession() para escribir las cookies (auto-login real).
+  // Hasta que esa ruta exista, dejamos '/login' (abre el login, sin sesión automática).
+  ssoPath: process.env.STOCKPLANNER_SSO_PATH || '/login',
+};
+
+app.get('/api/admin/stockplanner-sso', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    if (!STOCKPLANNER.email || !STOCKPLANNER.password) {
+      return res.status(500).json({ success: false, error: 'Faltan STOCKPLANNER_EMAIL / STOCKPLANNER_PASSWORD en el entorno' });
+    }
+
+    // Si no hay una ruta SSO en StockPlanner, sólo abrimos el login (sin tokens en la URL).
+    if (STOCKPLANNER.ssoPath === '/login') {
+      return res.json({ success: true, url: `${STOCKPLANNER.appUrl}/login`, autoLogin: false });
+    }
+
+    const { data } = await axios.post(
+      `${STOCKPLANNER.supabaseUrl}/auth/v1/token?grant_type=password`,
+      { email: STOCKPLANNER.email, password: STOCKPLANNER.password },
+      {
+        headers: {
+          apikey: STOCKPLANNER.anonKey,
+          Authorization: `Bearer ${STOCKPLANNER.anonKey}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 15000,
+      }
+    );
+
+    if (!data?.access_token || !data?.refresh_token) {
+      logService.error('[StockPlanner SSO] Respuesta de Supabase sin tokens', data);
+      return res.status(502).json({ success: false, error: 'Supabase no devolvió tokens de sesión' });
+    }
+
+    const hash = new URLSearchParams({
+      access_token: data.access_token,
+      refresh_token: data.refresh_token,
+      expires_in: String(data.expires_in ?? 3600),
+      token_type: data.token_type || 'bearer',
+    }).toString();
+
+    res.json({ success: true, url: `${STOCKPLANNER.appUrl}${STOCKPLANNER.ssoPath}#${hash}`, autoLogin: true });
+  } catch (err) {
+    const detalle = err.response?.data?.error_description || err.response?.data?.msg || err.message;
+    logService.error('[StockPlanner SSO] Error iniciando sesión', detalle);
+    res.status(502).json({ success: false, error: `No se pudo iniciar sesión en StockPlanner: ${detalle}` });
+  }
+});
+
 // ── Endpoints Admin ──────────────────────────────────────────────────────────
 
 // Listar usuarios con su monto_por_pedido
@@ -806,6 +872,42 @@ app.get('/api/atencion/pedidos', requireAuth, requireAtencion, async (req, res) 
   } catch (error) {
     logService.error('Error en /api/atencion/pedidos', error);
     res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+// Buscar productos del catálogo de Shopify para armar un pedido manual desde atención.
+app.get('/api/atencion/productos', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const productos = await shopifyService.buscarProductosParaPedido(q);
+    res.json({ success: true, data: productos });
+  } catch (error) {
+    logService.error('Error buscando productos para pedido de atención', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+// Crear un pedido (Draft Order) en Shopify y devolver el link de checkout (invoice_url).
+// Atención al cliente le pasa ese link a la persona para que complete el pago.
+app.post('/api/atencion/crear-pedido', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const { lineItems = [], email = '', nombre = '', telefono = '', nota = '' } = req.body || {};
+
+    if (!Array.isArray(lineItems) || lineItems.length === 0) {
+      return res.status(400).json({ success: false, error: 'Debe incluir al menos un producto' });
+    }
+
+    const resultado = await shopifyService.crearDraftOrderCheckout({ lineItems, email, nombre, telefono, nota });
+
+    logService.info(`Atención (${req.user?.email}) creó pedido Shopify ${resultado.name}`, {
+      draftOrderId: resultado.id,
+      items: lineItems.length,
+    });
+
+    res.json({ success: true, data: resultado });
+  } catch (error) {
+    logService.error('Error creando pedido de atención en Shopify', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

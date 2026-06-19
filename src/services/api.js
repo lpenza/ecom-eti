@@ -30,6 +30,14 @@ export async function verifyToken() {
 }
 
 /**
+ * Obtener URL de auto-login a StockPlanner (solo admin).
+ * El backend inicia sesión contra Supabase y devuelve la URL con los tokens en el hash.
+ */
+export async function obtenerStockPlannerSSO() {
+  return fetchAPI('/admin/stockplanner-sso');
+}
+
+/**
  * Wrapper para fetch con manejo de errores
  */
 async function fetchAPI(url, options = {}) {
@@ -510,6 +518,25 @@ export async function obtenerDetallePedido(numeroPedido) {
 export async function obtenerPedidosAtencion(q = '') {
   const qs = q ? `?q=${encodeURIComponent(q)}` : '';
   return await fetchAPI(`/atencion/pedidos${qs}`);
+}
+
+/**
+ * Buscar productos del catálogo de Shopify para armar un pedido manual desde atención.
+ */
+export async function buscarProductosAtencion(q = '') {
+  const qs = q ? `?q=${encodeURIComponent(q)}` : '';
+  return await fetchAPI(`/atencion/productos${qs}`);
+}
+
+/**
+ * Crear un pedido en Shopify (Draft Order) y obtener el link de checkout.
+ * payload: { lineItems: [{ variantId, quantity } | { title, price, quantity }], email, nombre, telefono, nota }
+ */
+export async function crearPedidoAtencion(payload) {
+  return await fetchAPI('/atencion/crear-pedido', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
 }
 
 // ==================== PEDIDOS DESPACHADOS / PROCESADOS ====================

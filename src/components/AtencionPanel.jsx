@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { obtenerPedidosAtencion, obtenerDetallePedido } from '../services/api';
+import CrearPedidoModal from './modals/CrearPedidoModal';
 
 // Estado visible para atención al cliente, derivado con la misma lógica que usa
 // el tablero de admin (precedencia: procesado > despachado > etiqueta > contacto > validar).
@@ -40,6 +41,7 @@ export default function AtencionPanel({ mostrarToast }) {
   const [loading, setLoading] = useState(false);
   const [busqueda, setBusqueda] = useState('');
   const [pagina, setPagina] = useState(1);
+  const [showCrearPedido, setShowCrearPedido] = useState(false);
   // Detalle por pedido: { [pedidoId]: { loading, items, error, open } }
   const [detalles, setDetalles] = useState({});
 
@@ -112,6 +114,9 @@ export default function AtencionPanel({ mostrarToast }) {
           />
           <button className="btn btn-secondary btn-sm" onClick={() => cargar(busqueda.trim())} disabled={loading}>
             {loading ? '⏳ Cargando…' : '🔄 Actualizar'}
+          </button>
+          <button className="btn btn-primary btn-sm" onClick={() => setShowCrearPedido(true)}>
+            🛒 Crear pedido
           </button>
         </div>
 
@@ -272,6 +277,13 @@ export default function AtencionPanel({ mostrarToast }) {
           </div>
         )}
       </div>
+
+      {showCrearPedido && (
+        <CrearPedidoModal
+          mostrarToast={mostrarToast}
+          onClose={() => setShowCrearPedido(false)}
+        />
+      )}
     </div>
   );
 }
