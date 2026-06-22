@@ -471,6 +471,23 @@ export async function inicializarPlantillas() {
   return response.data || [];
 }
 
+// ── Carritos Abandonados ──────────────────────────────────────────────────────
+
+export async function obtenerCarritosAbandonados() {
+  return await fetchAPI('/carritos-abandonados');
+}
+
+export async function sincronizarCarritosAbandonados() {
+  return await fetchAPI('/carritos-abandonados/sincronizar', { method: 'POST' });
+}
+
+export async function probarMensajeCarrito(cartId, msgNum) {
+  return await fetchAPI(`/carritos-abandonados/${cartId}/probar-mensaje`, {
+    method: 'POST',
+    body: JSON.stringify({ msgNum }),
+  });
+}
+
 // ==================== MARCAR DESPACHADOS BULK ====================
 
 /**
