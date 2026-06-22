@@ -57,6 +57,7 @@ const etiquetaPdfService = require('./services/etiquetaPdfService');
 const etiquetaPdfCleanup = require('./services/etiquetaPdfCleanup');
 const shopifyService = require('./services/shopifyService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
+const { procesarCarritosAbandonados, sincronizarDesdeShopify, probarMensaje, obtenerCarritosDB, guardarCheckoutCapturado } = require('./services/abandonedCartService');
 const emailService = require('./services/emailService');
 const logService = require('./services/logService');
 
@@ -4605,6 +4606,73 @@ app.get('/api/etiqueta-marcopostal/:guiaId', requireAuth, async (req, res) => {
   }
 });
 
+// ── Carritos Abandonados ─────────────────────────────────────────────────────
+
+// GET /api/carritos-abandonados — lista los carritos de las últimas 72h con stats
+app.get('/api/carritos-abandonados', requireAuth, async (req, res) => {
+  try {
+    const result = await obtenerCarritosDB();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    logService.error('Error obteniendo carritos abandonados', { error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/carritos-abandonados/sincronizar — trae de Shopify y guarda en DB
+app.post('/api/carritos-abandonados/sincronizar', requireAuth, async (req, res) => {
+  try {
+    const result = await sincronizarDesdeShopify();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    logService.error('Error sincronizando carritos de Shopify', { error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/checkout-capturado — PÚBLICO: recibe el contacto que captura el pixel de Shopify
+// No lleva requireAuth porque lo llama el navegador del cliente desde la tienda.
+// Se protege con un secreto compartido en query (?secret=...).
+app.post('/api/checkout-capturado', async (req, res) => {
+  try {
+    const secretEsperado = process.env.PIXEL_CAPTURE_SECRET;
+    if (secretEsperado && req.query.secret !== secretEsperado) {
+      return res.status(401).json({ success: false, error: 'secret inválido' });
+    }
+
+    const { checkout_token, email, phone, first_name, last_name } = req.body || {};
+    if (!checkout_token) {
+      return res.status(400).json({ success: false, error: 'checkout_token requerido' });
+    }
+
+    const result = await guardarCheckoutCapturado({ checkout_token, email, phone, first_name, last_name });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    logService.error('Error guardando checkout capturado', { error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/carritos-abandonados/:id/probar-mensaje — envía un mensaje de prueba ignorando restricción horaria
+app.post('/api/carritos-abandonados/:id/probar-mensaje', requireAuth, async (req, res) => {
+  const { id } = req.params;
+  const { msgNum } = req.body; // 1 o 2
+
+  if (![1, 2].includes(Number(msgNum))) {
+    return res.status(400).json({ success: false, error: 'msgNum debe ser 1 o 2' });
+  }
+
+  try {
+    const result = await probarMensaje(id, Number(msgNum));
+    res.json({ success: true, ...result });
+  } catch (err) {
+    logService.error('Error probando mensaje de carrito abandonado', { error: err.message, id, msgNum });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 if (process.env.NODE_ENV === 'production') {
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'dist', 'index.html'));
@@ -4618,6 +4686,15 @@ app.listen(PORT, async () => {
 
   // Arranca cleanup diario de PDFs MarcoPostal (retención env-configurable, default 7 días)
   etiquetaPdfCleanup.startScheduler();
+
+  // Cron: recuperación de carritos abandonados vía WhatsApp (cada 50 minutos)
+  cron.schedule('*/50 * * * *', async () => {
+    try {
+      await procesarCarritosAbandonados();
+    } catch (err) {
+      logService.error('[cron] Error en recuperación de carritos abandonados', err);
+    }
+  });
 
   // Cron: refresh diario del cache de tendencias por color (ventana movil de 7 dias).
   // 03:00 AM hora del server. Recalcula los ultimos 7 dias para tolerar pedidos retrasados.

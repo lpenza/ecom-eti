@@ -44,6 +44,58 @@ class ShopifyService {
     });
   }
 
+  // Obtener carritos abandonados de las últimas 72 horas con al menos 1h de antigüedad
+  async obtenerCarritosAbandonados() {
+    try {
+      const desde72h = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+      console.log('[Shopify] ▶ Consultando checkouts abandonados desde:', desde72h);
+
+      const response = await axios.get(`${this.baseUrl}/checkouts.json`, {
+        headers: this.getHeaders(),
+        params: {
+          created_at_min: desde72h,
+          status: 'open',
+          limit: 250,
+        },
+      });
+
+      const checkouts = response.data.checkouts || [];
+
+      // Filtrar: al menos 1 hora de abandono y que tenga productos
+      const hace1h = Date.now() - 60 * 60 * 1000;
+      return checkouts.filter(c => {
+        const actualizado = new Date(c.updated_at).getTime();
+        return actualizado < hace1h && (c.line_items || []).length > 0;
+      });
+    } catch (error) {
+      throw new Error(`Error obteniendo carritos abandonados de Shopify: ${error.message}`);
+    }
+  }
+
+  // Obtener datos completos de un cliente por su ID
+  async obtenerCliente(customerId) {
+    try {
+      const response = await axios.get(`${this.baseUrl}/customers/${customerId}.json`, {
+        headers: this.getHeaders(),
+      });
+      return response.data.customer || null;
+    } catch (err) {
+      console.warn(`[Shopify] obtenerCliente(${customerId}) falló: ${err.response?.status} ${err.message}`);
+      return null;
+    }
+  }
+
+  // Extrae el teléfono de un objeto customer de Shopify, chequeando todos los niveles posibles
+  extraerTelefonoCliente(cliente) {
+    if (!cliente) return null;
+    return (
+      cliente.phone ||
+      cliente.default_address?.phone ||
+      (cliente.addresses || []).map(a => a.phone).find(Boolean) ||
+      null
+    );
+  }
+
   // Buscar orden por número de pedido (ej: 1658 → id interno de Shopify)
   async obtenerIdPorNumeroPedido(numeroPedido) {
     try {

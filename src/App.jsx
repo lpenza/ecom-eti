@@ -14,6 +14,7 @@ import AdminPanel from './components/AdminPanel';
 import MisPedidosPanel from './components/MisPedidosPanel';
 import { useAuth } from './context/AuthContext';
 import BotControlPanel from './components/BotControlPanel';
+import CarritosAbandonadosPanel from './components/CarritosAbandonadosPanel';
 import FeedbackDashboardPanel from './components/FeedbackDashboardPanel';
 import ColorTrendsPanel from './components/ColorTrendsPanel';
 import { usePedidos } from './hooks/usePedidos';
@@ -1918,6 +1919,14 @@ function AppContent({ user, logout }) {
               </button>
               <button
                 type="button"
+                className={`side-nav-item ${activeView === 'carritos' ? 'side-nav-item-active' : ''}`}
+                onClick={() => setActiveView('carritos')}
+              >
+                <span className="side-nav-icon">🛒</span>
+                Carritos Abandonados
+              </button>
+              <button
+                type="button"
                 className={`side-nav-item ${activeView === 'admin' ? 'side-nav-item-active' : ''}`}
                 onClick={() => setActiveView('admin')}
               >
@@ -2671,6 +2680,10 @@ function AppContent({ user, logout }) {
 
       {activeView === 'bot' && (
         <BotControlPanel mostrarToast={mostrarToast} />
+      )}
+
+      {activeView === 'carritos' && (
+        <CarritosAbandonadosPanel mostrarToast={mostrarToast} />
       )}
 
       {activeView === 'admin' && user.role === 'admin' && (
