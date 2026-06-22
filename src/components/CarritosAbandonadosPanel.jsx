@@ -26,10 +26,11 @@ function formatHora(isoDate) {
 }
 
 function estadoCarrito(c) {
-  if (c.recovered)      return { label: 'Recuperado',   color: '#16a34a', bg: '#dcfce7' };
-  if (c.msg2_sent_at)   return { label: 'Msg 2 enviado', color: '#6d28d9', bg: '#ede9fe' };
-  if (c.msg1_sent_at)   return { label: 'Msg 1 enviado', color: '#b45309', bg: '#fef3c7' };
-  return                       { label: 'Sin contactar', color: '#dc2626', bg: '#fee2e2' };
+  if (c.recovered)         return { label: 'Recuperado',    color: '#16a34a', bg: '#dcfce7' };
+  if (c.msg2_sent_at)      return { label: 'Msg 2 enviado', color: '#6d28d9', bg: '#ede9fe' };
+  if (c.msg1_sent_at)      return { label: 'Msg 1 enviado', color: '#b45309', bg: '#fef3c7' };
+  if (!c.cliente_telefono) return { label: 'Sin teléfono',  color: '#6b7280', bg: '#f3f4f6' };
+  return                          { label: 'Sin contactar', color: '#dc2626', bg: '#fee2e2' };
 }
 
 function StatPill({ label, value, color }) {
@@ -76,7 +77,7 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
     setSincronizando(true);
     try {
       const res = await sincronizarCarritosAbandonados();
-      mostrarToast(`Sincronizado: ${res.nuevos} nuevos, ${res.actualizados} actualizados`, 'ok');
+      mostrarToast(`Sincronizado: ${res.nuevos} nuevos, ${res.actualizados} act. · ${res.conTelefono} con tel, ${res.sinTelefono} sin tel`, 'ok');
       await cargar();
     } catch (err) {
       mostrarToast(`Error sincronizando: ${err.message}`, 'error');
@@ -103,9 +104,10 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
   }
 
   const carritosFiltrados = carritos.filter(c => {
-    if (filtro === 'pendientes')  return !c.msg1_sent_at && !c.recovered;
-    if (filtro === 'en_flujo')    return c.msg1_sent_at  && !c.recovered;
-    if (filtro === 'recuperados') return c.recovered;
+    if (filtro === 'pendientes')   return !c.msg1_sent_at && !c.recovered && c.cliente_telefono;
+    if (filtro === 'en_flujo')     return c.msg1_sent_at  && !c.recovered;
+    if (filtro === 'recuperados')  return c.recovered;
+    if (filtro === 'sin_telefono') return !c.cliente_telefono && !c.recovered;
     return true;
   });
 
@@ -138,15 +140,17 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
         <StatPill label="Sin contactar"  value={stats.sin_contactar}  color="#dc2626" />
         <StatPill label="Esperando Msg 2" value={stats.esperando_msg2} color="#b45309" />
         <StatPill label="Recuperados"    value={stats.recuperados}    color="#16a34a" />
+        <StatPill label="Sin teléfono"   value={stats.sin_telefono}   color="#6b7280" />
       </div>
 
       {/* Filtros */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         {[
-          { key: 'todos',       label: 'Todos' },
-          { key: 'pendientes',  label: 'Sin contactar' },
-          { key: 'en_flujo',    label: 'En flujo' },
-          { key: 'recuperados', label: 'Recuperados' },
+          { key: 'todos',        label: 'Todos' },
+          { key: 'pendientes',   label: 'Sin contactar' },
+          { key: 'en_flujo',     label: 'En flujo' },
+          { key: 'recuperados',  label: 'Recuperados' },
+          { key: 'sin_telefono', label: 'Sin teléfono' },
         ].map(f => (
           <button
             key={f.key}
@@ -189,11 +193,12 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
                 const estado = estadoCarrito(c);
                 const enviandoMsg1 = enviando === `${c.id}-1`;
                 const enviandoMsg2 = enviando === `${c.id}-2`;
-                const puedeMsg1 = !c.msg1_sent_at && !c.recovered;
-                const puedeMsg2 = c.msg1_sent_at && !c.msg2_sent_at && !c.recovered;
+                const tieneTelefono = Boolean(c.cliente_telefono);
+                const puedeMsg1 = tieneTelefono && !c.msg1_sent_at && !c.recovered;
+                const puedeMsg2 = tieneTelefono && c.msg1_sent_at && !c.msg2_sent_at && !c.recovered;
 
                 return (
-                  <tr key={c.id} style={{ borderBottom: '1px solid #f3f4f6' }}
+                  <tr key={c.id} style={{ borderBottom: '1px solid #f3f4f6', opacity: tieneTelefono ? 1 : 0.55 }}
                     onMouseEnter={e => e.currentTarget.style.background = '#f9fafb'}
                     onMouseLeave={e => e.currentTarget.style.background = ''}
                   >

@@ -96,6 +96,31 @@ class ShopifyService {
     );
   }
 
+  // Devuelve un Set con los checkout_token de las órdenes de las últimas 72h.
+  // Sirve para saber qué carritos abandonados ya se RECUPERARON (se convirtieron en orden).
+  async obtenerTokensRecuperados() {
+    const desde72h = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+    try {
+      const response = await axios.get(`${this.baseUrl}/orders.json`, {
+        headers: this.getHeaders(),
+        params: {
+          status: 'any',
+          created_at_min: desde72h,
+          limit: 250,
+          fields: 'id,checkout_token,checkout_id',
+        },
+      });
+      const tokens = new Set();
+      for (const orden of response.data.orders || []) {
+        if (orden.checkout_token) tokens.add(orden.checkout_token);
+      }
+      return tokens;
+    } catch (err) {
+      console.warn(`[Shopify] obtenerTokensRecuperados falló: ${err.message}`);
+      return new Set(); // ante error, no bloqueamos el flujo (devolvemos vacío)
+    }
+  }
+
   // Buscar orden por número de pedido (ej: 1658 → id interno de Shopify)
   async obtenerIdPorNumeroPedido(numeroPedido) {
     try {

@@ -4646,6 +4646,7 @@ app.post('/api/checkout-capturado', async (req, res) => {
     }
 
     const result = await guardarCheckoutCapturado({ checkout_token, email, phone, first_name, last_name });
+    console.log(`[Pixel] ✅ Contacto capturado | token:${checkout_token} tel:${phone || 'null'} email:${email || 'null'}`);
     res.json({ success: true, ...result });
   } catch (err) {
     logService.error('Error guardando checkout capturado', { error: err.message });

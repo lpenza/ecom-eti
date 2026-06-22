@@ -159,6 +159,10 @@ async function procesarCarritosAbandonados() {
   }
   console.log(`[AbandonedCart] 🛒 ${checkouts.length} carritos recibidos de Shopify`);
 
+  // Tokens de carritos YA recuperados (convertidos en orden) — para no escribirle a quien ya compró
+  const tokensRecuperados = await shopifyService.obtenerTokensRecuperados();
+  console.log(`[AbandonedCart] 🧾 ${tokensRecuperados.size} órdenes recientes (carritos recuperados)`);
+
   let enviados = 0;
 
   for (const checkout of checkouts) {
@@ -203,9 +207,26 @@ async function procesarCarritosAbandonados() {
 
     if (carrito.recovered) continue;
 
+    // 2.b Validar que el carrito NO se haya recuperado (orden creada con ese token)
+    if (tokensRecuperados.has(checkout.token)) {
+      console.log(`[AbandonedCart] ✅ Carrito recuperado (orden existe) → ${checkout.id} — marcado y omitido`);
+      await supabase
+        .from('abandoned_carts')
+        .update({ recovered: true })
+        .eq('shopify_checkout_id', String(checkout.id));
+      continue;
+    }
+
     // 3. Determinar qué mensaje enviar
     const msgNum = determinarMensaje(carrito, ahora);
     if (!msgNum) continue;
+
+    // Interruptor de seguridad: si el envío automático no está activo,
+    // sincronizamos los carritos pero NO mandamos WhatsApp.
+    if (process.env.CARRITOS_ENVIO_ACTIVO !== 'true') {
+      console.log(`[AbandonedCart] 🔌 Envío desactivado (CARRITOS_ENVIO_ACTIVO≠true) — Msg ${msgNum} a ${carrito.cliente_telefono} OMITIDO`);
+      continue;
+    }
 
     const templateName = TEMPLATE[msgNum];
     const { nombre, cartUrl } = buildParams(carrito);
@@ -259,9 +280,14 @@ async function sincronizarDesdeShopify() {
   const checkouts = await shopifyService.obtenerCarritosAbandonados();
   console.log(`[AbandonedCart] ${checkouts.length} checkouts recibidos de Shopify`);
 
+  // Tokens de carritos ya recuperados (convertidos en orden)
+  const tokensRecuperados = await shopifyService.obtenerTokensRecuperados();
+
   let nuevos = 0;
   let actualizados = 0;
+  let conTelefono = 0;
   let sinTelefono = 0;
+  let recuperados = 0;
 
   for (const checkout of checkouts) {
     // Obtener datos del cliente via API de Shopify
@@ -275,32 +301,33 @@ async function sincronizarDesdeShopify() {
     // Cruzar con lo capturado por el pixel (donde sí está el teléfono real)
     const contactoCapturado = await buscarContactoCapturado(checkout);
     const { telefono, email, nombre } = resolverContacto(checkout, cliente, contactoCapturado);
+    const recuperado = tokensRecuperados.has(checkout.token);
 
-    console.log(`[Sync] checkout:${checkout.id} token:${checkout.token} tel:${telefono || 'sin_telefono'} email:${email || 'null'} (pixel:${contactoCapturado ? 'sí' : 'no'})`);
+    if (telefono) conTelefono++; else sinTelefono++;
+    if (recuperado) recuperados++;
 
-    // Solo procesamos carritos con teléfono (necesario para WhatsApp)
-    if (!telefono) {
-      sinTelefono++;
-      continue;
-    }
+    console.log(`[Sync] checkout:${checkout.id} tel:${telefono || 'sin_telefono'} recuperado:${recuperado} (pixel:${contactoCapturado ? 'sí' : 'no'})`);
+
+    // Guardamos TODOS los carritos (con y sin teléfono) para verlos en el panel.
+    // Los que no tienen teléfono quedan visibles pero no mensajeables.
+    const fila = {
+      shopify_checkout_id:    String(checkout.id),
+      abandoned_checkout_url: checkout.abandoned_checkout_url,
+      cliente_nombre:         nombre,
+      cliente_email:          email,
+      cliente_telefono:       telefono,
+      total_price:            parseFloat(checkout.total_price || 0),
+      currency:               checkout.currency || 'UYU',
+      line_items:             checkout.line_items || [],
+      abandoned_at:           checkout.updated_at,
+      last_checked_at:        new Date().toISOString(),
+    };
+    // Solo seteamos recovered cuando lo detectamos, para no "des-recuperar" nada
+    if (recuperado) fila.recovered = true;
 
     const { error, data } = await supabase
       .from('abandoned_carts')
-      .upsert(
-        {
-          shopify_checkout_id:    String(checkout.id),
-          abandoned_checkout_url: checkout.abandoned_checkout_url,
-          cliente_nombre:         nombre,
-          cliente_email:          email,
-          cliente_telefono:       telefono,
-          total_price:            parseFloat(checkout.total_price || 0),
-          currency:               checkout.currency || 'UYU',
-          line_items:             checkout.line_items || [],
-          abandoned_at:           checkout.updated_at,
-          last_checked_at:        new Date().toISOString(),
-        },
-        { onConflict: 'shopify_checkout_id' }
-      )
+      .upsert(fila, { onConflict: 'shopify_checkout_id' })
       .select('id, created_at, updated_at')
       .single();
 
@@ -312,8 +339,8 @@ async function sincronizarDesdeShopify() {
     }
   }
 
-  console.log(`[AbandonedCart] Sync: ${nuevos} nuevos, ${actualizados} actualizados, ${sinTelefono} sin teléfono (omitidos)`);
-  return { total: checkouts.length, nuevos, actualizados, sinTelefono };
+  console.log(`[AbandonedCart] Sync: ${nuevos} nuevos, ${actualizados} actualizados | ${conTelefono} con tel, ${sinTelefono} sin tel, ${recuperados} recuperados`);
+  return { total: checkouts.length, nuevos, actualizados, conTelefono, sinTelefono, recuperados };
 }
 
 // Envía un mensaje de prueba a un carrito específico (por UUID de DB), ignorando restricción horaria
@@ -355,9 +382,10 @@ async function obtenerCarritosDB() {
 
   const stats = {
     total:          carritos.length,
-    sin_contactar:  carritos.filter(c => !c.msg1_sent_at && !c.recovered).length,
+    sin_contactar:  carritos.filter(c => !c.msg1_sent_at && !c.recovered && c.cliente_telefono).length,
     esperando_msg2: carritos.filter(c => c.msg1_sent_at && !c.msg2_sent_at && !c.recovered).length,
     recuperados:    carritos.filter(c => c.recovered).length,
+    sin_telefono:   carritos.filter(c => !c.cliente_telefono && !c.recovered).length,
   };
 
   return { carritos, stats };

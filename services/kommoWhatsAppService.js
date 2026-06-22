@@ -21,10 +21,22 @@ function normalizarTelefono(tel) {
  *    - Body:   {{1}} = Nombre del cliente
  *    (sin botón, URL queda fija o se incluye en el body si la plantilla la tiene)
  */
-function buildComponents(templateName, { nombre, cartUrl }) {
-  const template1 = process.env.WA_TEMPLATE_CARRITO_1;
-  const hayBoton  = templateName === template1;
+// Extrae el sufijo dinámico de la URL del carrito para el botón de Meta.
+// El botón en Meta es "https://velinneuy.com/{{1}}", así que el parámetro
+// debe ser todo lo que va DESPUÉS del dominio (path + query).
+function sufijoUrlCarrito(cartUrl) {
+  try {
+    const u = new URL(cartUrl);
+    return u.pathname.replace(/^\//, '') + u.search; // ej: "730.../checkouts/ac/TOKEN/recover?key=...&locale=es-UY"
+  } catch {
+    return null;
+  }
+}
 
+function buildComponents(templateName, { nombre, cartUrl }) {
+  // Ambas plantillas (carrito_abandonado_1 y _2) tienen:
+  //   - BODY con {{1}} = nombre del cliente
+  //   - BUTTON URL dinámico "FINALIZAR MI PEDIDO" → link de recuperación del carrito
   const components = [
     {
       type: 'body',
@@ -34,15 +46,13 @@ function buildComponents(templateName, { nombre, cartUrl }) {
     },
   ];
 
-  if (hayBoton && cartUrl) {
-    // El botón URL en Meta espera solo el sufijo dinámico de la URL.
-    // Si la URL base de la plantilla en Meta es "https://tienda.com/" el sufijo es el resto.
-    // Como usamos la URL completa de Shopify, pasamos la URL entera como sufijo dinámico.
+  const sufijo = sufijoUrlCarrito(cartUrl);
+  if (sufijo) {
     components.push({
       type: 'button',
       sub_type: 'url',
       index: '0',
-      parameters: [{ type: 'text', text: cartUrl }],
+      parameters: [{ type: 'text', text: sufijo }],
     });
   }
 
@@ -56,6 +66,17 @@ class KommoWhatsAppService {
     this.token         = process.env.KOMMO_API_TOKEN;
     this.secretKey     = process.env.KOMMO_SECRET_KEY;
     this.wabaId        = process.env.KOMMO_WABA_ID; // WhatsApp Business Account ID
+
+    // ── WhatsApp Cloud API de Meta (envío real) ──────────────────────────────
+    this.metaPhoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID; // ID del número (NO el WABA ID)
+    this.metaToken         = process.env.WHATSAPP_ACCESS_TOKEN;    // token de acceso de Meta
+    this.metaApiVersion    = process.env.WHATSAPP_API_VERSION || 'v21.0';
+    this.templateLang      = process.env.WA_TEMPLATE_LANG || 'es'; // debe coincidir con Meta
+  }
+
+  // ¿Está configurado el envío real por Meta?
+  get metaConfigurado() {
+    return Boolean(this.metaPhoneNumberId && this.metaToken);
   }
 
   get baseUrl() {
@@ -114,43 +135,43 @@ class KommoWhatsAppService {
    * @param {string} cartUrl      - URL del carrito abandonado (para el botón dinámico)
    * @param {string} [language]   - Código de idioma (default: 'es')
    */
-  async enviarTemplate({ telefono, templateName, nombre, cartUrl, language = 'es' }) {
+  async enviarTemplate({ telefono, templateName, nombre, cartUrl, language }) {
     const phone = normalizarTelefono(telefono);
     if (!phone) throw new Error(`Teléfono inválido: ${telefono}`);
 
+    const lang = language || this.templateLang;
     const components = buildComponents(templateName, { nombre, cartUrl });
 
-    // ── STUB ──────────────────────────────────────────────────────────────────
-    // Cuando Kommo habilite el endpoint de Marketing Messages API, reemplazá
-    // este bloque por el axios.post real. El body ya está armado arriba.
-    //
-    // Lo que sabemos del cuerpo de la request:
-    //   {
-    //     to: phone,                         // ej: "59899123456"
-    //     waba_id: this.wabaId,              // "1216288176881002"
-    //     template: {
-    //       name: templateName,              // "intento_abandonado_v1"
-    //       language: { code: language },    // { code: "es" }
-    //       components,                      // array armado por buildComponents()
-    //     }
-    //   }
-    //
-    // El endpoint de Kommo para marketing messages es algo como:
-    //   POST https://velinneuy.kommo.com/api/v4/... (ver docs Kommo MM API)
-    //
-    // Referencia: https://www.kommo.com/support/messenger-apps/marketing-messages-api/
-    // ─────────────────────────────────────────────────────────────────────────
+    // Si no hay credenciales de Meta, seguimos en modo STUB (no envía nada)
+    if (!this.metaConfigurado) {
+      const payload = { to: phone, template: { name: templateName, language: { code: lang }, components } };
+      console.log(`[KommoWA] 📤 STUB (sin credenciales Meta) → ${phone} | template: "${templateName}"`);
+      console.log(`[KommoWA] Payload listo:`, JSON.stringify(payload, null, 2));
+      return { success: true, stub: true, phone, templateName, payload };
+    }
 
-    const payload = {
+    // ── Envío real vía WhatsApp Cloud API de Meta ───────────────────────────────
+    const url = `https://graph.facebook.com/${this.metaApiVersion}/${this.metaPhoneNumberId}/messages`;
+    const body = {
+      messaging_product: 'whatsapp',
       to: phone,
-      waba_id: this.wabaId,
-      template: { name: templateName, language: { code: language }, components },
+      type: 'template',
+      template: { name: templateName, language: { code: lang }, components },
     };
 
-    console.log(`[KommoWA] 📤 STUB → ${phone} | template: "${templateName}"`);
-    console.log(`[KommoWA] Payload listo:`, JSON.stringify(payload, null, 2));
-
-    return { success: true, stub: true, phone, templateName, payload };
+    try {
+      const res = await axios.post(url, body, {
+        headers: { Authorization: `Bearer ${this.metaToken}`, 'Content-Type': 'application/json' },
+      });
+      const messageId = res.data?.messages?.[0]?.id || null;
+      console.log(`[KommoWA] ✅ Enviado → ${phone} | template: "${templateName}" | msgId: ${messageId}`);
+      return { success: true, stub: false, phone, templateName, messageId };
+    } catch (err) {
+      const metaError = err.response?.data?.error;
+      const detalle = metaError ? `${metaError.code} - ${metaError.message}` : err.message;
+      console.error(`[KommoWA] ❌ Error enviando a ${phone}: ${detalle}`);
+      throw new Error(`Meta WhatsApp API: ${detalle}`);
+    }
   }
 }
 
