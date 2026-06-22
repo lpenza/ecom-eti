@@ -19,6 +19,24 @@ const nuevoProductoVacio = { nombre: '', descripcion: '', sku: '', precio: '', a
 const ESTADOS_PEDIDO = ['pendiente', 'etiqueta_generada', 'despachado', 'enviado', 'cancelado'];
 const TIPOS_ENVIO = ['estandar', 'pickup_local', 'recibilo_hoy'];
 
+// Plantillas de WhatsApp conocidas (sugerencias para el editor del flujo)
+const PLANTILLAS_SUGERIDAS = ['carrito_abandonado_1', 'carrito_abandonado_2', 'carrito_abandonado_3'];
+
+// Texto legible de la demora de un paso según su valor, unidad y posición
+function describirDemoraPaso(valor, unidad, idx) {
+  const v = Number(valor);
+  if (!Number.isFinite(v)) return '';
+  const t = `${v} ${unidad === 'min' ? 'min' : 'h'}`;
+  return idx === 0 ? `${t} después del abandono` : `${t} después del paso ${idx}`;
+}
+
+// Convierte horas (canónico en DB) a { valor, unidad } para mostrar en el editor
+function horasAValorUnidad(horas) {
+  const h = Number(horas) || 0;
+  if (h > 0 && h < 1) return { valor: Math.round(h * 60), unidad: 'min' };
+  return { valor: h, unidad: 'h' };
+}
+
 export default function AdminPanel() {
   const [tab, setTab] = useState('usuarios'); // usuarios | productos | pedidos
 
@@ -52,6 +70,13 @@ export default function AdminPanel() {
   const [pedidoForm, setPedidoForm] = useState({});
   const [guardandoPedido, setGuardandoPedido] = useState(false);
   const [errorPedido, setErrorPedido] = useState('');
+
+  // ── Carritos abandonados (config del flujo) ──
+  const [flujoPasos, setFlujoPasos] = useState([]); // [{ template, valor, unidad: 'min'|'h', activo }]
+  const [flujoFuente, setFlujoFuente] = useState('db'); // 'db' | 'env'
+  const [loadingFlujo, setLoadingFlujo] = useState(false);
+  const [guardandoFlujo, setGuardandoFlujo] = useState(false);
+  const [errorFlujo, setErrorFlujo] = useState('');
 
   const [toast, setToast] = useState({ msg: '', tipo: 'ok' });
 
@@ -236,6 +261,97 @@ export default function AdminPanel() {
     }
   }
 
+  // ── Carga y handlers del flujo de carritos ──
+  const cargarFlujo = useCallback(() => {
+    setLoadingFlujo(true);
+    fetchAdmin('/admin/carritos-flujo')
+      .then((res) => {
+        if (res.success) {
+          // La DB guarda en horas; en el editor lo mostramos en minutos u horas.
+          setFlujoPasos((res.pasos || []).map((p) => ({
+            template: p.template,
+            ...horasAValorUnidad(p.demoraHoras),
+            activo: p.activo,
+          })));
+          setFlujoFuente(res.fuente || 'db');
+        } else {
+          mostrarToast(res.error || 'Error cargando el flujo', 'error');
+        }
+      })
+      .catch(() => mostrarToast('Error cargando el flujo', 'error'))
+      .finally(() => setLoadingFlujo(false));
+  }, []);
+
+  useEffect(() => {
+    if (tab === 'carritos') cargarFlujo();
+  }, [tab, cargarFlujo]);
+
+  function actualizarPaso(idx, campo, valor) {
+    setFlujoPasos((ps) => ps.map((p, i) => (i === idx ? { ...p, [campo]: valor } : p)));
+  }
+
+  function agregarPaso() {
+    setFlujoPasos((ps) => [...ps, { template: '', valor: 24, unidad: 'h', activo: true }]);
+  }
+
+  // Cambia la unidad de un paso convirtiendo el valor para conservar la duración real
+  function cambiarUnidad(idx, nuevaUnidad) {
+    setFlujoPasos((ps) => ps.map((p, i) => {
+      if (i !== idx || p.unidad === nuevaUnidad) return p;
+      const v = Number(p.valor) || 0;
+      const valor = nuevaUnidad === 'min' ? Math.round(v * 60) : +(v / 60).toFixed(4);
+      return { ...p, unidad: nuevaUnidad, valor };
+    }));
+  }
+
+  function quitarPaso(idx) {
+    setFlujoPasos((ps) => ps.filter((_, i) => i !== idx));
+  }
+
+  function moverPaso(idx, dir) {
+    setFlujoPasos((ps) => {
+      const destino = idx + dir;
+      if (destino < 0 || destino >= ps.length) return ps;
+      const copia = [...ps];
+      [copia[idx], copia[destino]] = [copia[destino], copia[idx]];
+      return copia;
+    });
+  }
+
+  async function guardarFlujo() {
+    setErrorFlujo('');
+    // Validación previa
+    for (let i = 0; i < flujoPasos.length; i++) {
+      const p = flujoPasos[i];
+      if (!String(p.template || '').trim()) { setErrorFlujo(`El paso ${i + 1} no tiene plantilla.`); return; }
+      if (!(Number(p.valor) >= 0)) { setErrorFlujo(`El paso ${i + 1} tiene una demora inválida.`); return; }
+    }
+    if (flujoPasos.length === 0) { setErrorFlujo('El flujo debe tener al menos un mensaje.'); return; }
+
+    setGuardandoFlujo(true);
+    const res = await fetchAdmin('/admin/carritos-flujo', {
+      method: 'PUT',
+      body: JSON.stringify({ pasos: flujoPasos.map((p) => ({
+        template: String(p.template).trim(),
+        // La DB es canónica en horas; convertimos los minutos a fracción de hora.
+        demoraHoras: p.unidad === 'min' ? Number(p.valor) / 60 : Number(p.valor),
+        activo: p.activo !== false,
+      })) }),
+    });
+    setGuardandoFlujo(false);
+    if (res.success) {
+      mostrarToast('Flujo de carritos guardado');
+      setFlujoPasos((res.pasos || []).map((p) => ({
+        template: p.template,
+        ...horasAValorUnidad(p.demoraHoras),
+        activo: p.activo,
+      })));
+      setFlujoFuente(res.fuente || 'db');
+    } else {
+      setErrorFlujo(res.error || 'Error al guardar el flujo');
+    }
+  }
+
   const totalGeneral = reporte.reduce((s, r) => s + r.total, 0);
 
   return (
@@ -256,6 +372,9 @@ export default function AdminPanel() {
         </button>
         <button className={`admin-tab${tab === 'pedidos' ? ' admin-tab-active' : ''}`} onClick={() => setTab('pedidos')}>
           Pedidos
+        </button>
+        <button className={`admin-tab${tab === 'carritos' ? ' admin-tab-active' : ''}`} onClick={() => setTab('carritos')}>
+          Carritos abandonados
         </button>
       </div>
 
@@ -783,6 +902,126 @@ export default function AdminPanel() {
                 ))}
               </tbody>
             </table>
+          )}
+        </section>
+      )}
+
+      {/* ══════════════ TAB CARRITOS ABANDONADOS ══════════════ */}
+      {tab === 'carritos' && (
+        <section className="admin-section">
+          <h2 className="admin-section-title">Flujo de carritos abandonados</h2>
+          <p className="admin-section-desc">
+            Definí los mensajes de WhatsApp que se envían para recuperar carritos y cada cuánto. La demora se mide desde el abandono (paso 1) o desde el envío del paso anterior. El flujo automático corre cada 30 min y no envía entre 23:00 y 09:00 (UY), así que demoras menores a 30 min se redondean al próximo ciclo (para una prueba al instante usá el botón "▶ Enviar" del panel de Carritos).
+          </p>
+
+          {flujoFuente === 'env' && !loadingFlujo && (
+            <div className="admin-error" style={{ background: '#fffbeb', color: '#92400e', borderColor: '#fde68a' }}>
+              Todavía no hay un flujo guardado en la base de datos: se está mostrando el flujo por defecto. Tocá "Guardar flujo" para fijarlo.
+            </div>
+          )}
+
+          {loadingFlujo ? (
+            <p className="admin-rep-empty">Cargando flujo...</p>
+          ) : (
+            <>
+              <datalist id="plantillas-sugeridas">
+                {PLANTILLAS_SUGERIDAS.map((t) => <option key={t} value={t} />)}
+              </datalist>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
+                {flujoPasos.map((paso, i) => (
+                  <div
+                    key={i}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                      border: '1.5px solid #e5e7eb', borderRadius: 10, padding: '10px 12px',
+                      background: paso.activo === false ? '#f9fafb' : '#fff',
+                      opacity: paso.activo === false ? 0.6 : 1,
+                    }}
+                  >
+                    {/* Reordenar */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      <button type="button" className="btn btn-secondary btn-sm" style={{ padding: '0 6px', lineHeight: 1.4 }}
+                        onClick={() => moverPaso(i, -1)} disabled={i === 0} title="Subir">▲</button>
+                      <button type="button" className="btn btn-secondary btn-sm" style={{ padding: '0 6px', lineHeight: 1.4 }}
+                        onClick={() => moverPaso(i, 1)} disabled={i === flujoPasos.length - 1} title="Bajar">▼</button>
+                    </div>
+
+                    <span style={{
+                      flexShrink: 0, display: 'inline-block', minWidth: 56, textAlign: 'center',
+                      padding: '3px 8px', borderRadius: 12, fontSize: 12, fontWeight: 600,
+                      color: '#b45309', background: '#fef3c7',
+                    }}>
+                      Paso {i + 1}
+                    </span>
+
+                    <div className="admin-field" style={{ flex: 1, minWidth: 200, margin: 0 }}>
+                      <label>Plantilla (Meta)</label>
+                      <input
+                        type="text"
+                        list="plantillas-sugeridas"
+                        placeholder="carrito_abandonado_1"
+                        value={paso.template}
+                        onChange={(e) => actualizarPaso(i, 'template', e.target.value)}
+                      />
+                    </div>
+
+                    <div className="admin-field" style={{ width: 200, margin: 0 }}>
+                      <label>Demora</label>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <input
+                          type="number"
+                          min="0"
+                          step={paso.unidad === 'min' ? '1' : '0.5'}
+                          value={paso.valor}
+                          onChange={(e) => actualizarPaso(i, 'valor', e.target.value)}
+                          style={{ width: 80 }}
+                        />
+                        <select value={paso.unidad} onChange={(e) => cambiarUnidad(i, e.target.value)}>
+                          <option value="min">minutos</option>
+                          <option value="h">horas</option>
+                        </select>
+                      </div>
+                      <span style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>
+                        {describirDemoraPaso(paso.valor, paso.unidad, i)}
+                      </span>
+                    </div>
+
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#374151', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={paso.activo !== false}
+                        onChange={(e) => actualizarPaso(i, 'activo', e.target.checked)}
+                      />
+                      Activo
+                    </label>
+
+                    <button type="button" className="btn btn-danger btn-sm" onClick={() => quitarPaso(i)} title="Quitar paso">
+                      ✕
+                    </button>
+                  </div>
+                ))}
+
+                {flujoPasos.length === 0 && (
+                  <p className="admin-rep-empty">No hay pasos. Agregá el primer mensaje.</p>
+                )}
+              </div>
+
+              {errorFlujo && <div className="admin-error">{errorFlujo}</div>}
+
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <button type="button" className="btn btn-secondary" onClick={agregarPaso}>
+                  + Agregar mensaje
+                </button>
+                <button type="button" className="btn btn-primary" onClick={guardarFlujo} disabled={guardandoFlujo}>
+                  {guardandoFlujo ? 'Guardando...' : '💾 Guardar flujo'}
+                </button>
+              </div>
+
+              <p className="admin-section-desc" style={{ marginTop: 14 }}>
+                Cada plantilla debe estar creada y aprobada en Meta, con la misma estructura (cuerpo con <code>{'{{1}}'}</code> = nombre + botón de URL dinámica). Cambiar el flujo afecta también a los carritos que ya están en curso.
+              </p>
+            </>
           )}
         </section>
       )}

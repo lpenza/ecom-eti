@@ -3,7 +3,17 @@ import {
   obtenerCarritosAbandonados,
   sincronizarCarritosAbandonados,
   probarMensajeCarrito,
+  crearCarritoManual,
 } from '../services/api';
+
+// Mostrar el botón "Carrito de prueba" (oculto en producción; poner en true para testear)
+const MOSTRAR_CARRITO_PRUEBA = false;
+
+// Genera un link de recuperación aleatorio con el formato de Shopify (para pruebas)
+function linkAleatorio() {
+  const r = (n) => Math.random().toString(36).slice(2, 2 + n);
+  return `https://velinneuy.com/checkouts/cn/${r(12)}/recover?key=${r(16)}&locale=es-UY`;
+}
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -25,12 +35,34 @@ function formatHora(isoDate) {
     + ' ' + d.toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit' });
 }
 
-function estadoCarrito(c) {
-  if (c.recovered)         return { label: 'Recuperado',    color: '#16a34a', bg: '#dcfce7' };
-  if (c.msg2_sent_at)      return { label: 'Msg 2 enviado', color: '#6d28d9', bg: '#ede9fe' };
-  if (c.msg1_sent_at)      return { label: 'Msg 1 enviado', color: '#b45309', bg: '#fef3c7' };
-  if (!c.cliente_telefono) return { label: 'Sin teléfono',  color: '#6b7280', bg: '#f3f4f6' };
-  return                          { label: 'Sin contactar', color: '#dc2626', bg: '#fee2e2' };
+// Cantidad de pasos del flujo ya enviados para un carrito
+function pasosEnviados(c) {
+  return Object.keys(c.pasos_enviados || {}).length;
+}
+
+// Próximo paso pendiente (1-indexado) según el total de pasos del flujo, o null si ya está completo
+function proximoPaso(c, totalPasos) {
+  const enviados = c.pasos_enviados || {};
+  for (let n = 1; n <= totalPasos; n++) {
+    if (!enviados[n]) return n;
+  }
+  return null;
+}
+
+// Describe una demora en horas de forma legible (ej. 0.05 -> "3 min", 12 -> "12 h")
+function describirDemora(horas) {
+  if (!Number.isFinite(horas)) return '—';
+  if (horas < 1) return `${Math.round(horas * 60)} min`;
+  return Number.isInteger(horas) ? `${horas} h` : `${horas.toFixed(1)} h`;
+}
+
+function estadoCarrito(c, totalPasos) {
+  if (c.recovered)                  return { label: 'Recuperado',     color: '#16a34a', bg: '#dcfce7' };
+  const n = pasosEnviados(c);
+  if (totalPasos > 0 && n >= totalPasos) return { label: 'Flujo completo', color: '#6d28d9', bg: '#ede9fe' };
+  if (n > 0)                        return { label: `Paso ${n} enviado`, color: '#b45309', bg: '#fef3c7' };
+  if (!c.cliente_telefono)          return { label: 'Sin teléfono',   color: '#6b7280', bg: '#f3f4f6' };
+  return                                   { label: 'Sin contactar',  color: '#dc2626', bg: '#fee2e2' };
 }
 
 function StatPill({ label, value, color }) {
@@ -50,11 +82,19 @@ function StatPill({ label, value, color }) {
 
 export default function CarritosAbandonadosPanel({ mostrarToast }) {
   const [carritos, setCarritos]         = useState([]);
-  const [stats, setStats]               = useState({ total: 0, sin_contactar: 0, esperando_msg2: 0, recuperados: 0 });
+  const [stats, setStats]               = useState({ total: 0, sin_contactar: 0, en_flujo: 0, recuperados: 0, sin_telefono: 0 });
+  const [flujo, setFlujo]               = useState([]); // pasos del flujo: [{ template, demoraHoras }]
   const [loading, setLoading]           = useState(false);
   const [sincronizando, setSincronizando] = useState(false);
   const [enviando, setEnviando]         = useState(null); // id del carrito enviando
   const [filtro, setFiltro]             = useState('todos'); // todos | pendientes | enviados | recuperados
+
+  // Formulario "carrito de prueba"
+  const [mostrarFormManual, setMostrarFormManual] = useState(false);
+  const [manualTel, setManualTel]       = useState('');
+  const [manualNombre, setManualNombre] = useState('');
+  const [manualLink, setManualLink]     = useState('');
+  const [creandoManual, setCreandoManual] = useState(false);
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -63,6 +103,7 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
       if (res.success) {
         setCarritos(res.carritos || []);
         setStats(res.stats || {});
+        setFlujo(res.flujo || []);
       }
     } catch (err) {
       mostrarToast(`Error cargando carritos: ${err.message}`, 'error');
@@ -86,15 +127,15 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
     }
   }
 
-  async function handleProbar(carrito, msgNum) {
+  async function handleProbar(carrito, pasoNum) {
     if (!carrito.cliente_telefono) {
       mostrarToast('Este carrito no tiene teléfono registrado', 'error');
       return;
     }
-    setEnviando(`${carrito.id}-${msgNum}`);
+    setEnviando(`${carrito.id}-${pasoNum}`);
     try {
-      const res = await probarMensajeCarrito(carrito.id, msgNum);
-      mostrarToast(`Msg ${msgNum} enviado a ${res.carrito} (${res.telefono})`, 'ok');
+      const res = await probarMensajeCarrito(carrito.id, pasoNum);
+      mostrarToast(`Paso ${pasoNum} enviado a ${res.carrito} (${res.telefono})`, 'ok');
       await cargar();
     } catch (err) {
       mostrarToast(`Error: ${err.message}`, 'error');
@@ -103,12 +144,41 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
     }
   }
 
+  function abrirFormManual() {
+    setManualLink(linkAleatorio());
+    setMostrarFormManual(true);
+  }
+
+  async function handleCrearManual() {
+    if (!manualTel.trim()) {
+      mostrarToast('Ingresá un teléfono', 'error');
+      return;
+    }
+    setCreandoManual(true);
+    try {
+      await crearCarritoManual({
+        telefono: manualTel.trim(),
+        nombre:   manualNombre.trim() || 'Prueba',
+        cartUrl:  manualLink.trim() || undefined,
+      });
+      mostrarToast('Carrito de prueba creado — tocá "▶ Enviar próximo" para mandar el WhatsApp', 'ok');
+      setMostrarFormManual(false);
+      setManualTel(''); setManualNombre(''); setManualLink('');
+      await cargar();
+    } catch (err) {
+      mostrarToast(`Error creando carrito: ${err.message}`, 'error');
+    } finally {
+      setCreandoManual(false);
+    }
+  }
+
   const carritosFiltrados = carritos.filter(c => {
-    if (filtro === 'pendientes')   return !c.msg1_sent_at && !c.recovered && c.cliente_telefono;
-    if (filtro === 'en_flujo')     return c.msg1_sent_at  && !c.recovered;
+    if (filtro === 'pendientes')   return pasosEnviados(c) === 0 && !c.recovered && c.cliente_telefono;
+    if (filtro === 'en_flujo')     return pasosEnviados(c) > 0  && !c.recovered;
     if (filtro === 'recuperados')  return c.recovered;
     if (filtro === 'sin_telefono') return !c.cliente_telefono && !c.recovered;
-    return true;
+    // "Todos" = vista inicial: solo carritos con teléfono (los accionables/mensajeables)
+    return Boolean(c.cliente_telefono);
   });
 
   return (
@@ -124,21 +194,139 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
             Últimas 72 horas · Flujo automático de recuperación vía WhatsApp
           </p>
         </div>
-        <button
-          className="btn btn-primary"
-          onClick={handleSincronizar}
-          disabled={sincronizando}
-          style={{ whiteSpace: 'nowrap' }}
-        >
-          {sincronizando ? '⏳ Sincronizando...' : '🔄 Sincronizar Shopify'}
-        </button>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {MOSTRAR_CARRITO_PRUEBA && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => (mostrarFormManual ? setMostrarFormManual(false) : abrirFormManual())}
+              style={{
+                whiteSpace: 'nowrap', border: '1.5px solid #8b5cf6',
+                background: '#f5f3ff', color: '#6d28d9', fontWeight: 600,
+              }}
+            >
+              {mostrarFormManual ? '✕ Cancelar' : '🧪 Carrito de prueba'}
+            </button>
+          )}
+          <button
+            className="btn btn-primary"
+            onClick={handleSincronizar}
+            disabled={sincronizando}
+            style={{ whiteSpace: 'nowrap' }}
+          >
+            {sincronizando ? '⏳ Sincronizando...' : '🔄 Sincronizar Shopify'}
+          </button>
+        </div>
       </div>
+
+      {/* Formulario carrito de prueba */}
+      {MOSTRAR_CARRITO_PRUEBA && mostrarFormManual && (
+        <div style={{
+          background: '#faf5ff', border: '1.5px solid #e9d5ff', borderRadius: 12,
+          padding: '16px 18px', marginBottom: 20,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#6d28d9', marginBottom: 10 }}>
+            🧪 Generar carrito de prueba
+          </div>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: '#6b7280' }}>
+              Teléfono *
+              <input
+                type="tel"
+                value={manualTel}
+                onChange={e => setManualTel(e.target.value)}
+                placeholder="099123456"
+                style={{ padding: '7px 10px', borderRadius: 6, border: '1.5px solid #d1d5db', fontSize: 13, minWidth: 150 }}
+              />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: '#6b7280' }}>
+              Nombre
+              <input
+                type="text"
+                value={manualNombre}
+                onChange={e => setManualNombre(e.target.value)}
+                placeholder="Prueba"
+                style={{ padding: '7px 10px', borderRadius: 6, border: '1.5px solid #d1d5db', fontSize: 13, minWidth: 150 }}
+              />
+            </label>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11, color: '#6b7280', flex: 1, minWidth: 240 }}>
+              Link del carrito (aleatorio, editable)
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input
+                  type="text"
+                  value={manualLink}
+                  onChange={e => setManualLink(e.target.value)}
+                  style={{ padding: '7px 10px', borderRadius: 6, border: '1.5px solid #d1d5db', fontSize: 13, flex: 1 }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setManualLink(linkAleatorio())}
+                  title="Generar otro link aleatorio"
+                  style={{ padding: '7px 10px', borderRadius: 6, border: '1.5px solid #d1d5db', background: '#fff', cursor: 'pointer', fontSize: 13 }}
+                >
+                  🎲
+                </button>
+              </div>
+            </label>
+            <button
+              type="button"
+              onClick={handleCrearManual}
+              disabled={creandoManual}
+              className="btn btn-primary"
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              {creandoManual ? '⏳ Creando...' : '➕ Crear carrito'}
+            </button>
+          </div>
+          <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 10 }}>
+            Se crea en la lista con teléfono. Después tocá <strong>▶ Msg 1</strong> en su fila para enviar el WhatsApp de prueba (ignora el horario y el interruptor automático).
+          </div>
+        </div>
+      )}
+
+      {/* Resumen del flujo configurado (solo lectura) */}
+      {flujo.length > 0 && (
+        <div style={{
+          background: '#f8fafc', border: '1.5px solid #e5e7eb', borderRadius: 12,
+          padding: '14px 18px', marginBottom: 22,
+        }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--brand-primary)' }}>
+              ⚙️ Flujo de recuperación · {flujo.length} mensaje{flujo.length === 1 ? '' : 's'}
+            </span>
+            <span style={{ fontSize: 11, color: '#9ca3af' }}>
+              Configurable en <strong>Administración → Carritos abandonados</strong>
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {flujo.map((paso, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, flexWrap: 'wrap' }}>
+                <span style={{
+                  flexShrink: 0, display: 'inline-block', minWidth: 56, textAlign: 'center',
+                  padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 600,
+                  color: '#b45309', background: '#fef3c7',
+                }}>
+                  Paso {i + 1}
+                </span>
+                <code style={{ background: '#fff', border: '1px solid #e5e7eb', padding: '2px 7px', borderRadius: 5, color: '#374151' }}>
+                  {paso.template}
+                </code>
+                <span style={{ color: '#6b7280' }}>
+                  {i === 0
+                    ? `a los ${describirDemora(paso.demoraHoras)} del abandono`
+                    : `${describirDemora(paso.demoraHoras)} después del Paso ${i}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Stats */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 22, flexWrap: 'wrap' }}>
         <StatPill label="Total"          value={stats.total}          color="#374151" />
         <StatPill label="Sin contactar"  value={stats.sin_contactar}  color="#dc2626" />
-        <StatPill label="Esperando Msg 2" value={stats.esperando_msg2} color="#b45309" />
+        <StatPill label="En flujo"       value={stats.en_flujo}       color="#b45309" />
         <StatPill label="Recuperados"    value={stats.recuperados}    color="#16a34a" />
         <StatPill label="Sin teléfono"   value={stats.sin_telefono}   color="#6b7280" />
       </div>
@@ -181,7 +369,7 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ background: '#f9fafb', borderBottom: '2px solid #e5e7eb' }}>
-                {['Cliente', 'Teléfono', 'Total', 'Abandonado', 'Estado', 'Msg 1', 'Msg 2', 'Acciones'].map(h => (
+                {['Cliente', 'Teléfono', 'Total', 'Abandonado', 'Estado', 'Mensajes', 'Acciones'].map(h => (
                   <th key={h} style={{ padding: '10px 12px', textAlign: 'left', fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>
                     {h}
                   </th>
@@ -190,12 +378,11 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
             </thead>
             <tbody>
               {carritosFiltrados.map(c => {
-                const estado = estadoCarrito(c);
-                const enviandoMsg1 = enviando === `${c.id}-1`;
-                const enviandoMsg2 = enviando === `${c.id}-2`;
+                const estado = estadoCarrito(c, flujo.length);
                 const tieneTelefono = Boolean(c.cliente_telefono);
-                const puedeMsg1 = tieneTelefono && !c.msg1_sent_at && !c.recovered;
-                const puedeMsg2 = tieneTelefono && c.msg1_sent_at && !c.msg2_sent_at && !c.recovered;
+                const siguiente = proximoPaso(c, flujo.length); // próximo paso a enviar (o null si completo)
+                const puedeEnviar = tieneTelefono && !c.recovered && siguiente !== null;
+                const enviandoEste = siguiente !== null && enviando === `${c.id}-${siguiente}`;
 
                 return (
                   <tr key={c.id} style={{ borderBottom: '1px solid #f3f4f6', opacity: tieneTelefono ? 1 : 0.55 }}
@@ -236,54 +423,54 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
                       </span>
                     </td>
 
-                    {/* Msg 1 */}
-                    <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
-                      {c.msg1_sent_at
-                        ? <span style={{ color: '#16a34a', fontSize: 12 }}>✓ {formatHora(c.msg1_sent_at)}</span>
-                        : <span style={{ color: '#d1d5db', fontSize: 11 }}>pendiente</span>
-                      }
-                    </td>
-
-                    {/* Msg 2 */}
-                    <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
-                      {c.msg2_sent_at
-                        ? <span style={{ color: '#16a34a', fontSize: 12 }}>✓ {formatHora(c.msg2_sent_at)}</span>
-                        : c.msg1_sent_at
-                          ? <span style={{ color: '#b45309', fontSize: 11 }}>en 12h</span>
-                          : <span style={{ color: '#d1d5db', fontSize: 11 }}>—</span>
-                      }
+                    {/* Mensajes (un paso por línea, según el flujo configurado) */}
+                    <td style={{ padding: '10px 12px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        {flujo.length === 0 ? (
+                          <span style={{ color: '#d1d5db', fontSize: 11 }}>—</span>
+                        ) : (
+                          flujo.map((paso, i) => {
+                            const n = i + 1;
+                            const sentAt = c.pasos_enviados?.[n];
+                            const esProximo = n === siguiente;
+                            return (
+                              <span
+                                key={n}
+                                title={`Paso ${n} · ${paso.template} · demora ${paso.demoraHoras}h`}
+                                style={{ fontSize: 11, color: sentAt ? '#16a34a' : esProximo ? '#b45309' : '#9ca3af', whiteSpace: 'nowrap' }}
+                              >
+                                {sentAt
+                                  ? `✓ P${n} · ${formatHora(sentAt)}`
+                                  : esProximo
+                                    ? `P${n} · próximo`
+                                    : `P${n} · pendiente`}
+                              </span>
+                            );
+                          })
+                        )}
+                      </div>
                     </td>
 
                     {/* Acciones */}
                     <td style={{ padding: '10px 12px', whiteSpace: 'nowrap' }}>
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <button
-                          type="button"
-                          disabled={!puedeMsg1 || !!enviando}
-                          onClick={() => handleProbar(c, 1)}
-                          style={{
-                            padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 500,
-                            border: '1px solid', cursor: puedeMsg1 ? 'pointer' : 'not-allowed',
-                            opacity: puedeMsg1 ? 1 : 0.4,
-                            borderColor: '#3b82f6', background: '#eff6ff', color: '#1d4ed8',
-                          }}
-                        >
-                          {enviandoMsg1 ? '...' : '▶ Msg 1'}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={!puedeMsg2 || !!enviando}
-                          onClick={() => handleProbar(c, 2)}
-                          style={{
-                            padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 500,
-                            border: '1px solid', cursor: puedeMsg2 ? 'pointer' : 'not-allowed',
-                            opacity: puedeMsg2 ? 1 : 0.4,
-                            borderColor: '#8b5cf6', background: '#f5f3ff', color: '#6d28d9',
-                          }}
-                        >
-                          {enviandoMsg2 ? '...' : '▶ Msg 2'}
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        disabled={!puedeEnviar || !!enviando}
+                        onClick={() => handleProbar(c, siguiente)}
+                        title={puedeEnviar ? `Enviar paso ${siguiente} (${flujo[siguiente - 1]?.template || ''})` : undefined}
+                        style={{
+                          padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 500,
+                          border: '1px solid', cursor: puedeEnviar ? 'pointer' : 'not-allowed',
+                          opacity: puedeEnviar ? 1 : 0.4,
+                          borderColor: '#3b82f6', background: '#eff6ff', color: '#1d4ed8',
+                        }}
+                      >
+                        {enviandoEste
+                          ? '...'
+                          : siguiente !== null
+                            ? `▶ Enviar P${siguiente}`
+                            : '✓ Completo'}
+                      </button>
                     </td>
                   </tr>
                 );
@@ -294,7 +481,7 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
       )}
 
       <div style={{ marginTop: 16, fontSize: 11, color: '#9ca3af' }}>
-        {carritosFiltrados.length} carritos mostrados · El flujo automático corre cada 50 min · Sin envíos entre 23:00–09:00 UY
+        {carritosFiltrados.length} carritos mostrados · Flujo de {flujo.length || '—'} mensaje{flujo.length === 1 ? '' : 's'} · Corre cada 30 min · Sin envíos entre 23:00–09:00 UY
       </div>
     </div>
   );

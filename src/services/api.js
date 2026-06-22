@@ -488,6 +488,13 @@ export async function probarMensajeCarrito(cartId, msgNum) {
   });
 }
 
+export async function crearCarritoManual({ telefono, nombre, cartUrl }) {
+  return await fetchAPI('/carritos-abandonados/manual', {
+    method: 'POST',
+    body: JSON.stringify({ telefono, nombre, cartUrl }),
+  });
+}
+
 // ==================== MARCAR DESPACHADOS BULK ====================
 
 /**
