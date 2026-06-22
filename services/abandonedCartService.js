@@ -5,13 +5,111 @@ require('dotenv').config();
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// Nombres técnicos de las plantillas — verificar en Kommo → WhatsApp → Plantillas
-const TEMPLATE = {
-  1: process.env.WA_TEMPLATE_CARRITO_1 || 'intento_abandonado_v1',
-  2: process.env.WA_TEMPLATE_CARRITO_2 || 'intento_carrito_abandonado_1',
-};
-
 const HORA_MS = 60 * 60 * 1000;
+
+// ─── Flujo de mensajes (parametrizable) ──────────────────────────────────────
+// El flujo es una lista ORDENADA de pasos; cada paso define qué plantilla enviar
+// y cuántas horas esperar ANTES de mandarlo (medido desde el abandono para el
+// paso 1, o desde el envío del paso anterior para los siguientes).
+//
+// Se configura con la env var WA_FLOW (JSON). Ejemplo con 3 mensajes:
+//   WA_FLOW='[{"template":"intento_abandonado_v1","demoraHoras":1},
+//             {"template":"intento_carrito_abandonado_1","demoraHoras":12},
+//             {"template":"intento_carrito_abandonado_2","demoraHoras":24}]'
+//
+// Si WA_FLOW no está seteada se usa el flujo por defecto (2 mensajes: 1h y 12h),
+// que mantiene el comportamiento histórico. Las plantillas hay que crearlas y
+// aprobarlas en Meta (Kommo → WhatsApp → Plantillas) antes de usarlas.
+const FLUJO_DEFECTO = [
+  { template: process.env.WA_TEMPLATE_CARRITO_1 || 'intento_abandonado_v1',        demoraHoras: 1 },
+  { template: process.env.WA_TEMPLATE_CARRITO_2 || 'intento_carrito_abandonado_1', demoraHoras: 12 },
+];
+
+// Flujo desde env var WA_FLOW (o el default). Es el fallback cuando la tabla
+// de configuración abandoned_cart_flow está vacía.
+function obtenerFlujoEnv() {
+  const raw = process.env.WA_FLOW;
+  if (!raw) return FLUJO_DEFECTO;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('debe ser un array no vacío');
+    return parsed.map((p, i) => {
+      const template = String(p.template || '').trim();
+      const demoraHoras = Number(p.demoraHoras);
+      if (!template) throw new Error(`paso ${i + 1} sin "template"`);
+      if (!Number.isFinite(demoraHoras) || demoraHoras < 0) throw new Error(`paso ${i + 1} con "demoraHoras" inválida`);
+      return { template, demoraHoras };
+    });
+  } catch (err) {
+    console.error(`[AbandonedCart] ⚠️ WA_FLOW inválido (${err.message}); uso flujo por defecto`);
+    return FLUJO_DEFECTO;
+  }
+}
+
+// Flujo EFECTIVO usado por el motor de envíos. Prioridad:
+//   1. Tabla abandoned_cart_flow (editable desde Administración) — solo pasos activos
+//   2. env var WA_FLOW / flujo por defecto
+async function obtenerFlujo() {
+  try {
+    const { data, error } = await supabase
+      .from('abandoned_cart_flow')
+      .select('template, demora_horas')
+      .eq('activo', true)
+      .order('orden', { ascending: true });
+
+    if (!error && Array.isArray(data) && data.length > 0) {
+      return data.map(r => ({ template: r.template, demoraHoras: Number(r.demora_horas) }));
+    }
+  } catch (err) {
+    console.error('[AbandonedCart] ⚠️ Error leyendo abandoned_cart_flow; uso WA_FLOW/default:', err.message);
+  }
+  return obtenerFlujoEnv();
+}
+
+// Devuelve la configuración del flujo para el editor de Administración (incluye
+// pasos inactivos y de dónde sale la config: 'db' o 'env').
+async function obtenerFlujoConfig() {
+  const { data, error } = await supabase
+    .from('abandoned_cart_flow')
+    .select('*')
+    .order('orden', { ascending: true });
+
+  if (error) throw new Error(error.message);
+
+  if (Array.isArray(data) && data.length > 0) {
+    return {
+      fuente: 'db',
+      pasos: data.map(r => ({ template: r.template, demoraHoras: Number(r.demora_horas), activo: r.activo })),
+    };
+  }
+  // Sin filas: devolvemos el flujo efectivo (env/default) como punto de partida editable
+  return { fuente: 'env', pasos: obtenerFlujoEnv().map(p => ({ ...p, activo: true })) };
+}
+
+// Reemplaza por completo la configuración del flujo con la lista provista.
+async function guardarFlujoConfig(pasos) {
+  if (!Array.isArray(pasos) || pasos.length === 0) {
+    throw new Error('El flujo debe tener al menos un mensaje');
+  }
+
+  const filas = pasos.map((p, i) => {
+    const template = String(p.template || '').trim();
+    const demora = Number(p.demoraHoras);
+    if (!template) throw new Error(`El paso ${i + 1} no tiene plantilla`);
+    if (!Number.isFinite(demora) || demora < 0) throw new Error(`El paso ${i + 1} tiene una demora inválida`);
+    return { orden: i + 1, template, demora_horas: demora, activo: p.activo !== false, updated_at: new Date().toISOString() };
+  });
+
+  // Reemplazo total: borrar todo e insertar la lista nueva
+  const { error: delErr } = await supabase.from('abandoned_cart_flow').delete().neq('id', 0);
+  if (delErr) throw new Error(delErr.message);
+
+  const { error: insErr } = await supabase.from('abandoned_cart_flow').insert(filas);
+  if (insErr) throw new Error(insErr.message);
+
+  console.log(`[AbandonedCart] 💾 Flujo actualizado: ${filas.length} pasos`);
+  return obtenerFlujoConfig();
+}
 
 // Uruguay es GMT-3 fijo (sin horario de verano)
 const URUGUAY_OFFSET_MS = -3 * HORA_MS;
@@ -104,30 +202,29 @@ function resolverContacto(checkout, clienteShopify, contactoCapturado) {
 }
 
 /**
- * Determina qué mensaje enviar según el estado del carrito:
+ * Determina qué paso del flujo enviar a un carrito, respetando el orden y las
+ * demoras configuradas en `flujo`. Los pasos se mandan de a uno y en secuencia.
  *
- *  Msg 1 → Carrito abandonado hace al menos 1h y msg1 todavía no fue enviado
- *  Msg 2 → Msg 1 ya fue enviado hace al menos 12h y msg2 todavía no fue enviado
- *
- * Retorna 1, 2, o null (nada que enviar).
+ * Retorna el número de paso (1-indexado) o null si no hay nada para enviar
+ * todavía (la demora aún no se cumplió, o el flujo ya está completo).
  */
-function determinarMensaje(carrito, ahora) {
-  const desde_abandono = ahora - new Date(carrito.abandoned_at).getTime();
+function determinarPaso(carrito, ahora, flujo) {
+  const enviados = carrito.pasos_enviados || {};
 
-  // Msg 1: primer contacto, mínimo 1 hora después del abandono
-  if (!carrito.msg1_sent_at && desde_abandono >= 1 * HORA_MS) {
-    return 1;
+  for (let i = 0; i < flujo.length; i++) {
+    const paso = i + 1;
+    if (enviados[paso]) continue; // ya enviado → mirar el siguiente
+
+    // Primer paso pendiente. Tiempo de referencia: el abandono (paso 1) o el
+    // momento en que se envió el paso anterior.
+    const refIso = i === 0 ? carrito.abandoned_at : enviados[paso - 1];
+    if (!refIso) return null; // el paso anterior aún no salió → esperar
+
+    const transcurrido = ahora - new Date(refIso).getTime();
+    return transcurrido >= flujo[i].demoraHoras * HORA_MS ? paso : null;
   }
 
-  // Msg 2: 12 horas después de que se envió el msg1
-  if (carrito.msg1_sent_at && !carrito.msg2_sent_at) {
-    const desde_msg1 = ahora - new Date(carrito.msg1_sent_at).getTime();
-    if (desde_msg1 >= 12 * HORA_MS) {
-      return 2;
-    }
-  }
-
-  return null;
+  return null; // flujo completo
 }
 
 function buildParams(carrito) {
@@ -147,7 +244,8 @@ async function procesarCarritosAbandonados() {
     return { procesados: 0, enviados: 0, razon: 'fuera_de_horario' };
   }
 
-  console.log('[AbandonedCart] ⏱ Iniciando ciclo de recuperación...');
+  const flujo = await obtenerFlujo();
+  console.log(`[AbandonedCart] ⏱ Iniciando ciclo de recuperación... (flujo de ${flujo.length} mensajes)`);
 
   // 1. Obtener carritos activos de Shopify (últimas 48h)
   let checkouts;
@@ -217,18 +315,18 @@ async function procesarCarritosAbandonados() {
       continue;
     }
 
-    // 3. Determinar qué mensaje enviar
-    const msgNum = determinarMensaje(carrito, ahora);
-    if (!msgNum) continue;
+    // 3. Determinar qué paso del flujo enviar
+    const pasoNum = determinarPaso(carrito, ahora, flujo);
+    if (!pasoNum) continue;
 
     // Interruptor de seguridad: si el envío automático no está activo,
     // sincronizamos los carritos pero NO mandamos WhatsApp.
     if (process.env.CARRITOS_ENVIO_ACTIVO !== 'true') {
-      console.log(`[AbandonedCart] 🔌 Envío desactivado (CARRITOS_ENVIO_ACTIVO≠true) — Msg ${msgNum} a ${carrito.cliente_telefono} OMITIDO`);
+      console.log(`[AbandonedCart] 🔌 Envío desactivado (CARRITOS_ENVIO_ACTIVO≠true) — Paso ${pasoNum} a ${carrito.cliente_telefono} OMITIDO`);
       continue;
     }
 
-    const templateName = TEMPLATE[msgNum];
+    const templateName = flujo[pasoNum - 1].template;
     const { nombre, cartUrl } = buildParams(carrito);
 
     // 4. Enviar vía Kommo WhatsApp
@@ -240,19 +338,20 @@ async function procesarCarritosAbandonados() {
         cartUrl,
       });
 
-      // 5. Registrar envío en DB
+      // 5. Registrar envío en DB (merge sobre los pasos ya enviados)
+      const pasosEnviados = { ...(carrito.pasos_enviados || {}), [pasoNum]: new Date().toISOString() };
       await supabase
         .from('abandoned_carts')
-        .update({ [`msg${msgNum}_sent_at`]: new Date().toISOString() })
+        .update({ pasos_enviados: pasosEnviados })
         .eq('shopify_checkout_id', carrito.shopify_checkout_id);
 
       enviados++;
       console.log(
-        `[AbandonedCart] ✅ Msg ${msgNum} → ${carrito.cliente_nombre} (${carrito.cliente_telefono}) | ${templateName}`
+        `[AbandonedCart] ✅ Paso ${pasoNum}/${flujo.length} → ${carrito.cliente_nombre} (${carrito.cliente_telefono}) | ${templateName}`
       );
     } catch (sendErr) {
       console.error(
-        `[AbandonedCart] ❌ Error msg ${msgNum} a ${carrito.cliente_telefono}:`,
+        `[AbandonedCart] ❌ Error paso ${pasoNum} a ${carrito.cliente_telefono}:`,
         sendErr.message
       );
     }
@@ -343,8 +442,12 @@ async function sincronizarDesdeShopify() {
   return { total: checkouts.length, nuevos, actualizados, conTelefono, sinTelefono, recuperados };
 }
 
-// Envía un mensaje de prueba a un carrito específico (por UUID de DB), ignorando restricción horaria
-async function probarMensaje(cartId, msgNum) {
+// Envía un mensaje de prueba de un paso del flujo a un carrito (por UUID de DB), ignorando restricción horaria
+async function probarMensaje(cartId, pasoNum) {
+  const flujo = await obtenerFlujo();
+  const paso = flujo[pasoNum - 1];
+  if (!paso) throw new Error(`Paso ${pasoNum} fuera del flujo (tiene ${flujo.length} pasos)`);
+
   const { data: carrito, error } = await supabase
     .from('abandoned_carts')
     .select('*')
@@ -354,20 +457,55 @@ async function probarMensaje(cartId, msgNum) {
   if (error || !carrito) throw new Error('Carrito no encontrado');
   if (!carrito.cliente_telefono) throw new Error('El carrito no tiene teléfono registrado');
 
-  const templateName = TEMPLATE[msgNum];
+  const templateName = paso.template;
   const nombre  = primerNombre(carrito.cliente_nombre);
   const cartUrl = carrito.abandoned_checkout_url || '';
 
   await kommoWhatsApp.enviarTemplate({ telefono: carrito.cliente_telefono, templateName, nombre, cartUrl });
 
-  // Registrar en DB
+  // Registrar en DB (merge sobre los pasos ya enviados)
+  const pasosEnviados = { ...(carrito.pasos_enviados || {}), [pasoNum]: new Date().toISOString() };
   await supabase
     .from('abandoned_carts')
-    .update({ [`msg${msgNum}_sent_at`]: new Date().toISOString() })
+    .update({ pasos_enviados: pasosEnviados })
     .eq('id', cartId);
 
-  console.log(`[AbandonedCart] 🧪 Prueba msg ${msgNum} → ${carrito.cliente_nombre} (${carrito.cliente_telefono})`);
-  return { carrito: carrito.cliente_nombre, telefono: carrito.cliente_telefono, templateName };
+  console.log(`[AbandonedCart] 🧪 Prueba paso ${pasoNum} → ${carrito.cliente_nombre} (${carrito.cliente_telefono}) | ${templateName}`);
+  return { carrito: carrito.cliente_nombre, telefono: carrito.cliente_telefono, templateName, paso: pasoNum };
+}
+
+// Crea un carrito de prueba manual en la DB para verificar que los mensajes llegan.
+// Genera un shopify_checkout_id sintético y, si no se pasa link, un link aleatorio
+// con el formato de una URL de recuperación de Shopify (path + query parseables).
+async function crearCarritoManual({ telefono, nombre, cartUrl } = {}) {
+  if (!telefono) throw new Error('Teléfono requerido');
+
+  const rand = (n) => Math.random().toString(36).slice(2, 2 + n);
+  const url = cartUrl ||
+    `https://velinneuy.com/checkouts/cn/${rand(12)}/recover?key=${rand(16)}&locale=es-UY`;
+
+  const fila = {
+    shopify_checkout_id:    `manual-${Date.now()}`,
+    abandoned_checkout_url: url,
+    cliente_nombre:         nombre || 'Prueba',
+    cliente_email:          null,
+    cliente_telefono:       telefono,
+    total_price:            0,
+    currency:               'UYU',
+    line_items:             [],
+    abandoned_at:           new Date().toISOString(),
+    last_checked_at:        new Date().toISOString(),
+  };
+
+  const { data, error } = await supabase
+    .from('abandoned_carts')
+    .upsert(fila, { onConflict: 'shopify_checkout_id' })
+    .select()
+    .single();
+
+  if (error) throw new Error(error.message);
+  console.log(`[AbandonedCart] 🧪 Carrito manual creado → ${telefono} | ${url}`);
+  return data;
 }
 
 async function obtenerCarritosDB() {
@@ -380,15 +518,19 @@ async function obtenerCarritosDB() {
 
   if (error) throw error;
 
+  const flujo = await obtenerFlujo();
+  const totalPasos = flujo.length;
+  const nEnviados = (c) => Object.keys(c.pasos_enviados || {}).length;
+
   const stats = {
-    total:          carritos.length,
-    sin_contactar:  carritos.filter(c => !c.msg1_sent_at && !c.recovered && c.cliente_telefono).length,
-    esperando_msg2: carritos.filter(c => c.msg1_sent_at && !c.msg2_sent_at && !c.recovered).length,
-    recuperados:    carritos.filter(c => c.recovered).length,
-    sin_telefono:   carritos.filter(c => !c.cliente_telefono && !c.recovered).length,
+    total:         carritos.length,
+    sin_contactar: carritos.filter(c => nEnviados(c) === 0 && !c.recovered && c.cliente_telefono).length,
+    en_flujo:      carritos.filter(c => nEnviados(c) > 0 && nEnviados(c) < totalPasos && !c.recovered).length,
+    recuperados:   carritos.filter(c => c.recovered).length,
+    sin_telefono:  carritos.filter(c => !c.cliente_telefono && !c.recovered).length,
   };
 
-  return { carritos, stats };
+  return { carritos, stats, flujo };
 }
 
-module.exports = { procesarCarritosAbandonados, marcarComoRecuperado, sincronizarDesdeShopify, probarMensaje, obtenerCarritosDB, guardarCheckoutCapturado };
+module.exports = { procesarCarritosAbandonados, marcarComoRecuperado, sincronizarDesdeShopify, probarMensaje, crearCarritoManual, obtenerCarritosDB, obtenerFlujo, obtenerFlujoConfig, guardarFlujoConfig, guardarCheckoutCapturado };

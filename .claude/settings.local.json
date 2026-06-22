@@ -25,7 +25,11 @@
       "Bash(node --check \"C:/Users/braya/Desktop/Veline apps/Velinne Envios/ecom-eti/services/supabaseService.js\")",
       "Bash(git add *)",
       "Bash(git checkout *)",
-      "Bash(git merge *)"
+      "Bash(git merge *)",
+      "Bash(npx --no-install esbuild src/components/CarritosAbandonadosPanel.jsx --loader:.jsx=jsx --bundle --external:react --external:../services/api --format=esm)",
+      "Bash(npx --no-install vite build)",
+      "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./package.json'\\).scripts,null,2\\)\\)\")",
+      "Bash(node -e \"const s=require\\('./services/abandonedCartService.js'\\); console.log\\('service exports:', ['obtenerFlujoConfig','guardarFlujoConfig','obtenerFlujo','obtenerCarritosDB'].map\\(k=>k+':'+\\(typeof s[k]\\)\\).join\\(' '\\)\\)\")"
     ]
   }
 }

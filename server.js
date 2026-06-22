@@ -57,7 +57,7 @@ const etiquetaPdfService = require('./services/etiquetaPdfService');
 const etiquetaPdfCleanup = require('./services/etiquetaPdfCleanup');
 const shopifyService = require('./services/shopifyService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
-const { procesarCarritosAbandonados, sincronizarDesdeShopify, probarMensaje, obtenerCarritosDB, guardarCheckoutCapturado } = require('./services/abandonedCartService');
+const { procesarCarritosAbandonados, sincronizarDesdeShopify, probarMensaje, crearCarritoManual, obtenerCarritosDB, obtenerFlujoConfig, guardarFlujoConfig, guardarCheckoutCapturado } = require('./services/abandonedCartService');
 const emailService = require('./services/emailService');
 const logService = require('./services/logService');
 
@@ -4654,17 +4654,56 @@ app.post('/api/checkout-capturado', async (req, res) => {
   }
 });
 
+// GET /api/admin/carritos-flujo — config del flujo de mensajes (solo admin)
+app.get('/api/admin/carritos-flujo', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const config = await obtenerFlujoConfig();
+    res.json({ success: true, ...config });
+  } catch (err) {
+    logService.error('Error obteniendo config de flujo de carritos', { error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// PUT /api/admin/carritos-flujo — reemplaza la config del flujo (solo admin)
+app.put('/api/admin/carritos-flujo', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { pasos } = req.body || {};
+    const config = await guardarFlujoConfig(pasos);
+    res.json({ success: true, ...config });
+  } catch (err) {
+    logService.error('Error guardando config de flujo de carritos', { error: err.message });
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/carritos-abandonados/manual — crea un carrito de prueba a mano (teléfono + link aleatorio)
+app.post('/api/carritos-abandonados/manual', requireAuth, async (req, res) => {
+  try {
+    const { telefono, nombre, cartUrl } = req.body || {};
+    if (!telefono) {
+      return res.status(400).json({ success: false, error: 'telefono requerido' });
+    }
+    const carrito = await crearCarritoManual({ telefono, nombre, cartUrl });
+    res.json({ success: true, carrito });
+  } catch (err) {
+    logService.error('Error creando carrito manual', { error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // POST /api/carritos-abandonados/:id/probar-mensaje — envía un mensaje de prueba ignorando restricción horaria
 app.post('/api/carritos-abandonados/:id/probar-mensaje', requireAuth, async (req, res) => {
   const { id } = req.params;
-  const { msgNum } = req.body; // 1 o 2
+  const { msgNum } = req.body; // número de paso del flujo (1-indexado)
+  const paso = Number(msgNum);
 
-  if (![1, 2].includes(Number(msgNum))) {
-    return res.status(400).json({ success: false, error: 'msgNum debe ser 1 o 2' });
+  if (!Number.isInteger(paso) || paso < 1) {
+    return res.status(400).json({ success: false, error: 'msgNum debe ser un entero ≥ 1' });
   }
 
   try {
-    const result = await probarMensaje(id, Number(msgNum));
+    const result = await probarMensaje(id, paso);
     res.json({ success: true, ...result });
   } catch (err) {
     logService.error('Error probando mensaje de carrito abandonado', { error: err.message, id, msgNum });
@@ -4688,8 +4727,8 @@ app.listen(PORT, async () => {
   // Arranca cleanup diario de PDFs MarcoPostal (retención env-configurable, default 7 días)
   etiquetaPdfCleanup.startScheduler();
 
-  // Cron: recuperación de carritos abandonados vía WhatsApp (cada 50 minutos)
-  cron.schedule('*/50 * * * *', async () => {
+  // Cron: recuperación de carritos abandonados vía WhatsApp (cada 30 minutos)
+  cron.schedule('*/30 * * * *', async () => {
     try {
       await procesarCarritosAbandonados();
     } catch (err) {
