@@ -237,11 +237,13 @@ function buildParams(carrito) {
 async function procesarCarritosAbandonados() {
   const ahora = Date.now();
 
-  // Respetar horario Uruguay: no enviar entre 23:00 y 09:00
-  if (!esHorarioPermitido()) {
+  // El ciclo SIEMPRE sincroniza los carritos desde Shopify. El ENVÍO de WhatsApp
+  // solo ocurre en horario permitido Uruguay (09:00–23:00); fuera de eso, se
+  // sincroniza igual pero no se manda nada.
+  const enHorario = esHorarioPermitido();
+  if (!enHorario) {
     const ahoraUY = new Date(Date.now() + URUGUAY_OFFSET_MS);
-    console.log(`[AbandonedCart] 🌙 Fuera de horario Uruguay (${ahoraUY.getUTCHours()}:${String(ahoraUY.getUTCMinutes()).padStart(2,'0')} UY) — ciclo omitido`);
-    return { procesados: 0, enviados: 0, razon: 'fuera_de_horario' };
+    console.log(`[AbandonedCart] 🌙 Fuera de horario Uruguay (${ahoraUY.getUTCHours()}:${String(ahoraUY.getUTCMinutes()).padStart(2,'0')} UY) — solo sincronizo, sin enviar`);
   }
 
   const flujo = await obtenerFlujo();
@@ -314,6 +316,10 @@ async function procesarCarritosAbandonados() {
         .eq('shopify_checkout_id', String(checkout.id));
       continue;
     }
+
+    // De acá en adelante es el ENVÍO. Fuera de horario el carrito ya quedó
+    // sincronizado arriba, pero no mandamos ningún mensaje.
+    if (!enHorario) continue;
 
     // 3. Determinar qué paso del flujo enviar
     const pasoNum = determinarPaso(carrito, ahora, flujo);

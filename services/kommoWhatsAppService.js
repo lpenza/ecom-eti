@@ -1,11 +1,15 @@
 const axios = require('axios');
 require('dotenv').config();
 
-// Normaliza teléfono uruguayo al formato internacional sin '+'
+// Normaliza teléfono uruguayo al formato internacional sin '+'.
+// UY: el 0 inicial es prefijo nacional y NO va en el formato internacional.
+//   095806208  → 59895806208   (no 598095806208)
 function normalizarTelefono(tel) {
-  const limpio = String(tel || '').replace(/\D/g, '');
+  let limpio = String(tel || '').replace(/\D/g, '');
   if (!limpio) return null;
-  return limpio.startsWith('598') ? limpio : `598${limpio}`;
+  if (limpio.startsWith('598')) return limpio;          // ya en formato internacional
+  if (limpio.startsWith('0')) limpio = limpio.slice(1); // quitar el 0 nacional
+  return `598${limpio}`;
 }
 
 /**
