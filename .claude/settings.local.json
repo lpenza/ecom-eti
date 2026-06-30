@@ -29,7 +29,14 @@
       "Bash(npx --no-install esbuild src/components/CarritosAbandonadosPanel.jsx --loader:.jsx=jsx --bundle --external:react --external:../services/api --format=esm)",
       "Bash(npx --no-install vite build)",
       "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./package.json'\\).scripts,null,2\\)\\)\")",
-      "Bash(node -e \"const s=require\\('./services/abandonedCartService.js'\\); console.log\\('service exports:', ['obtenerFlujoConfig','guardarFlujoConfig','obtenerFlujo','obtenerCarritosDB'].map\\(k=>k+':'+\\(typeof s[k]\\)\\).join\\(' '\\)\\)\")"
+      "Bash(node -e \"const s=require\\('./services/abandonedCartService.js'\\); console.log\\('service exports:', ['obtenerFlujoConfig','guardarFlujoConfig','obtenerFlujo','obtenerCarritosDB'].map\\(k=>k+':'+\\(typeof s[k]\\)\\).join\\(' '\\)\\)\")",
+      "Bash(node -e \"require\\('./services/abandonedCartService.js'\\); console.log\\('service OK'\\)\")",
+      "Bash(railway whoami *)",
+      "Bash(railway status *)",
+      "Bash(timeout 30 railway logs --service ecom-eti)",
+      "Bash(node -e \"require\\('./services/kommoWhatsAppService.js'\\); require\\('./services/abandonedCartService.js'\\); console.log\\('services OK'\\)\")",
+      "Bash(git fetch *)",
+      "Bash(git rev-list *)"
     ]
   }
 }
