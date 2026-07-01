@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { obtenerDetallePedido } from '../../services/api';
 
-export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirmarListos, onClose }) {
+export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirmarListos, onImprimirEtiqueta, onClose }) {
   const [index, setIndex] = useState(initialIndex);
   const [lineItemsByPedido, setLineItemsByPedido] = useState({});
   const [checkedByPedido, setCheckedByPedido] = useState({});
@@ -279,8 +279,8 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
 
                 {!isLoading && !error && lineItems.length > 0 && (
                   <>
-                    <li style={{ borderBottom: '1px solid #e2e8f0', paddingBottom: '0.5rem', marginBottom: '0.25rem', listStyle: 'none' }}>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontWeight: 600, color: '#475569', fontSize: '0.85rem' }}>
+                    <li style={{ borderBottom: '1px solid var(--border-soft)', paddingBottom: '0.5rem', marginBottom: '0.25rem', listStyle: 'none' }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', cursor: 'pointer', fontWeight: 600, color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                         <input type="checkbox" checked={allChecked} onChange={toggleAll} disabled={isConfirmed} />
                         Marcar todos
                       </label>
@@ -291,9 +291,9 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
                           const done = checked.has(item.id);
                           return (
                             <li key={item.id} style={{
-                              border: `1px solid ${done ? '#86efac' : '#e2e8f0'}`,
+                              border: `1px solid ${done ? '#86efac' : 'var(--border-soft)'}`,
                               borderRadius: '8px',
-                              background: done ? '#dcfce7' : '#ffffff',
+                              background: done ? 'var(--success-bg)' : 'var(--surface-card)',
                               transition: 'background 0.15s ease, border-color 0.15s ease',
                             }}>
                               <label style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.7rem 0.9rem', cursor: isConfirmed ? 'default' : 'pointer', width: '100%' }}>
@@ -304,18 +304,18 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
                                   disabled={isConfirmed}
                                 />
                                 <span style={{ flex: 1, minWidth: 0 }}>
-                                  <span style={{ display: 'block', fontWeight: 600, fontSize: '0.92rem', color: '#0f172a' }}>{item.title}</span>
+                                  <span style={{ display: 'block', fontWeight: 600, fontSize: '0.92rem', color: done ? '#0f172a' : 'var(--text-strong)' }}>{item.title}</span>
                                   {item.variant_title && (
-                                    <span style={{ display: 'block', fontSize: '0.8rem', color: '#64748b' }}>{item.variant_title}</span>
+                                    <span style={{ display: 'block', fontSize: '0.8rem', color: done ? '#334155' : 'var(--text-muted)' }}>{item.variant_title}</span>
                                   )}
                                   {item.sku && (
-                                    <span style={{ display: 'block', fontSize: '0.74rem', color: '#94a3b8' }}>SKU: {item.sku}</span>
+                                    <span style={{ display: 'block', fontSize: '0.74rem', color: done ? '#475569' : 'var(--text-muted)' }}>SKU: {item.sku}</span>
                                   )}
                                   {item._fromPedido && (
                                     <span style={{ display: 'block', fontSize: '0.72rem', color: '#b45309', fontWeight: 600 }}>Pedido #{item._fromPedido}</span>
                                   )}
                                 </span>
-                                <span style={{ fontWeight: 700, color: '#7b2f4d', whiteSpace: 'nowrap' }}>x{item.quantity}</span>
+                                <span style={{ fontWeight: 700, color: done ? '#7b2f4d' : 'var(--brand-primary)', whiteSpace: 'nowrap' }}>x{item.quantity}</span>
                               </label>
                             </li>
                           );
@@ -332,6 +332,18 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
         {/* Footer */}
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+          {onImprimirEtiqueta && (
+            <button
+              className="btn btn-secondary"
+              onClick={() => onImprimirEtiqueta(pedido)}
+              disabled={!String(pedido.link_etiqueta_drive || '').trim()}
+              title={String(pedido.link_etiqueta_drive || '').trim()
+                ? 'Imprimir/descargar la etiqueta de este pedido'
+                : 'Este pedido no tiene etiqueta PDF disponible'}
+            >
+              🖨️ Imprimir etiqueta
+            </button>
+          )}
           <button
             className="btn btn-primary"
             disabled={!canConfirmar || !!confirmingId}

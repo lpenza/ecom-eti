@@ -574,6 +574,17 @@ export async function obtenerPedidosDespachados() {
 }
 
 /**
+ * Marcar/desmarcar un pedido despachado como retirado por la cadetería.
+ * Guarda fecha/hora (UY) y quién marcó en la BD; al desmarcar limpia el registro.
+ */
+export async function marcarRetiroCadeteria(pedidoId, retirado) {
+  return await fetchAPI(`/pedidos/${pedidoId}/cadeteria`, {
+    method: 'POST',
+    body: JSON.stringify({ retirado }),
+  });
+}
+
+/**
  * Obtener pedidos procesados (fulfillment enviado a Shopify)
  */
 export async function obtenerPedidosEnviados() {
