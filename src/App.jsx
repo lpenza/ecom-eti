@@ -38,6 +38,7 @@ import {
   marcarArmados,
   marcarDespachados,
   marcarProcesados,
+  revertirAEtiquetaGenerada,
   obtenerPedidosPickup,
   obtenerPedidosRecibilo,
   obtenerPedidosReenvio,
@@ -46,6 +47,7 @@ import {
   reprocesarPedidoShopify,
   generarGuiaMarcoPostalWeb,
   obtenerStockPlannerSSO,
+  marcarRetiroCadeteria,
 } from './services/api';
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
 import ArmadorPanel from './components/ArmadorPanel';
@@ -1477,19 +1479,22 @@ function AppContent({ user, logout }) {
     const ids = (pedidosSeleccionados || []).map((p) => p.id);
     if (ids.length === 0) return;
     try {
-      const resultados = await Promise.all(
-        ids.map((id) => marcarRetiroCadeteria(id, true).catch(() => ({ success: false })))
+      const resultados = await Promise.allSettled(
+        ids.map((id) => marcarRetiroCadeteria(id, true))
       );
-      const ok = resultados.filter((r) => r?.success).length;
-      if (ok < ids.length) {
-        mostrarToast(`⚠️ ${ok}/${ids.length} confirmados — algunos fallaron`, 'warning');
-      } else {
+      const ok = resultados.filter((r) => r.status === 'fulfilled' && r.value?.success).length;
+      if (ok === ids.length) {
         mostrarToast(`✅ ${ok} paquete(s) confirmados para cadetería`, 'success');
+      } else {
+        // Surface el error real (sesión vencida, red, etc.) en vez de esconderlo.
+        const fallo = resultados.find((r) => r.status === 'rejected' || !r.value?.success);
+        const detalle = fallo?.reason?.message || fallo?.value?.error || 'error desconocido';
+        mostrarToast(`⚠️ ${ok}/${ids.length} confirmados — ${detalle}`, 'error');
       }
       await cargarPedidosDespachados();
     } catch (error) {
       console.error('Error al confirmar retiros de cadetería:', error);
-      mostrarToast('Error al confirmar los retiros de cadetería', 'error');
+      mostrarToast(`Error al confirmar los retiros: ${error?.message || 'desconocido'}`, 'error');
     }
   };
 
@@ -1958,6 +1963,33 @@ function AppContent({ user, logout }) {
     } catch { mostrarToast('Error al procesar pedidos', 'error'); }
   };
 
+  // Deshacer un despacho/procesado hecho sin querer: devuelve el pedido a "Etiquetas Generadas".
+  const handleRevertirEtiqueta = async (pedidoId) => {
+    const ids = Array.isArray(pedidoId) ? pedidoId : [pedidoId];
+    if (ids.length === 0) return;
+    const msg = ids.length > 1
+      ? `¿Volver ${ids.length} pedidos al estado "Etiqueta Generada"?`
+      : '¿Volver este pedido al estado "Etiqueta Generada"?';
+    if (!window.confirm(msg)) return;
+    try {
+      const resultado = await revertirAEtiquetaGenerada(ids);
+      if (!resultado.success) { mostrarToast(resultado.error || 'Error al revertir', 'error'); return; }
+      const ok = resultado.ok ?? resultado.resultados?.filter((r) => r.success).length ?? 0;
+      const fallidos = (resultado.resultados || []).filter((r) => !r.success);
+      if (ok > 0) {
+        mostrarToast(ok > 1 ? `↩️ ${ok} pedidos vueltos a Etiqueta Generada` : '↩️ Pedido vuelto a Etiqueta Generada', 'success');
+      }
+      if (fallidos.length > 0) {
+        mostrarToast(fallidos[0].error || `${fallidos.length} pedido(s) no se pudieron revertir`, 'warning');
+      }
+      cargarPedidosEnviados();
+      cargarPedidosDespachados();
+      cargarPedidos();
+    } catch (err) {
+      mostrarToast(`Error al revertir: ${err.message}`, 'error');
+    }
+  };
+
   return (
     <div className="app app-shell">
       {/* Barra superior solo visible en mobile: hamburguesa + marca + tema */}
@@ -2023,6 +2055,17 @@ function AppContent({ user, logout }) {
             >
               <span className="side-nav-icon">🚚</span>
               Cadetería
+            </button>
+          )}
+          {!esAdmin && !esAtencion && (
+            <button
+              type="button"
+              className="side-nav-item side-nav-cta"
+              onClick={handleAbrirStockPlanner}
+              title="Abrir StockPlanner (Pedidos en camino)"
+            >
+              <span className="side-nav-icon">📊</span>
+              StockPlanner
             </button>
           )}
           {user.role === 'admin' && (
@@ -2679,6 +2722,7 @@ function AppContent({ user, logout }) {
                   mostrarToast(`Error al procesar: ${err.message}`, 'error');
                 }
               }}
+              onRevertirEtiqueta={(tableFilter === 'enviados' || tableFilter === 'despachados') ? handleRevertirEtiqueta : undefined}
               fulfillmentPreview={fulfillmentPreviewIds !== null}
               channelPriority={channelPriority}
               showNotifyColumn={tableFilter !== 'porValidar'}
@@ -2917,6 +2961,7 @@ function AppContent({ user, logout }) {
         <ArmadorPanel
           pedidos={pedidosArmadoOperario}
           onActualizar={cargarPedidosArmadoOperario}
+          onAbrirStockPlanner={handleAbrirStockPlanner}
           onImprimirEtiqueta={(pedido) => handleDescargarEtiqueta(pedido.id)}
           onImprimirEtiquetas={imprimirEtiquetasDePedidos}
           onMarcarArmadoBulk={async (primaryIds, secondaryIds = []) => {

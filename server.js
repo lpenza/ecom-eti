@@ -143,18 +143,40 @@ const STOCKPLANNER = {
   supabaseUrl: process.env.STOCKPLANNER_SUPABASE_URL || 'https://fnfmgenoqarlwjlbpdey.supabase.co',
   anonKey: process.env.STOCKPLANNER_SUPABASE_ANON_KEY
     || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZuZm1nZW5vcWFybHdqbGJwZGV5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE3OTQ1MzMsImV4cCI6MjA5NzM3MDUzM30.kULVEBwNNVayduVbpkWNNTSks3g-Kg_YhIKdozDUYYI',
+  // Cuenta del dueño (admin): ve todo StockPlanner.
   email: process.env.STOCKPLANNER_EMAIL || '',
   password: process.env.STOCKPLANNER_PASSWORD || '',
+  // Cuenta del armador (rol "user"): entra con su propia cuenta de Supabase
+  // que tiene role='armador' + owner_id en StockPlanner y sólo ve /transito.
+  armadorEmail: process.env.STOCKPLANNER_ARMADOR_EMAIL || '',
+  armadorPassword: process.env.STOCKPLANNER_ARMADOR_PASSWORD || '',
   // Ruta de StockPlanner que recibe los tokens en el hash y llama a
   // supabase.auth.setSession() para escribir las cookies (auto-login real).
   // Hasta que esa ruta exista, dejamos '/login' (abre el login, sin sesión automática).
   ssoPath: process.env.STOCKPLANNER_SSO_PATH || '/login',
 };
 
-app.get('/api/admin/stockplanner-sso', requireAuth, requireAdmin, async (req, res) => {
+// Acceso a StockPlanner: admin (cuenta dueño) o armador (rol "user", cuenta acotada).
+// atencion u otros roles no tienen acceso.
+app.get('/api/admin/stockplanner-sso', requireAuth, async (req, res) => {
   try {
-    if (!STOCKPLANNER.email || !STOCKPLANNER.password) {
-      return res.status(500).json({ success: false, error: 'Faltan STOCKPLANNER_EMAIL / STOCKPLANNER_PASSWORD en el entorno' });
+    const rol = req.user?.role;
+    let email, password;
+    if (rol === 'admin') {
+      email = STOCKPLANNER.email;
+      password = STOCKPLANNER.password;
+    } else if (rol === 'user') {
+      email = STOCKPLANNER.armadorEmail;
+      password = STOCKPLANNER.armadorPassword;
+    } else {
+      return res.status(403).json({ success: false, error: 'Sin acceso a StockPlanner' });
+    }
+
+    if (!email || !password) {
+      const faltan = rol === 'admin'
+        ? 'STOCKPLANNER_EMAIL / STOCKPLANNER_PASSWORD'
+        : 'STOCKPLANNER_ARMADOR_EMAIL / STOCKPLANNER_ARMADOR_PASSWORD';
+      return res.status(500).json({ success: false, error: `Faltan ${faltan} en el entorno` });
     }
 
     // Si no hay una ruta SSO en StockPlanner, sólo abrimos el login (sin tokens en la URL).
@@ -164,7 +186,7 @@ app.get('/api/admin/stockplanner-sso', requireAuth, requireAdmin, async (req, re
 
     const { data } = await axios.post(
       `${STOCKPLANNER.supabaseUrl}/auth/v1/token?grant_type=password`,
-      { email: STOCKPLANNER.email, password: STOCKPLANNER.password },
+      { email, password },
       {
         headers: {
           apikey: STOCKPLANNER.anonKey,
@@ -2250,6 +2272,62 @@ app.post('/api/marcar-procesados-bulk', requireAuth, async (req, res) => {
     res.json({ success: true, ok, total: pedidoIds.length, resultados });
   } catch (error) {
     logService.error('Error en marcar-procesados-bulk', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Revertir uno o varios pedidos a "Etiqueta Generada".
+// Uso: cuando un pedido se marcó como despachado/procesado sin querer y hay que
+// devolverlo al estado previo (antes de despachar) conservando su etiqueta/tracking.
+// Deja los campos igual que recién generada la etiqueta (ver flujo MarcoPostal Web).
+app.post('/api/revertir-a-etiqueta-generada-bulk', requireAuth, async (req, res) => {
+  try {
+    const { pedidoIds } = req.body;
+    if (!Array.isArray(pedidoIds) || pedidoIds.length === 0) {
+      return res.status(400).json({ success: false, error: 'pedidoIds requerido' });
+    }
+
+    const resultados = await Promise.all(
+      pedidoIds.map(async (pedidoId) => {
+        try {
+          const pedido = await supabaseService.obtenerPedido(pedidoId);
+          if (!pedido) return { pedidoId, success: false, error: 'No encontrado' };
+
+          // Solo tiene sentido volver a "etiqueta generada" si realmente hay etiqueta.
+          if (!pedido.etiqueta_generada || !String(pedido.numero_seguimiento_ues || '').trim()) {
+            return {
+              pedidoId,
+              numeroPedido: pedido.numero_pedido,
+              success: false,
+              error: 'El pedido no tiene etiqueta generada para volver a ese estado',
+            };
+          }
+
+          // Conserva numero_seguimiento_ues y link_etiqueta_drive; limpia todo lo
+          // que lo movió a despachado/procesado para que reaparezca en Etiquetas Generadas.
+          await supabaseService.actualizarPedido(pedidoId, {
+            estado: 'pendiente',
+            etiqueta_generada: true,
+            notificacion_enviada_at: null,
+            despachado_por_nombre: null,
+            armado_at: null,
+            retirado_cadeteria_at: null,
+            retirado_cadeteria_por: null,
+          });
+
+          return { pedidoId, numeroPedido: pedido.numero_pedido, success: true };
+        } catch (err) {
+          logService.warning(`No se pudo revertir a etiqueta generada pedido ${pedidoId}: ${err.message}`);
+          return { pedidoId, success: false, error: err.message };
+        }
+      })
+    );
+
+    const ok = resultados.filter((r) => r.success).length;
+    logService.info(`Revertidos a etiqueta generada: ${ok}/${pedidoIds.length}`);
+    res.json({ success: true, ok, total: pedidoIds.length, resultados });
+  } catch (error) {
+    logService.error('Error en revertir-a-etiqueta-generada-bulk', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

@@ -5025,6 +5025,12 @@ body {
   gap: 1rem;
 }
 
+.armador-panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .armador-panel-title {
   font-size: 1.4rem;
   font-family: Georgia, 'Times New Roman', serif;

@@ -146,6 +146,7 @@ function PedidosTable({
   onGenerarEtiquetaMP,
   onGenerarEtiquetaUES,
   onProcesarDirecto,
+  onRevertirEtiqueta,
   onGuardarLinkDrive,
   fulfillmentPreview,
   channelPriority = 'email',
@@ -272,6 +273,7 @@ function PedidosTable({
                     onGenerarEtiquetaUES={onGenerarEtiquetaUES}
                     onPreviewEtiqueta={setPreviewPedido}
                     onProcesarDirecto={onProcesarDirecto}
+                    onRevertirEtiqueta={onRevertirEtiqueta}
                     onGuardarLinkDrive={onGuardarLinkDrive}
                     fulfillmentPreview={fulfillmentPreview}
                     channelPriority={channelPriority}
@@ -306,6 +308,7 @@ function PedidoRow({
   onGenerarEtiquetaUES,
   onPreviewEtiqueta,
   onProcesarDirecto,
+  onRevertirEtiqueta,
   onGuardarLinkDrive,
   fulfillmentPreview = false,
   channelPriority = 'email',
@@ -595,6 +598,20 @@ function PedidoRow({
                 title="Descartar esta etiqueta y volver a validacion"
               >
                 ↩️ Descartar
+              </button>
+            )}
+
+            {/* Deshacer un despacho/procesado hecho sin querer: vuelve a Etiquetas Generadas */}
+            {onRevertirEtiqueta && !fulfillmentPreview && Boolean(pedido.etiqueta_generada) && (
+              <button
+                className="btn btn-outline-danger btn-sm"
+                onClick={() => {
+                  const ids = pedido._mergedIds || [pedido.id];
+                  onRevertirEtiqueta(ids);
+                }}
+                title="Volver este pedido al estado Etiqueta Generada (se despachó/procesó sin querer)"
+              >
+                ↩️ A etiqueta generada
               </button>
             )}
 

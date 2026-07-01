@@ -53,8 +53,6 @@ export default function CadeteriaPanel({ pedidos = [], onConfirmarRetiros, onDes
   }, [pedidos, busqueda]);
 
   const retirados = pedidos.filter((p) => Boolean(p.retirado_cadeteria_at)).length;
-  const pendientes = filtrados.filter((p) => !p.retirado_cadeteria_at);
-  const todosPendientesSeleccionados = pendientes.length > 0 && pendientes.every((p) => selected.has(p.id));
 
   const toggleSelect = (pedido) => {
     setSelected((prev) => {
@@ -63,14 +61,6 @@ export default function CadeteriaPanel({ pedidos = [], onConfirmarRetiros, onDes
       else next.add(pedido.id);
       return next;
     });
-  };
-
-  const toggleSelectAll = () => {
-    if (todosPendientesSeleccionados) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(pendientes.map((p) => p.id)));
-    }
   };
 
   const handleConfirmar = async () => {
@@ -125,15 +115,6 @@ export default function CadeteriaPanel({ pedidos = [], onConfirmarRetiros, onDes
           <button type="button" className="cadeteria-search-clear" onClick={() => setBusqueda('')}>✕</button>
         )}
       </div>
-
-      {pendientes.length > 0 && (
-        <div className="cadeteria-selectall">
-          <label>
-            <input type="checkbox" checked={todosPendientesSeleccionados} onChange={toggleSelectAll} />
-            Seleccionar todos los pendientes ({pendientes.length})
-          </label>
-        </div>
-      )}
 
       {filtrados.length === 0 ? (
         <div className="cadeteria-empty">

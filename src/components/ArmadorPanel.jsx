@@ -38,7 +38,7 @@ function groupByTracking(pedidos) {
   return result;
 }
 
-export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmadoBulk, onImprimirEtiqueta, onImprimirEtiquetas }) {
+export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmadoBulk, onImprimirEtiqueta, onImprimirEtiquetas, onAbrirStockPlanner }) {
   // Modal de revisión
   const [reviewQueue, setReviewQueue] = useState(null); // null | { pedidos, startIndex }
 
@@ -62,49 +62,24 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
             {pedidos.length} pendiente{pedidos.length !== 1 ? 's' : ''}
           </span>
         </div>
-        <button
-          type="button"
-          className="btn btn-secondary btn-sm"
-          onClick={onActualizar}
-        >
-          Actualizar
-        </button>
-      </div>
-
-      <div className="atencion-info-card">
-        <div className="atencion-info-item">
-          <div className="atencion-info-item-header">
-            <span className="atencion-info-badge atencion-info-badge-mvd">Montevideo</span>
-            <span className="atencion-info-time">24-48 hs hábiles</span>
-          </div>
-          <div className="atencion-info-carrier">
-            Envíos por <strong>Marco Postal</strong>
-            {' · '}
-            <a
-              href="https://marcopostal.epresis.com/seguimiento"
-              target="_blank"
-              rel="noopener noreferrer"
+        <div className="armador-panel-header-actions">
+          {onAbrirStockPlanner && (
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={onAbrirStockPlanner}
+              title="Abrir StockPlanner (Pedidos en camino) con sesión iniciada"
             >
-              Seguimiento
-            </a>
-          </div>
-        </div>
-        <div className="atencion-info-item">
-          <div className="atencion-info-item-header">
-            <span className="atencion-info-badge atencion-info-badge-interior">Interior</span>
-            <span className="atencion-info-time">24-72 hs hábiles</span>
-          </div>
-          <div className="atencion-info-carrier">
-            Envíos por <strong>UES</strong>
-            {' · '}
-            <a
-              href="https://ues.com.uy/rastreo_paquete.html"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Seguimiento
-            </a>
-          </div>
+              📊 StockPlanner
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={onActualizar}
+          >
+            Actualizar
+          </button>
         </div>
       </div>
 

@@ -25,7 +25,15 @@
       "Bash(node --check \"C:/Users/braya/Desktop/Veline apps/Velinne Envios/ecom-eti/services/supabaseService.js\")",
       "Bash(git add *)",
       "Bash(git checkout *)",
-      "Bash(git merge *)"
+      "Bash(git merge *)",
+      "Bash(find . -path ./node_modules -prune -o \\\\\\( -name \"*.sql\" \\\\\\) -print)",
+      "Bash(ls supabase *)",
+      "Bash(ls supabase/migrations)",
+      "Bash(railway whoami *)",
+      "Bash(railway status *)",
+      "Bash(timeout 25 railway logs --service ecom-eti)",
+      "Bash(railway domain *)",
+      "Bash(npm run *)"
     ]
   }
 }

@@ -30,7 +30,7 @@ export async function verifyToken() {
 }
 
 /**
- * Obtener URL de auto-login a StockPlanner (solo admin).
+ * Obtener URL de auto-login a StockPlanner (admin → cuenta dueño; armador/"user" → cuenta acotada a /transito).
  * El backend inicia sesión contra Supabase y devuelve la URL con los tokens en el hash.
  */
 export async function obtenerStockPlannerSSO() {
@@ -513,6 +513,17 @@ export async function marcarDespachados(pedidoIds) {
  */
 export async function marcarProcesados(pedidoIds) {
   return await fetchAPI('/marcar-procesados-bulk', {
+    method: 'POST',
+    body: JSON.stringify({ pedidoIds }),
+  });
+}
+
+/**
+ * Revertir pedidos a "Etiqueta Generada" (deshace un despacho/procesado hecho sin querer).
+ * Conserva la etiqueta y el tracking; limpia estado/notificación/retiro.
+ */
+export async function revertirAEtiquetaGenerada(pedidoIds) {
+  return await fetchAPI('/revertir-a-etiqueta-generada-bulk', {
     method: 'POST',
     body: JSON.stringify({ pedidoIds }),
   });
