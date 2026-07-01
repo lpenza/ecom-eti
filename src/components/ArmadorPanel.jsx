@@ -38,7 +38,7 @@ function groupByTracking(pedidos) {
   return result;
 }
 
-export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmadoBulk }) {
+export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmadoBulk, onImprimirEtiqueta, onImprimirEtiquetas }) {
   // Modal de revisión
   const [reviewQueue, setReviewQueue] = useState(null); // null | { pedidos, startIndex }
 
@@ -47,6 +47,10 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
     if (!Array.isArray(primaryIds) || primaryIds.length === 0) return;
     await onMarcarArmadoBulk(primaryIds, secondaryIds);
   };
+
+  // Filas agrupadas por tracking (dedupe para impresión combinada).
+  const filas = groupByTracking(pedidos);
+  const filasConEtiqueta = filas.filter((p) => String(p.link_etiqueta_drive || '').trim());
 
   return (
     <>
@@ -70,9 +74,21 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
       {pedidos.length > 0 && (
         <div className="section-action-bar">
           <span>El detalle de productos se valida dentro del modal de revision.</span>
+          {onImprimirEtiquetas && (
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => onImprimirEtiquetas(filasConEtiqueta)}
+              disabled={filasConEtiqueta.length === 0}
+              title={filasConEtiqueta.length === 0
+                ? 'Ninguno de estos pedidos tiene etiqueta PDF disponible'
+                : 'Descargar/imprimir juntas las etiquetas de la cola'}
+            >
+              🖨️ Imprimir etiquetas ({filasConEtiqueta.length})
+            </button>
+          )}
           <button
             className="btn btn-primary btn-sm"
-            onClick={() => setReviewQueue({ pedidos: groupByTracking(pedidos), startIndex: 0 })}
+            onClick={() => setReviewQueue({ pedidos: filas, startIndex: 0 })}
           >
             Revisar y armar todos ({pedidos.length})
           </button>
@@ -92,10 +108,11 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                 <th>Tipo de entrega</th>
                 <th>Tracking</th>
                 <th>Nota</th>
+                <th>Etiqueta</th>
               </tr>
             </thead>
             <tbody>
-              {groupByTracking(pedidos).map((p) => (
+              {filas.map((p) => (
                 <tr
                   key={p._mergedIds ? p._mergedIds.join('-') : p.id}
                   className={p._isDuplicateTracking ? 'armador-row-duplicate-tracking' : ''}
@@ -122,6 +139,21 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                       </span>
                     ) : '—'}
                   </td>
+                  <td>
+                    {onImprimirEtiqueta && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => onImprimirEtiqueta(p)}
+                        disabled={!String(p.link_etiqueta_drive || '').trim()}
+                        title={String(p.link_etiqueta_drive || '').trim()
+                          ? 'Imprimir/descargar la etiqueta de este pedido'
+                          : 'Este pedido no tiene etiqueta PDF disponible'}
+                      >
+                        🖨️
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -135,6 +167,7 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
         pedidos={reviewQueue.pedidos}
         initialIndex={reviewQueue.startIndex}
         onConfirmarListos={handleConfirmarListosDelModal}
+        onImprimirEtiqueta={onImprimirEtiqueta}
         onClose={() => setReviewQueue(null)}
       />
     )}

@@ -13,6 +13,7 @@ import LoginPage from './components/LoginPage';
 import AdminPanel from './components/AdminPanel';
 import MisPedidosPanel from './components/MisPedidosPanel';
 import { useAuth } from './context/AuthContext';
+import { useTheme } from './context/ThemeContext';
 import BotControlPanel from './components/BotControlPanel';
 import CarritosAbandonadosPanel from './components/CarritosAbandonadosPanel';
 import FeedbackDashboardPanel from './components/FeedbackDashboardPanel';
@@ -45,10 +46,12 @@ import {
   reprocesarPedidoShopify,
   generarGuiaMarcoPostalWeb,
   obtenerStockPlannerSSO,
+  marcarRetiroCadeteria,
 } from './services/api';
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
 import ArmadorPanel from './components/ArmadorPanel';
 import AtencionPanel from './components/AtencionPanel';
+import CadeteriaPanel from './components/CadeteriaPanel';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
 
@@ -135,6 +138,8 @@ function AppContent({ user, logout }) {
   const [fulfillmentPreviewIds, setFulfillmentPreviewIds] = useState(null); // null = normal, array = preview mode
   const esAdmin = user.role === 'admin';
   const esAtencion = user.role === 'atencion';
+  const { theme, toggleTheme } = useTheme();
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [tableFilter, setTableFilter] = useState(esAdmin ? 'porValidar' : 'etiquetasGeneradas');
   const [despachadosCanalFilter, setDespachadosCanalFilter] = useState(null); // null | 'whatsapp' | 'email'
   const [activeView, setActiveView] = useState('pedidos'); // pedidos | especiales | followup | feedback | plantillas | bot | admin | misArmados
@@ -1394,6 +1399,120 @@ function AppContent({ user, logout }) {
     }
   };
 
+  // Descarga/impresión combinada de etiquetas para una lista explícita de pedidos.
+  // Reutilizable por el armador (no depende de selección). Misma mecánica que
+  // handleDescargarEtiquetasSeleccionadas pero recibiendo la lista por parámetro.
+  const imprimirEtiquetasDePedidos = async (lista) => {
+    const conPdf = (Array.isArray(lista) ? lista : []).filter((p) => String(p.link_etiqueta_drive || '').trim());
+    if (conPdf.length === 0) {
+      mostrarToast('Ninguno de estos pedidos tiene etiqueta PDF disponible', 'warning');
+      return;
+    }
+
+    if (conPdf.length === 1) {
+      handleDescargarEtiqueta(conPdf[0].id);
+      return;
+    }
+
+    const pdfUrls = conPdf.map((p) => String(p.link_etiqueta_drive).trim());
+    const hayMP = pdfUrls.some((u) => /marcopostal|etiquetas-marcopostal/i.test(u));
+    setLoadingText(
+      hayMP
+        ? `Generando y combinando ${pdfUrls.length} etiquetas (puede tardar)...`
+        : `Combinando ${pdfUrls.length} etiquetas...`
+    );
+    setLoading(true);
+
+    try {
+      const combinado = await combinarPdfsEtiquetas(pdfUrls);
+      if (!combinado?.success || !combinado?.pdfUrl) {
+        const faltanMp = combinado?.failedMarcoPostal || 0;
+        mostrarToast(
+          faltanMp > 0
+            ? `No se pudieron generar las etiquetas MarcoPostal (${faltanMp}). Revisá la sesión de MarcoPostal e intentá de nuevo.`
+            : 'No se pudo combinar las etiquetas',
+          'error'
+        );
+        return;
+      }
+
+      const a = document.createElement('a');
+      a.href = combinado.pdfUrl;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.download = `etiquetas-${new Date().toISOString().slice(0, 10)}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+
+      // Aviso si el combinado quedó incompleto (típicamente etiquetas MarcoPostal
+      // que no se pudieron renderizar por sesión caída).
+      const faltantes = (combinado.requested || pdfUrls.length) - (combinado.count || 0);
+      if (faltantes > 0) {
+        const detalleMp = combinado.failedMarcoPostal
+          ? ` (${combinado.failedMarcoPostal} de MarcoPostal)`
+          : '';
+        mostrarToast(
+          `⚠️ Se combinaron ${combinado.count}/${combinado.requested} etiquetas. ${faltantes} no se pudieron incluir${detalleMp}.`,
+          'warning'
+        );
+      }
+
+      // Solo marcamos como impresas las que realmente entraron: si faltaron,
+      // no marcamos ninguna para no perder de vista las que hay que reintentar.
+      if (faltantes === 0) {
+        Promise.all(conPdf.map((p) => marcarEtiquetaImpresa(p.id)))
+          .then(() => cargarPedidos())
+          .catch(() => {});
+      }
+    } catch (error) {
+      console.error('Error combinando etiquetas:', error);
+      mostrarToast('No se pudieron combinar las etiquetas', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Confirmar en lote la entrega de varios paquetes a la cadetería.
+  const handleConfirmarRetirosCadeteria = async (pedidosSeleccionados) => {
+    const ids = (pedidosSeleccionados || []).map((p) => p.id);
+    if (ids.length === 0) return;
+    try {
+      const resultados = await Promise.all(
+        ids.map((id) => marcarRetiroCadeteria(id, true).catch(() => ({ success: false })))
+      );
+      const ok = resultados.filter((r) => r?.success).length;
+      if (ok < ids.length) {
+        mostrarToast(`⚠️ ${ok}/${ids.length} confirmados — algunos fallaron`, 'warning');
+      } else {
+        mostrarToast(`✅ ${ok} paquete(s) confirmados para cadetería`, 'success');
+      }
+      await cargarPedidosDespachados();
+    } catch (error) {
+      console.error('Error al confirmar retiros de cadetería:', error);
+      mostrarToast('Error al confirmar los retiros de cadetería', 'error');
+    }
+  };
+
+  // Deshacer el retiro de un pedido (reversible).
+  const handleDesmarcarRetiroCadeteria = async (pedido) => {
+    try {
+      const resultado = await marcarRetiroCadeteria(pedido.id, false);
+      if (!resultado?.success) {
+        mostrarToast(resultado?.error || 'No se pudo deshacer el retiro', 'error');
+        return;
+      }
+      setPedidosDespachadosList((prev) => prev.map((p) => (
+        p.id === pedido.id
+          ? { ...p, retirado_cadeteria_at: null, retirado_cadeteria_por: null }
+          : p
+      )));
+    } catch (error) {
+      console.error('Error al deshacer retiro de cadetería:', error);
+      mostrarToast('Error al deshacer el retiro de cadetería', 'error');
+    }
+  };
+
   // Fulfillment para pedidos en revision manual (sin canal de notificacion)
   const handleFulfillmentRevisionManual = async () => {
     const ids = selectedPedidos.length > 0
@@ -1842,13 +1961,43 @@ function AppContent({ user, logout }) {
 
   return (
     <div className="app app-shell">
-      <aside className="side-nav">
+      {/* Barra superior solo visible en mobile: hamburguesa + marca + tema */}
+      <div className="mobile-topbar">
+        <button
+          type="button"
+          className="mobile-nav-toggle"
+          aria-label="Abrir menú"
+          onClick={() => setMobileNavOpen((v) => !v)}
+        >
+          ☰
+        </button>
+        <div className="mobile-topbar-brand">VELINNE</div>
+        <button
+          type="button"
+          className="theme-toggle"
+          aria-label="Cambiar tema"
+          title={theme === 'dark' ? 'Modo claro' : 'Modo oscuro'}
+          onClick={toggleTheme}
+        >
+          {theme === 'dark' ? '☀️' : '🌙'}
+        </button>
+      </div>
+
+      {mobileNavOpen && (
+        <div className="side-nav-backdrop" onClick={() => setMobileNavOpen(false)} />
+      )}
+
+      <aside className={`side-nav${mobileNavOpen ? ' side-nav-mobile-open' : ''}`}>
         <div className="side-nav-brand">
           <div className="side-nav-logo">VELINNE</div>
           <div className="side-nav-subtitle">BEAUTY</div>
         </div>
 
-        <nav className="side-nav-menu" aria-label="Navegacion principal">
+        <nav
+          className="side-nav-menu"
+          aria-label="Navegacion principal"
+          onClick={() => setMobileNavOpen(false)}
+        >
           <button
             type="button"
             className={`side-nav-item ${activeView === 'pedidos' ? 'side-nav-item-active' : ''}`}
@@ -1865,6 +2014,16 @@ function AppContent({ user, logout }) {
             >
               <span className="side-nav-icon">📋</span>
               Mis Pedidos Armados
+            </button>
+          )}
+          {!esAtencion && (
+            <button
+              type="button"
+              className={`side-nav-item ${activeView === 'cadeteria' ? 'side-nav-item-active' : ''}`}
+              onClick={() => setActiveView('cadeteria')}
+            >
+              <span className="side-nav-icon">🚚</span>
+              Cadetería
             </button>
           )}
           {user.role === 'admin' && (
@@ -1947,6 +2106,13 @@ function AppContent({ user, logout }) {
         </nav>
 
         <div className="side-nav-footer">
+          <button
+            type="button"
+            className="side-nav-theme-toggle"
+            onClick={toggleTheme}
+          >
+            {theme === 'dark' ? '☀️ Modo claro' : '🌙 Modo oscuro'}
+          </button>
           <div className="side-nav-user">{user?.nombre || user?.email || 'Usuario'}</div>
           <button
             type="button"
@@ -2132,7 +2298,23 @@ function AppContent({ user, logout }) {
                   ? `Seleccionados: ${selectedPedidos.length}`
                   : `${pedidosFiltradosPorCard.length} pedido(s)${despachadosCanalFilter ? ' filtrados' : ' despachados'}`}
               </span>
-              {/* Fulfillment Shopify — para pedidos que necesitan notificar al courier */}
+              {/* Estado del retiro por cadetería (requisito para poder despachar el fulfillment) */}
+              {(() => {
+                const total = pedidosFiltradosPorCard.length;
+                const retirados = pedidosFiltradosPorCard.filter((p) => Boolean(p.retirado_cadeteria_at)).length;
+                const faltan = total - retirados;
+                return (
+                  <span
+                    className={faltan > 0 ? 'cadeteria-guard-hint cadeteria-guard-hint-pending' : 'cadeteria-guard-hint'}
+                    title="El fulfillment solo se envía para pedidos retirados por cadetería"
+                  >
+                    🚚 {retirados}/{total} retirados por cadetería
+                    {faltan > 0 ? ` · ${faltan} pendiente(s)` : ''}
+                  </span>
+                );
+              })()}
+              {/* Fulfillment Shopify — para pedidos que necesitan notificar al courier.
+                   Solo se despachan los que la cadetería ya marcó como retirados. */}
               <button
                 className="btn btn-primary btn-sm"
                 onClick={async () => {
@@ -2140,7 +2322,22 @@ function AppContent({ user, logout }) {
                     ? selectedPedidos.filter((id) => pedidosFiltradosPorCard.some((p) => p.id === id))
                     : pedidosFiltradosPorCard.map((p) => p.id);
                   if (ids.length === 0) { mostrarToast('No hay pedidos para procesar', 'warning'); return; }
-                  const resultado = await ejecutarFulfillmentShopify(ids);
+
+                  // Requisito: no se puede enviar el fulfillment hasta que la cadetería
+                  // haya marcado el pedido como retirado.
+                  const retiradoPorId = new Map(pedidosFiltradosPorCard.map((p) => [p.id, Boolean(p.retirado_cadeteria_at)]));
+                  const idsRetirados = ids.filter((id) => retiradoPorId.get(id));
+                  const idsBloqueados = ids.filter((id) => !retiradoPorId.get(id));
+
+                  if (idsRetirados.length === 0) {
+                    mostrarToast('⛔ No se puede enviar el fulfillment: ningún pedido fue retirado por cadetería aún', 'warning');
+                    return;
+                  }
+                  if (idsBloqueados.length > 0) {
+                    mostrarToast(`⚠️ ${idsBloqueados.length} pedido(s) sin retiro de cadetería quedaron fuera del fulfillment`, 'warning');
+                  }
+
+                  const resultado = await ejecutarFulfillmentShopify(idsRetirados);
                   if (!resultado.success) { mostrarToast(resultado.error || 'Error en fulfillment', 'error'); return; }
                   // Pickups que quedaron listos/notificados pero sin cerrar como retirados
                   const sinRetirar = (resultado.data || []).filter((r) => r.success && r.retiradoOk === false).length;
@@ -2156,10 +2353,21 @@ function AppContent({ user, logout }) {
                   cargarPedidosEnviados();
                   cargarPedidosPickup();
                 }}
-                disabled={pedidosFiltradosPorCard.length === 0}
-                title="Enviar fulfillment a Shopify para los despachados seleccionados"
+                disabled={(() => {
+                  const target = selectedPedidos.length > 0
+                    ? pedidosFiltradosPorCard.filter((p) => selectedPedidos.includes(p.id))
+                    : pedidosFiltradosPorCard;
+                  return target.filter((p) => Boolean(p.retirado_cadeteria_at)).length === 0;
+                })()}
+                title="Solo se envía el fulfillment de los pedidos retirados por cadetería"
               >
-                📨 Enviar Fulfillment ({selectedPedidos.length > 0 ? selectedPedidos.length : pedidosFiltradosPorCard.length})
+                {(() => {
+                  const target = selectedPedidos.length > 0
+                    ? pedidosFiltradosPorCard.filter((p) => selectedPedidos.includes(p.id))
+                    : pedidosFiltradosPorCard;
+                  const elegibles = target.filter((p) => Boolean(p.retirado_cadeteria_at)).length;
+                  return `📨 Enviar Fulfillment (${elegibles})`;
+                })()}
               </button>
               {/* Procesado directo — para despachados con fulfillment ya hecho en Shopify */}
               <button
@@ -2335,7 +2543,7 @@ function AppContent({ user, logout }) {
           {/* ⚠️ TEMPORAL: Panel para reprocesar pedidos que no entraron por webhook.
                Cuando ya no se necesite, cambiar REPROCESS_ENABLED = false arriba */}
           {esAdmin && REPROCESS_ENABLED && (
-            <div style={{ margin: '12px 16px', padding: '12px 16px', background: '#fff3cd', border: '1px solid #ffc107', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div className="reprocess-box">
               <span style={{ fontWeight: 600, fontSize: 13 }}>⚠️ Reprocesar pedido Shopify</span>
               <input
                 type="text"
@@ -2343,7 +2551,6 @@ function AppContent({ user, logout }) {
                 value={reprocessOrderNumber}
                 onChange={(e) => setReprocessOrderNumber(e.target.value)}
                 disabled={reprocessLoading || reprocessDone}
-                style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid #ccc', fontSize: 13, width: 200 }}
               />
               <button
                 onClick={handleReprocesarPedido}
@@ -2694,6 +2901,15 @@ function AppContent({ user, logout }) {
         <MisPedidosPanel user={user} />
       )}
 
+      {activeView === 'cadeteria' && !esAtencion && (
+        <CadeteriaPanel
+          pedidos={pedidosDespachadosList}
+          onConfirmarRetiros={handleConfirmarRetirosCadeteria}
+          onDesmarcarRetiro={handleDesmarcarRetiroCadeteria}
+          onActualizar={cargarPedidosDespachados}
+        />
+      )}
+
       {activeView === 'pedidos' && esAtencion && (
         <AtencionPanel mostrarToast={mostrarToast} />
       )}
@@ -2702,6 +2918,8 @@ function AppContent({ user, logout }) {
         <ArmadorPanel
           pedidos={pedidosArmadoOperario}
           onActualizar={cargarPedidosArmadoOperario}
+          onImprimirEtiqueta={(pedido) => handleDescargarEtiqueta(pedido.id)}
+          onImprimirEtiquetas={imprimirEtiquetasDePedidos}
           onMarcarArmadoBulk={async (primaryIds, secondaryIds = []) => {
             const resultado = await marcarArmados(primaryIds, secondaryIds);
             if (!resultado.success) { mostrarToast(resultado.error || 'Error al marcar pedidos', 'error'); return; }

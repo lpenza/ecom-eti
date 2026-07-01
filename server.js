@@ -2311,6 +2311,40 @@ app.post('/api/marcar-armados-bulk', requireAuth, async (req, res) => {
   }
 });
 
+// Marcar/desmarcar retiro por el servicio de cadetería (pedido ya despachado).
+// Guarda timestamp (UTC) y el nombre de quien marcó; al desmarcar limpia ambos.
+app.post('/api/pedidos/:pedidoId/cadeteria', requireAuth, async (req, res) => {
+  try {
+    const { pedidoId } = req.params;
+    const { retirado } = req.body || {};
+
+    if (typeof retirado !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'Campo retirado (boolean) requerido' });
+    }
+
+    const datos = retirado
+      ? {
+          retirado_cadeteria_at: new Date().toISOString(),
+          retirado_cadeteria_por: req.user?.nombre || req.user?.email || null,
+        }
+      : {
+          retirado_cadeteria_at: null,
+          retirado_cadeteria_por: null,
+        };
+
+    const actualizado = await supabaseService.actualizarPedido(pedidoId, datos);
+    res.json({
+      success: true,
+      pedidoId,
+      retirado_cadeteria_at: actualizado?.retirado_cadeteria_at || null,
+      retirado_cadeteria_por: actualizado?.retirado_cadeteria_por || null,
+    });
+  } catch (error) {
+    logService.error('Error en /api/pedidos/:pedidoId/cadeteria', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Analytics: tendencias de compra por color
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3685,10 +3719,12 @@ app.post('/api/ues/combinar-pdfs', async (req, res) => {
     const { PDFDocument } = require('pdf-lib');
     const mergedPdf = await PDFDocument.create();
     let merged = 0;
+    const failedUrls = [];
+    const esMarcoPostal = (u) => /marcopostal|etiquetas-marcopostal/i.test(String(u || ''));
 
     for (const url of urlsValidas) {
       const buffer = await resolverPdfBuffer(url);
-      if (!buffer) continue;
+      if (!buffer) { failedUrls.push(url); continue; }
       try {
         const sourcePdf = await PDFDocument.load(buffer, { ignoreEncryption: true });
         const copiedPages = await mergedPdf.copyPages(sourcePdf, sourcePdf.getPageIndices());
@@ -3696,11 +3732,20 @@ app.post('/api/ues/combinar-pdfs', async (req, res) => {
         merged += 1;
       } catch (err) {
         logService.warning(`[combinar-pdfs] PDF inválido para URL "${url}": ${err.message}`);
+        failedUrls.push(url);
       }
     }
 
+    const failedMarcoPostal = failedUrls.filter(esMarcoPostal).length;
+
     if (merged === 0) {
-      return res.status(404).json({ success: false, error: 'No se pudo cargar ningún PDF de las etiquetas seleccionadas' });
+      return res.status(404).json({
+        success: false,
+        error: 'No se pudo cargar ningún PDF de las etiquetas seleccionadas',
+        requested: urlsValidas.length,
+        failed: failedUrls.length,
+        failedMarcoPostal,
+      });
     }
 
     const mergedBytes = await mergedPdf.save();
@@ -3716,6 +3761,8 @@ app.post('/api/ues/combinar-pdfs', async (req, res) => {
       pdfUrl: `/generated/${fileName}`,
       count: merged,
       requested: urlsValidas.length,
+      failed: failedUrls.length,
+      failedMarcoPostal,
     });
   } catch (error) {
     logService.error('Error combinando PDFs de etiquetas', error);
