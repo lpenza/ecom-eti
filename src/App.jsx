@@ -16,7 +16,6 @@ import { useAuth } from './context/AuthContext';
 import { useTheme } from './context/ThemeContext';
 import BotControlPanel from './components/BotControlPanel';
 import CarritosAbandonadosPanel from './components/CarritosAbandonadosPanel';
-import CarritosAbandonadosPanel from './components/CarritosAbandonadosPanel';
 import FeedbackDashboardPanel from './components/FeedbackDashboardPanel';
 import ColorTrendsPanel from './components/ColorTrendsPanel';
 import { usePedidos } from './hooks/usePedidos';
@@ -1579,30 +1578,6 @@ function AppContent({ user, logout }) {
       await cargarPedidos(); // Recargar para actualizar estado
     } else {
       mostrarToast(resultado.error || 'Error al conectar con UES', 'error');
-    }
-  };
-
-  // Abrir StockPlanner con sesión iniciada automáticamente (solo admin).
-  // Abrimos la pestaña en el mismo clic para evitar el bloqueo de pop-ups y
-  // recién después le seteamos la URL con los tokens que devuelve el backend.
-  const handleAbrirStockPlanner = async () => {
-    const nuevaPestana = window.open('', '_blank');
-    try {
-      const resultado = await obtenerStockPlannerSSO();
-      if (resultado?.success && resultado.url) {
-        if (nuevaPestana) {
-          nuevaPestana.location.href = resultado.url;
-        } else {
-          // Pop-up bloqueado: navegamos en la pestaña actual como fallback.
-          window.location.href = resultado.url;
-        }
-      } else {
-        nuevaPestana?.close();
-        mostrarToast(resultado?.error || 'No se pudo abrir StockPlanner', 'error');
-      }
-    } catch (error) {
-      nuevaPestana?.close();
-      mostrarToast(error.message || 'No se pudo abrir StockPlanner', 'error');
     }
   };
 
