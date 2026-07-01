@@ -2085,28 +2085,11 @@ function AppContent({ user, logout }) {
               </button>
               <button
                 type="button"
-                className={`side-nav-item ${activeView === 'carritos' ? 'side-nav-item-active' : ''}`}
-                onClick={() => setActiveView('carritos')}
-              >
-                <span className="side-nav-icon">🛒</span>
-                Carritos Abandonados
-              </button>
-              <button
-                type="button"
                 className={`side-nav-item ${activeView === 'admin' ? 'side-nav-item-active' : ''}`}
                 onClick={() => setActiveView('admin')}
               >
                 <span className="side-nav-icon">⚙️</span>
                 Administración
-              </button>
-              <button
-                type="button"
-                className="side-nav-item side-nav-cta"
-                onClick={handleAbrirStockPlanner}
-                title="Abrir StockPlanner con sesión iniciada"
-              >
-                <span className="side-nav-icon">📊</span>
-                StockPlanner
               </button>
               <button
                 type="button"
@@ -2903,10 +2886,6 @@ function AppContent({ user, logout }) {
 
       {activeView === 'bot' && (
         <BotControlPanel mostrarToast={mostrarToast} />
-      )}
-
-      {activeView === 'carritos' && (
-        <CarritosAbandonadosPanel mostrarToast={mostrarToast} />
       )}
 
       {activeView === 'carritos' && (
