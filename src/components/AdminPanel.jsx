@@ -71,6 +71,10 @@ export default function AdminPanel() {
   const [guardandoPedido, setGuardandoPedido] = useState(false);
   const [errorPedido, setErrorPedido] = useState('');
 
+  // ── Entregas sin despacho (seguimiento) ──
+  const [entregasSinDespacho, setEntregasSinDespacho] = useState([]);
+  const [loadingEntregas, setLoadingEntregas] = useState(false);
+
   // ── Carritos abandonados (config del flujo) ──
   const [flujoPasos, setFlujoPasos] = useState([]); // [{ template, valor, unidad: 'min'|'h', activo }]
   const [flujoFuente, setFlujoFuente] = useState('db'); // 'db' | 'env'
@@ -261,6 +265,19 @@ export default function AdminPanel() {
     }
   }
 
+  // ── Carga de entregas sin despacho ──
+  const cargarEntregasSinDespacho = useCallback(() => {
+    setLoadingEntregas(true);
+    fetchAdmin('/admin/entregas-sin-despacho')
+      .then((res) => { if (res.success) setEntregasSinDespacho(res.pedidos || []); })
+      .catch(() => mostrarToast('Error cargando entregas sin despacho', 'error'))
+      .finally(() => setLoadingEntregas(false));
+  }, []);
+
+  useEffect(() => {
+    if (tab === 'entregas') cargarEntregasSinDespacho();
+  }, [tab, cargarEntregasSinDespacho]);
+
   // ── Carga y handlers del flujo de carritos ──
   const cargarFlujo = useCallback(() => {
     setLoadingFlujo(true);
@@ -372,6 +389,9 @@ export default function AdminPanel() {
         </button>
         <button className={`admin-tab${tab === 'pedidos' ? ' admin-tab-active' : ''}`} onClick={() => setTab('pedidos')}>
           Pedidos
+        </button>
+        <button className={`admin-tab${tab === 'entregas' ? ' admin-tab-active' : ''}`} onClick={() => setTab('entregas')}>
+          Entregas sin despacho
         </button>
         <button className={`admin-tab${tab === 'carritos' ? ' admin-tab-active' : ''}`} onClick={() => setTab('carritos')}>
           Carritos abandonados
@@ -897,6 +917,69 @@ export default function AdminPanel() {
                       <button className="btn btn-secondary btn-sm" onClick={() => iniciarEditarPedido(p)}>
                         Editar
                       </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
+
+      {/* ══════════════ TAB ENTREGAS SIN DESPACHO ══════════════ */}
+      {tab === 'entregas' && (
+        <section className="admin-section">
+          <div className="admin-section-header-row">
+            <h2 className="admin-section-title" style={{ margin: 0 }}>Entregas sin despacho</h2>
+            <button className="btn btn-secondary btn-sm" onClick={cargarEntregasSinDespacho} disabled={loadingEntregas}>
+              {loadingEntregas ? 'Cargando...' : '🔄 Actualizar'}
+            </button>
+          </div>
+          <p className="admin-section-desc">
+            Pedidos que la cadetería se llevó estando todavía en "Etiqueta Generada" (sin despachar). Cada caso incluye el motivo indicado por el armador.
+          </p>
+
+          {loadingEntregas && <p className="admin-rep-empty">Cargando...</p>}
+
+          {!loadingEntregas && entregasSinDespacho.length === 0 && (
+            <p className="admin-rep-empty">No hay entregas sin despacho registradas.</p>
+          )}
+
+          {!loadingEntregas && entregasSinDespacho.length > 0 && (
+            <table className="admin-reporte-table admin-pedidos-table">
+              <thead>
+                <tr>
+                  <th>N° Pedido</th>
+                  <th>Cliente</th>
+                  <th>Tracking</th>
+                  <th>Motivo</th>
+                  <th>Registrado por</th>
+                  <th>Fecha</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody>
+                {entregasSinDespacho.map((p) => (
+                  <tr key={p.id}>
+                    <td><strong>#{p.numero_pedido}</strong></td>
+                    <td>
+                      <span className="admin-rep-nombre">{p.cliente_nombre || '—'}</span>
+                      <span className="admin-rep-email">{p.cliente_email || p.cliente_telefono || '—'}</span>
+                    </td>
+                    <td>{p.numero_seguimiento_ues || '—'}</td>
+                    <td>{p.entrega_sin_despacho_motivo || '—'}</td>
+                    <td>{p.entrega_sin_despacho_por || '—'}</td>
+                    <td>
+                      {p.entrega_sin_despacho_at
+                        ? new Date(p.entrega_sin_despacho_at).toLocaleString('es-UY', {
+                            timeZone: 'America/Montevideo',
+                            day: '2-digit', month: '2-digit', year: 'numeric',
+                            hour: '2-digit', minute: '2-digit',
+                          })
+                        : '—'}
+                    </td>
+                    <td>
+                      <span className={`admin-badge admin-badge-estado-${p.estado}`}>{p.estado}</span>
                     </td>
                   </tr>
                 ))}

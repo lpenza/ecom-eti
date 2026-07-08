@@ -48,9 +48,12 @@ import {
   generarGuiaMarcoPostalWeb,
   obtenerStockPlannerSSO,
   marcarRetiroCadeteria,
+  buscarEtiquetasCadeteria,
+  registrarEntregaSinDespacho,
 } from './services/api';
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
 import ArmadorPanel from './components/ArmadorPanel';
+import StockNcPanel from './components/StockNcPanel';
 import AtencionPanel from './components/AtencionPanel';
 import CadeteriaPanel from './components/CadeteriaPanel';
 
@@ -1498,22 +1501,32 @@ function AppContent({ user, logout }) {
     }
   };
 
-  // Deshacer el retiro de un pedido (reversible).
-  const handleDesmarcarRetiroCadeteria = async (pedido) => {
+  // Buscar pedidos con etiqueta generada (no despachados) desde la vista de cadetería.
+  const handleBuscarEtiquetasCadeteria = async (q) => {
     try {
-      const resultado = await marcarRetiroCadeteria(pedido.id, false);
-      if (!resultado?.success) {
-        mostrarToast(resultado?.error || 'No se pudo deshacer el retiro', 'error');
-        return;
-      }
-      setPedidosDespachadosList((prev) => prev.map((p) => (
-        p.id === pedido.id
-          ? { ...p, retirado_cadeteria_at: null, retirado_cadeteria_por: null }
-          : p
-      )));
+      return await buscarEtiquetasCadeteria(q);
     } catch (error) {
-      console.error('Error al deshacer retiro de cadetería:', error);
-      mostrarToast('Error al deshacer el retiro de cadetería', 'error');
+      console.error('Error buscando etiquetas para cadetería:', error);
+      return [];
+    }
+  };
+
+  // Registrar una entrega sin despacho (cadetería se lleva un pedido en Etiqueta Generada).
+  // Devuelve true/false para que el modal sepa si cerrar.
+  const handleEntregaSinDespacho = async (pedido, motivo) => {
+    try {
+      const resultado = await registrarEntregaSinDespacho(pedido.id, motivo);
+      if (!resultado?.success) {
+        mostrarToast(resultado?.error || 'No se pudo registrar la entrega sin despacho', 'error');
+        return false;
+      }
+      mostrarToast(`✅ Entrega sin despacho registrada para #${pedido.numero_pedido}`, 'success');
+      cargarPedidosDespachados();
+      return true;
+    } catch (error) {
+      console.error('Error registrando entrega sin despacho:', error);
+      mostrarToast(`Error al registrar: ${error?.message || 'desconocido'}`, 'error');
+      return false;
     }
   };
 
@@ -2045,6 +2058,16 @@ function AppContent({ user, logout }) {
             >
               <span className="side-nav-icon">📋</span>
               Mis Pedidos Armados
+            </button>
+          )}
+          {!esAdmin && !esAtencion && (
+            <button
+              type="button"
+              className={`side-nav-item ${activeView === 'stockNc' ? 'side-nav-item-active' : ''}`}
+              onClick={() => setActiveView('stockNc')}
+            >
+              <span className="side-nav-icon">🎨</span>
+              Stock Colores
             </button>
           )}
           {!esAtencion && (
@@ -2944,12 +2967,17 @@ function AppContent({ user, logout }) {
         <MisPedidosPanel user={user} />
       )}
 
+      {activeView === 'stockNc' && !esAdmin && !esAtencion && (
+        <StockNcPanel mostrarToast={mostrarToast} />
+      )}
+
       {activeView === 'cadeteria' && !esAtencion && (
         <CadeteriaPanel
           pedidos={pedidosDespachadosList}
           onConfirmarRetiros={handleConfirmarRetirosCadeteria}
-          onDesmarcarRetiro={handleDesmarcarRetiroCadeteria}
           onActualizar={cargarPedidosDespachados}
+          onBuscarEtiquetas={handleBuscarEtiquetasCadeteria}
+          onEntregaSinDespacho={handleEntregaSinDespacho}
         />
       )}
 

@@ -5044,6 +5044,169 @@ body {
   font-weight: 500;
 }
 
+/* ── Stock de colores NC (armador) ─────────────────────────────────────────── */
+.stocknc-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem;
+  gap: 1rem;
+  overflow-y: auto;
+}
+
+.stocknc-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.stocknc-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.stocknc-title {
+  font-size: 1.4rem;
+  font-family: Georgia, 'Times New Roman', serif;
+  color: var(--brand-heading);
+  margin: 0;
+}
+
+.stocknc-sub {
+  font-size: 0.88rem;
+  color: var(--brand-text-soft);
+  margin: 0.25rem 0 0;
+  max-width: 640px;
+}
+
+.stocknc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.stocknc-search {
+  flex: 1;
+  max-width: 340px;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  background: var(--brand-surface);
+  color: var(--brand-text);
+}
+
+.stocknc-count {
+  font-size: 0.85rem;
+  color: var(--brand-text-soft);
+  font-weight: 500;
+}
+
+.stocknc-body {
+  background: var(--brand-surface);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--brand-shadow-soft);
+  overflow-x: auto;
+}
+
+.stocknc-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.stocknc-table thead {
+  background: #fff7f9;
+  border-bottom: 1px solid var(--brand-border);
+}
+
+.stocknc-table th {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--brand-text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.stocknc-table td {
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid #f1e7eb;
+  font-size: 0.92rem;
+  color: var(--brand-text);
+  vertical-align: middle;
+}
+
+.stocknc-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.stocknc-table tbody tr:hover td {
+  background: #fff9fb;
+}
+
+.stocknc-sku {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-weight: 600;
+  color: var(--brand-primary);
+  white-space: nowrap;
+}
+
+.stocknc-stock {
+  font-weight: 700;
+}
+
+.stocknc-neg {
+  color: #dc2626;
+}
+
+.stocknc-badge-bajo {
+  margin-left: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #92400e;
+  background: #fef9c3;
+  border: 1px solid #fde047;
+  border-radius: 6px;
+  padding: 0.1rem 0.4rem;
+  white-space: nowrap;
+}
+
+.stocknc-row-bajo td {
+  background: #fffbeb;
+}
+
+.stocknc-input {
+  width: 90px;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-sm, 6px);
+  font-size: 0.92rem;
+  text-align: right;
+  background: var(--brand-surface);
+  color: var(--brand-text);
+}
+
+.stocknc-fecha {
+  font-size: 0.82rem;
+  color: var(--brand-text-soft);
+  white-space: nowrap;
+}
+
+.stocknc-empty {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: var(--brand-text-soft);
+}
+
+:root[data-theme="dark"] .stocknc-table thead,
+:root[data-theme="dark"] .stocknc-table tbody tr:hover td { background: var(--brand-surface-alt); }
+:root[data-theme="dark"] .stocknc-row-bajo td { background: rgba(120, 90, 10, 0.25); }
+
 .atencion-info-card {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -7596,6 +7759,58 @@ body {
 .cadeteria-card-cliente { font-weight: 600; color: var(--brand-text); font-size: 0.95rem; }
 .cadeteria-card-tracking { font-size: 0.82rem; color: var(--brand-text-soft); }
 .cadeteria-card-retiro-info { font-size: 0.8rem; color: var(--success-text); font-weight: 600; margin-top: 0.15rem; }
+
+/* Bloque de pedidos con etiqueta generada (no despachados) en la vista de cadetería */
+.cadeteria-etiquetas-block { display: flex; flex-direction: column; gap: 0.7rem; margin-top: 0.5rem; padding-top: 0.75rem; border-top: 1px dashed var(--brand-border-strong); }
+.cadeteria-etiquetas-title { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; font-weight: 700; color: var(--brand-heading); font-size: 0.95rem; }
+.cadeteria-etiquetas-hint { font-size: 0.72rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; color: var(--danger-text); background: var(--danger-bg); border-radius: 6px; padding: 0.1rem 0.45rem; }
+.cadeteria-card-etiqueta { justify-content: space-between; cursor: default; border-style: dashed; }
+.cadeteria-card-etiqueta:hover { border-color: var(--brand-border-strong); }
+
+/* Modal de entrega sin despacho */
+.cadeteria-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem; }
+.cadeteria-modal { background: var(--brand-surface); border: 1px solid var(--brand-border); border-radius: var(--radius-md); padding: 1.25rem; width: 100%; max-width: 440px; box-shadow: var(--brand-shadow); display: flex; flex-direction: column; gap: 0.6rem; }
+.cadeteria-modal-title { margin: 0; color: var(--brand-heading); font-size: 1.1rem; }
+.cadeteria-modal-desc { margin: 0; color: var(--brand-text); font-size: 0.9rem; }
+.cadeteria-modal-warning { font-size: 0.82rem; color: var(--danger-text); background: var(--danger-bg); border: 1px solid var(--danger-text); border-radius: 8px; padding: 0.5rem 0.65rem; }
+.cadeteria-modal-label { font-size: 0.82rem; font-weight: 600; color: var(--brand-text-soft); }
+.cadeteria-modal-textarea { width: 100%; border: 1px solid var(--brand-border); border-radius: 8px; padding: 0.5rem 0.65rem; font-size: 0.9rem; background: var(--brand-surface); color: var(--brand-text); resize: vertical; box-sizing: border-box; }
+.cadeteria-modal-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.25rem; }
+
+/* Botón "Ver detalle" dentro de cada tarjeta */
+.cadeteria-card-detalle { flex-shrink: 0; white-space: nowrap; }
+.cadeteria-card-etiqueta-actions { display: flex; flex-direction: column; gap: 0.4rem; flex-shrink: 0; }
+
+/* Lista de productos en el modal de detalle */
+.cadeteria-detalle-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.55rem; max-height: 55vh; overflow-y: auto; }
+.cadeteria-detalle-item { display: flex; gap: 0.7rem; align-items: flex-start; color: var(--brand-text); border-bottom: 1px solid var(--brand-border); padding-bottom: 0.55rem; }
+.cadeteria-detalle-item:last-child { border-bottom: none; padding-bottom: 0; }
+.cadeteria-detalle-cant { font-weight: 800; font-size: 1rem; color: var(--brand-heading); flex-shrink: 0; line-height: 1.5; }
+.cadeteria-detalle-body { min-width: 0; display: flex; flex-direction: column; gap: 0.3rem; flex: 1; }
+.cadeteria-detalle-titulo { font-size: 0.95rem; font-weight: 600; color: var(--brand-text); display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.cadeteria-detalle-meta { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; }
+
+/* Color de la variante — resaltado */
+.cadeteria-detalle-color {
+  font-weight: 700; font-size: 0.9rem; color: var(--brand-heading);
+  background: var(--brand-secondary); border-radius: 6px; padding: 0.15rem 0.55rem;
+}
+/* SKU — chip destacado y monoespaciado para lectura rápida */
+.cadeteria-detalle-sku {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700; font-size: 0.85rem; letter-spacing: 0.02em;
+  color: var(--brand-primary); background: var(--brand-primary-soft);
+  border: 1px solid var(--brand-primary); border-radius: 6px; padding: 0.15rem 0.55rem;
+}
+
+/* Badge de tipo de kit — subrayado según pidió el usuario */
+.cadeteria-kit-badge {
+  font-size: 0.75rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em;
+  text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 2px;
+  border-radius: 6px; padding: 0.1rem 0.45rem;
+}
+.cadeteria-kit-inicial { color: #7c3aed; background: rgba(124, 58, 237, 0.12); text-decoration-color: #7c3aed; }
+.cadeteria-kit-studio { color: #b45309; background: rgba(180, 83, 9, 0.12); text-decoration-color: #b45309; }
 
 /* Hint del guard de cadetería en la barra de acciones de Despachados */
 .cadeteria-guard-hint {

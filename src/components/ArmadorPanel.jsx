@@ -1,9 +1,16 @@
 import React, { useState } from 'react';
 import ArmadoReviewModal from './modals/ArmadoReviewModal';
 
-function getTipoEnvioLabel(tipoEnvio) {
+// Etiqueta de tipo de entrega. Montevideo se despacha por MarcoPostal (no UES);
+// se detecta por el link de etiqueta MarcoPostal o por departamento = Montevideo.
+function getTipoEnvioLabel(pedido) {
+  const tipoEnvio = pedido?.tipo_envio;
   if (tipoEnvio === 'pickup_local') return 'Pick-Up';
   if (tipoEnvio === 'recibilo_hoy') return 'Recibilo Hoy';
+  const link = String(pedido?.link_etiqueta_drive || '').toLowerCase();
+  const esMarcoPostal = /marcopostal|etiquetas-marcopostal/.test(link)
+    || String(pedido?.departamento || '').trim().toLowerCase() === 'montevideo';
+  if (esMarcoPostal) return 'MarcoPostal';
   return 'Envio UES';
 }
 
@@ -142,7 +149,7 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                       </span>
                     )}
                   </td>
-                  <td>{getTipoEnvioLabel(p.tipo_envio)}</td>
+                  <td>{getTipoEnvioLabel(p)}</td>
                   <td>{p.numero_seguimiento_ues || '-'}</td>
                   <td style={{ maxWidth: '220px' }}>
                     {p.motivo_reenvio ? (

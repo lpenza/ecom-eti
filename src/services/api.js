@@ -596,6 +596,25 @@ export async function marcarRetiroCadeteria(pedidoId, retirado) {
 }
 
 /**
+ * Buscar pedidos con etiqueta generada (no despachados) para la vista de cadetería.
+ */
+export async function buscarEtiquetasCadeteria(q) {
+  const data = await fetchAPI(`/cadeteria/buscar-etiquetas?q=${encodeURIComponent(q)}`, { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+/**
+ * Registrar una entrega sin despacho (cadetería se lleva un pedido en Etiqueta Generada).
+ * Requiere motivo. Queda registrado para seguimiento del administrador.
+ */
+export async function registrarEntregaSinDespacho(pedidoId, motivo) {
+  return await fetchAPI('/cadeteria/entrega-sin-despacho', {
+    method: 'POST',
+    body: JSON.stringify({ pedidoId, motivo }),
+  });
+}
+
+/**
  * Obtener pedidos procesados (fulfillment enviado a Shopify)
  */
 export async function obtenerPedidosEnviados() {
@@ -702,6 +721,33 @@ export async function actualizarBotContactControl(contactId, payload = {}) {
   });
 }
 
+
+// ==================== STOCK COLORES "NC" (ARMADOR) ====================
+
+/**
+ * Listar productos NC con su stock actual (tabla productos).
+ */
+export async function obtenerStockNC() {
+  const data = await fetchAPI('/armador/stock-nc', { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+/**
+ * Sincronizar el stock de los productos NC desde Shopify hacia la tabla productos.
+ */
+export async function sincronizarStockNC() {
+  return await fetchAPI('/armador/stock-nc/sincronizar', { method: 'POST' });
+}
+
+/**
+ * Guardar un conteo físico de un producto NC: lo fija en Shopify (available) y en productos.
+ */
+export async function actualizarStockNC(id, sku, stock) {
+  return await fetchAPI('/armador/stock-nc/actualizar', {
+    method: 'POST',
+    body: JSON.stringify({ id, sku, stock }),
+  });
+}
 
 export async function obtenerMisPedidosArmados(desde, hasta) {
   const params = new URLSearchParams();

@@ -759,6 +759,211 @@ class ShopifyService {
     }
   }
 
+  // ── Stock por SKU (colores "NC") ─────────────────────────────────────────────
+  // Resolver la locación principal de venta/despacho (Bvar España) y cachearla.
+  // Prioridad: env SHOPIFY_STOCK_LOCATION_ID (numérico o GID); si no, autodetecta
+  // la primera locación activa que despacha inventario (shipsInventory=true).
+  async obtenerLocationPrincipal() {
+    if (this._mainLocation) return this._mainLocation;
+
+    const configurado = process.env.SHOPIFY_STOCK_LOCATION_ID;
+    if (configurado) {
+      const numericId = String(configurado).replace('gid://shopify/Location/', '').trim();
+      this._mainLocation = { id: numericId, gid: `gid://shopify/Location/${numericId}` };
+      return this._mainLocation;
+    }
+
+    const query = `query {
+      locations(first: 50, includeInactive: false) {
+        edges { node { id name isActive shipsInventory fulfillsOnlineOrders } }
+      }
+    }`;
+    const response = await axios.post(
+      `https://${this.domain}/admin/api/2024-01/graphql.json`,
+      { query },
+      { headers: this.getHeaders() }
+    );
+    const nodes = (response.data?.data?.locations?.edges || []).map((e) => e.node);
+    const principal = nodes.find((n) => n?.isActive && n?.shipsInventory) || nodes[0];
+    if (!principal) {
+      throw new Error('No se encontró ninguna locación activa en Shopify para el stock');
+    }
+    const numericId = String(principal.id).replace('gid://shopify/Location/', '');
+    this._mainLocation = { id: numericId, gid: principal.id };
+    return this._mainLocation;
+  }
+
+  // Leer el stock "available" en la locación principal de todas las variantes cuyo SKU
+  // empieza por un prefijo (por defecto "NC"). Devuelve un mapa
+  //   sku -> { available, inventoryItemId }
+  // Como Easify Inventory Sync mantiene iguales todas las variantes que comparten SKU,
+  // basta con quedarnos con una por SKU (guardamos su inventoryItemId para poder escribir).
+  async obtenerStockPorPrefijoSku(prefijo = 'NC') {
+    const pref = String(prefijo || 'NC').trim();
+    const location = await this.obtenerLocationPrincipal();
+
+    const query = `query stockPorSku($q: String!, $cursor: String, $loc: ID!) {
+      productVariants(first: 250, after: $cursor, query: $q) {
+        pageInfo { hasNextPage endCursor }
+        edges {
+          node {
+            sku
+            inventoryItem {
+              id
+              inventoryLevel(locationId: $loc) {
+                quantities(names: ["available"]) { name quantity }
+              }
+            }
+          }
+        }
+      }
+    }`;
+
+    const porSku = new Map();
+    let cursor = null;
+    let paginas = 0;
+    do {
+      const response = await axios.post(
+        `https://${this.domain}/admin/api/2024-01/graphql.json`,
+        { query, variables: { q: `sku:${pref}*`, cursor, loc: location.gid } },
+        { headers: this.getHeaders() }
+      );
+      const topErrors = response.data?.errors;
+      if (Array.isArray(topErrors) && topErrors.length > 0) {
+        throw new Error(`Error leyendo stock por SKU en Shopify: ${JSON.stringify(topErrors)}`);
+      }
+      const conn = response.data?.data?.productVariants;
+      for (const edge of conn?.edges || []) {
+        const v = edge.node;
+        const sku = String(v.sku || '').trim();
+        // La búsqueda sku:NC* puede traer coincidencias parciales; filtramos por prefijo real.
+        if (!sku || !sku.toUpperCase().startsWith(pref.toUpperCase())) continue;
+        const inventoryItemId = String(v.inventoryItem?.id || '').replace('gid://shopify/InventoryItem/', '');
+        const available = (v.inventoryItem?.inventoryLevel?.quantities || [])
+          .find((q) => q.name === 'available')?.quantity ?? 0;
+        if (!porSku.has(sku)) {
+          porSku.set(sku, { available, inventoryItemId });
+        }
+      }
+      cursor = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
+      paginas += 1;
+    } while (cursor && paginas < 20);
+
+    return porSku;
+  }
+
+  // Fijar el stock "available" (absoluto) de un SKU en la locación principal. Ajusta TODAS
+  // las variantes/inventory items que comparten ese SKU (varios productos: kit, set, etc.)
+  // para dejarlas todas en el mismo valor. No dependemos de Easify Inventory Sync para
+  // igualarlas (puede no ser instantáneo), lo hacemos explícitamente.
+  // Devuelve { sku, anterior, nuevo, variantes, ajustadas }.
+  async fijarStockDisponiblePorSku(sku, cantidad) {
+    const skuLimpio = String(sku || '').trim();
+    if (!skuLimpio) throw new Error('SKU requerido');
+    const nuevo = Number(cantidad);
+    if (!Number.isFinite(nuevo)) throw new Error('Cantidad de stock inválida');
+
+    const location = await this.obtenerLocationPrincipal();
+
+    // Buscar TODAS las variantes con ese SKU exacto y su available actual en la locación.
+    const query = `query buscarVariantes($q: String!, $cursor: String, $loc: ID!) {
+      productVariants(first: 250, after: $cursor, query: $q) {
+        pageInfo { hasNextPage endCursor }
+        edges {
+          node {
+            sku
+            inventoryItem {
+              id
+              inventoryLevel(locationId: $loc) {
+                quantities(names: ["available"]) { name quantity }
+              }
+            }
+          }
+        }
+      }
+    }`;
+
+    const items = []; // { inventoryItemId, available }
+    let cursor = null;
+    let paginas = 0;
+    do {
+      const response = await axios.post(
+        `https://${this.domain}/admin/api/2024-01/graphql.json`,
+        { query, variables: { q: `sku:${skuLimpio}`, cursor, loc: location.gid } },
+        { headers: this.getHeaders() }
+      );
+      const topErrors = response.data?.errors;
+      if (Array.isArray(topErrors) && topErrors.length > 0) {
+        throw new Error(`Error buscando variantes del SKU "${skuLimpio}": ${JSON.stringify(topErrors)}`);
+      }
+      const conn = response.data?.data?.productVariants;
+      for (const edge of conn?.edges || []) {
+        const v = edge.node;
+        // La búsqueda sku:XXX puede traer coincidencias parciales; exigimos SKU exacto.
+        if (String(v.sku || '').trim() !== skuLimpio) continue;
+        const inventoryItemId = String(v.inventoryItem?.id || '').replace('gid://shopify/InventoryItem/', '');
+        if (!inventoryItemId) continue;
+        const available = (v.inventoryItem?.inventoryLevel?.quantities || [])
+          .find((q) => q.name === 'available')?.quantity ?? 0;
+        items.push({ inventoryItemId, available });
+      }
+      cursor = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
+      paginas += 1;
+    } while (cursor && paginas < 20);
+
+    if (items.length === 0) {
+      throw new Error(`No se encontró ninguna variante en Shopify con SKU "${skuLimpio}"`);
+    }
+
+    // Un cambio por inventory item para llevar cada uno al valor absoluto objetivo.
+    const changes = [];
+    for (const it of items) {
+      const delta = nuevo - it.available;
+      if (delta === 0) continue;
+      changes.push({
+        inventoryItemId: `gid://shopify/InventoryItem/${it.inventoryItemId}`,
+        locationId: location.gid,
+        delta,
+      });
+    }
+
+    const anterior = items[0].available; // valor representativo (antes del ajuste)
+
+    if (changes.length === 0) {
+      return { sku: skuLimpio, anterior, nuevo, variantes: items.length, ajustadas: 0 };
+    }
+
+    const mutation = `mutation fijarStock($input: InventoryAdjustQuantitiesInput!) {
+      inventoryAdjustQuantities(input: $input) {
+        userErrors { field message }
+      }
+    }`;
+    const mutResponse = await axios.post(
+      `https://${this.domain}/admin/api/2024-01/graphql.json`,
+      {
+        query: mutation,
+        variables: {
+          input: {
+            reason: 'correction',
+            name: 'available',
+            changes,
+          },
+        },
+      },
+      { headers: this.getHeaders() }
+    );
+    const userErrors = mutResponse.data?.data?.inventoryAdjustQuantities?.userErrors || [];
+    const topErrors = mutResponse.data?.errors || [];
+    if (userErrors.length > 0 || topErrors.length > 0) {
+      throw new Error(
+        `Error fijando stock del SKU "${skuLimpio}" en Shopify — ` +
+        `userErrors: ${JSON.stringify(userErrors)} | errors: ${JSON.stringify(topErrors)}`
+      );
+    }
+
+    return { sku: skuLimpio, anterior, nuevo, variantes: items.length, ajustadas: changes.length };
+  }
+
   // Crear nota en orden
   async agregarNota(orderId, nota) {
     try {

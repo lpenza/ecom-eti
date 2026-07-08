@@ -782,6 +782,40 @@ class SupabaseService {
     return data || [];
   }
 
+  // Buscar pedidos que están en "Etiqueta Generada" pero AÚN NO despachados.
+  // Se usa en la vista de cadetería para poder llevarse un pedido sin despacho.
+  async buscarPedidosEtiquetaGenerada(q) {
+    const term = String(q || '').trim();
+    if (!term) return [];
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .eq('etiqueta_generada', true)
+      .is('notificacion_enviada_at', null)
+      .neq('estado', 'despachado')
+      .neq('estado', 'enviado')
+      .or(
+        `numero_pedido.ilike.%${term}%,cliente_nombre.ilike.%${term}%,numero_seguimiento_ues.ilike.%${term}%`
+      )
+      .order('created_at', { ascending: false })
+      .limit(15);
+
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Pedidos entregados a cadetería SIN despacho (para seguimiento del administrador).
+  async obtenerEntregasSinDespacho() {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .not('entrega_sin_despacho_at', 'is', null)
+      .order('entrega_sin_despacho_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  }
+
   // Obtener pedidos procesados (fulfillment enviado a Shopify)
   async obtenerPedidosEnviados() {
     const { data, error } = await supabase
@@ -1550,6 +1584,65 @@ class SupabaseService {
   async eliminarProducto(id) {
     const { error } = await supabase.from('productos').delete().eq('id', id);
     if (error) throw error;
+  }
+
+  // ── Stock de colores "NC" (sincronización con Shopify) ────────────────────────
+
+  // Listar productos cuyo SKU empieza por un prefijo (por defecto "NC").
+  async listarProductosPorPrefijoSku(prefijo = 'NC') {
+    const pref = String(prefijo || 'NC').trim();
+    const { data, error } = await supabase
+      .from('productos')
+      .select('id, sku, nombre, stock, stock_minimo, updated_at, activo')
+      .ilike('sku', `${pref}%`)
+      .order('nombre', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Fijar el stock (absoluto) de un producto por id. Se usa id (no sku) porque algunos
+  // SKUs en la BD tienen espacios al final y no matchean con un .eq('sku', trim(sku)).
+  async actualizarStockPorId(id, stock) {
+    const { data, error } = await supabase
+      .from('productos')
+      .update({ stock: Number(stock), updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select('id, sku, nombre, stock, stock_minimo, updated_at')
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async obtenerProductoPorId(id) {
+    const { data, error } = await supabase
+      .from('productos')
+      .select('id, sku, nombre, stock, stock_minimo')
+      .eq('id', id)
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  // Registrar en la auditoría un ajuste manual de stock NC (quién, anterior, nuevo, fecha).
+  // Best-effort desde el server: si la tabla no existe todavía, el llamador ignora el error.
+  async registrarAjusteStockNC({ producto_id = null, sku, stock_anterior = null, stock_nuevo, usuario_id = null, usuario_email = null, usuario_nombre = null, origen = 'panel_armador' }) {
+    const { data, error } = await supabase
+      .from('stock_ajustes_nc')
+      .insert({
+        producto_id,
+        sku,
+        stock_anterior,
+        stock_nuevo,
+        usuario_id,
+        usuario_email,
+        usuario_nombre,
+        origen,
+        created_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
   }
 
   // ── Pedidos admin ────────────────────────────────────────────────────────────

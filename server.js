@@ -356,6 +356,17 @@ app.put('/api/admin/pedidos/:id', requireAuth, requireAdmin, async (req, res) =>
   }
 });
 
+// Seguimiento de entregas sin despacho (pedidos que la cadetería se llevó estando
+// todavía en Etiqueta Generada, con su motivo). Solo para el administrador.
+app.get('/api/admin/entregas-sin-despacho', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const pedidos = await supabaseService.obtenerEntregasSinDespacho();
+    res.json({ success: true, pedidos });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── Inicializar usuarios por defecto ─────────────────────────────────────────
 async function initializeDefaultUsers() {
   try {
@@ -942,6 +953,152 @@ app.get('/api/pedidos-armado', requireAuth, async (req, res) => {
   } catch (error) {
     logService.error('Error en /api/pedidos-armado', error);
     res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+// ── Stock de colores "NC" (armador) ──────────────────────────────────────────
+// Prefijo de SKU que agrupa los colores que se cuentan y sincronizan con Shopify.
+const STOCK_SKU_PREFIX = String(process.env.STOCK_SKU_PREFIX || 'NC').trim();
+
+// Lógica compartida por el endpoint manual y el cron: lee el stock "available" de Shopify
+// (locación principal) de todas las variantes con SKU NC y lo vuelca a productos.stock
+// (match por SKU, update por id). Devuelve el resumen.
+async function sincronizarStockNCDesdeShopify() {
+  const [stockShopify, productos] = await Promise.all([
+    shopifyService.obtenerStockPorPrefijoSku(STOCK_SKU_PREFIX),
+    supabaseService.listarProductosPorPrefijoSku(STOCK_SKU_PREFIX),
+  ]);
+
+  const actualizados = [];
+  const sinCambios = [];
+  const sinCoincidenciaEnShopify = [];
+
+  for (const prod of productos) {
+    const info = stockShopify.get(String(prod.sku || '').trim());
+    if (!info) {
+      sinCoincidenciaEnShopify.push(prod.sku);
+      continue;
+    }
+    if (Number(prod.stock) === Number(info.available)) {
+      sinCambios.push(prod.sku);
+      continue;
+    }
+    const fila = await supabaseService.actualizarStockPorId(prod.id, info.available);
+    actualizados.push({ sku: prod.sku, nombre: prod.nombre, anterior: prod.stock, nuevo: fila.stock });
+  }
+
+  // SKUs que están en Shopify pero no existen como producto en la BD.
+  const skusEnBd = new Set(productos.map((p) => String(p.sku || '').trim()));
+  const soloEnShopify = [...stockShopify.keys()].filter((sku) => !skusEnBd.has(sku));
+
+  return {
+    totalShopify: stockShopify.size,
+    totalBd: productos.length,
+    actualizados,
+    sinCambios,
+    soloEnShopify,
+    sinCoincidenciaEnShopify,
+  };
+}
+
+// Listar productos NC con su stock actual en la tabla productos.
+app.get('/api/armador/stock-nc', requireAuth, async (req, res) => {
+  try {
+    const productos = await supabaseService.listarProductosPorPrefijoSku(STOCK_SKU_PREFIX);
+    res.json({ success: true, prefijo: STOCK_SKU_PREFIX, data: productos });
+  } catch (error) {
+    logService.error('Error listando stock NC', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+// Sincronizar (manual): leer el stock "available" de Shopify y volcarlo a productos.stock.
+app.post('/api/armador/stock-nc/sincronizar', requireAuth, async (req, res) => {
+  try {
+    const r = await sincronizarStockNCDesdeShopify();
+
+    logService.info(`Sync stock NC (${req.user?.email}): ${r.actualizados.length} actualizados`, {
+      actualizados: r.actualizados.length,
+      sinCambios: r.sinCambios.length,
+      soloEnShopify: r.soloEnShopify.length,
+      sinCoincidenciaEnShopify: r.sinCoincidenciaEnShopify.length,
+    });
+
+    res.json({
+      success: true,
+      resumen: {
+        totalShopify: r.totalShopify,
+        totalBd: r.totalBd,
+        actualizados: r.actualizados.length,
+        sinCambios: r.sinCambios.length,
+        soloEnShopify: r.soloEnShopify,
+        sinCoincidenciaEnShopify: r.sinCoincidenciaEnShopify,
+      },
+      actualizados: r.actualizados,
+    });
+  } catch (error) {
+    logService.error('Error sincronizando stock NC desde Shopify', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Guardar un conteo físico: fija el stock (available) en Shopify y en productos.stock.
+app.post('/api/armador/stock-nc/actualizar', requireAuth, async (req, res) => {
+  try {
+    const { id, sku, stock } = req.body || {};
+    // El sku se usa para Shopify (trimeado); el id para actualizar la fila exacta en la BD
+    // (algunos SKUs tienen espacios al final y no matchean por sku).
+    const skuLimpio = String(sku || '').trim();
+    if (!id) {
+      return res.status(400).json({ success: false, error: 'id de producto requerido' });
+    }
+    if (!skuLimpio) {
+      return res.status(400).json({ success: false, error: 'SKU requerido' });
+    }
+    const cantidad = Number(stock);
+    if (!Number.isInteger(cantidad)) {
+      return res.status(400).json({ success: false, error: 'El stock debe ser un número entero' });
+    }
+
+    // 0) Leer el stock actual (para registrar el valor anterior en la auditoría).
+    let stockAnterior = null;
+    try {
+      const actual = await supabaseService.obtenerProductoPorId(id);
+      stockAnterior = actual?.stock ?? null;
+    } catch (_) { /* si no se puede leer, la auditoría queda con anterior=null */ }
+
+    // 1) Reflejar en Shopify (todas las variantes que comparten SKU quedan iguales).
+    const resultadoShopify = await shopifyService.fijarStockDisponiblePorSku(skuLimpio, cantidad);
+    // 2) Persistir el mismo valor en la tabla productos.
+    const fila = await supabaseService.actualizarStockPorId(id, cantidad);
+
+    // 3) Auditoría: quién ajustó, valor anterior, nuevo y fecha (best-effort — no rompe el flujo).
+    try {
+      await supabaseService.registrarAjusteStockNC({
+        producto_id: id,
+        sku: skuLimpio,
+        stock_anterior: stockAnterior,
+        stock_nuevo: cantidad,
+        usuario_id: req.user?.id ?? null,
+        usuario_email: req.user?.email ?? null,
+        usuario_nombre: req.user?.nombre ?? null,
+      });
+    } catch (auditErr) {
+      logService.warning('No se pudo registrar la auditoría de ajuste de stock NC', {
+        sku: skuLimpio,
+        error: auditErr.message,
+      });
+    }
+
+    logService.info(`Stock NC actualizado (${req.user?.email}): ${skuLimpio} ${stockAnterior} → ${cantidad}`, {
+      anterior: stockAnterior,
+      nuevo: cantidad,
+    });
+
+    res.json({ success: true, producto: fila, shopify: resultadoShopify });
+  } catch (error) {
+    logService.error('Error actualizando stock NC en Shopify', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -2419,6 +2576,59 @@ app.post('/api/pedidos/:pedidoId/cadeteria', requireAuth, async (req, res) => {
     });
   } catch (error) {
     logService.error('Error en /api/pedidos/:pedidoId/cadeteria', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Buscar pedidos con etiqueta generada (no despachados) para la vista de cadetería.
+// Permite que el armador ubique un pedido que se quiere llevar sin marcar despacho.
+app.get('/api/cadeteria/buscar-etiquetas', requireAuth, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    if (q.length < 2) return res.json({ success: true, data: [] });
+    const data = await supabaseService.buscarPedidosEtiquetaGenerada(q);
+    res.json({ success: true, data });
+  } catch (error) {
+    logService.error('Error en /api/cadeteria/buscar-etiquetas', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
+// Registrar una "entrega sin despacho": la cadetería se lleva un pedido que sigue
+// en Etiqueta Generada. Requiere motivo. Se guarda para seguimiento del admin.
+// NO cambia el estado del pedido (sigue como etiqueta generada / pendiente).
+app.post('/api/cadeteria/entrega-sin-despacho', requireAuth, async (req, res) => {
+  try {
+    const { pedidoId, motivo } = req.body || {};
+    const motivoLimpio = String(motivo || '').trim();
+    if (!pedidoId) {
+      return res.status(400).json({ success: false, error: 'pedidoId requerido' });
+    }
+    if (!motivoLimpio) {
+      return res.status(400).json({ success: false, error: 'Debés indicar el motivo de la entrega sin despacho' });
+    }
+
+    const pedido = await supabaseService.obtenerPedido(pedidoId);
+    if (!pedido) return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    if (!pedido.etiqueta_generada) {
+      return res.status(400).json({ success: false, error: 'El pedido no tiene etiqueta generada' });
+    }
+
+    const ahora = new Date().toISOString();
+    const quien = req.user?.nombre || req.user?.email || null;
+    const actualizado = await supabaseService.actualizarPedido(pedidoId, {
+      entrega_sin_despacho_at: ahora,
+      entrega_sin_despacho_por: quien,
+      entrega_sin_despacho_motivo: motivoLimpio,
+      // Se lo llevó la cadetería: lo marcamos como retirado para trazabilidad.
+      retirado_cadeteria_at: ahora,
+      retirado_cadeteria_por: quien,
+    });
+
+    logService.info(`Entrega sin despacho registrada para #${pedido.numero_pedido} por ${quien}: ${motivoLimpio}`);
+    res.json({ success: true, pedido: actualizado });
+  } catch (error) {
+    logService.error('Error en /api/cadeteria/entrega-sin-despacho', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -4860,6 +5070,26 @@ app.listen(PORT, async () => {
       logService.error('[cron] Error en recuperación de carritos abandonados', err);
     }
   });
+
+  // Cron: sincronizar stock de colores NC desde Shopify hacia productos.stock (cada 2 horas).
+  // Configurable con STOCK_SKU_SYNC_CRON; se puede desactivar con STOCK_SKU_SYNC_ENABLED=false.
+  if (String(process.env.STOCK_SKU_SYNC_ENABLED || 'true').toLowerCase() !== 'false') {
+    const stockCron = process.env.STOCK_SKU_SYNC_CRON || '0 */2 * * *';
+    cron.schedule(stockCron, async () => {
+      try {
+        const r = await sincronizarStockNCDesdeShopify();
+        logService.info(`[cron] Sync stock NC: ${r.actualizados.length} actualizados`, {
+          actualizados: r.actualizados.length,
+          sinCambios: r.sinCambios.length,
+          soloEnShopify: r.soloEnShopify.length,
+          sinCoincidenciaEnShopify: r.sinCoincidenciaEnShopify.length,
+        });
+      } catch (err) {
+        logService.error('[cron] Error sincronizando stock NC desde Shopify', err);
+      }
+    });
+    console.log(`🎨 Cron sync stock NC activo (${stockCron})`);
+  }
 
   // Cron: refresh diario del cache de tendencias por color (ventana movil de 7 dias).
   // 03:00 AM hora del server. Recalcula los ultimos 7 dias para tolerar pedidos retrasados.
