@@ -88,6 +88,7 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
   const [sincronizando, setSincronizando] = useState(false);
   const [enviando, setEnviando]         = useState(null); // id del carrito enviando
   const [filtro, setFiltro]             = useState('todos'); // todos | pendientes | enviados | recuperados
+  const [pagina, setPagina]             = useState(1); // paginado de la tabla (15 por página)
 
   // Formulario "carrito de prueba"
   const [mostrarFormManual, setMostrarFormManual] = useState(false);
@@ -181,6 +182,15 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
     return Boolean(c.cliente_telefono);
   });
 
+  // Paginado: 15 contactos por página
+  const POR_PAGINA = 15;
+  const totalPaginas = Math.max(1, Math.ceil(carritosFiltrados.length / POR_PAGINA));
+  const paginaActual = Math.min(pagina, totalPaginas);
+  const carritosPagina = carritosFiltrados.slice((paginaActual - 1) * POR_PAGINA, paginaActual * POR_PAGINA);
+
+  // Al cambiar de filtro o recargar datos, volvemos a la primera página
+  useEffect(() => { setPagina(1); }, [filtro, carritos]);
+
   return (
     <div className="module-panel" style={{ padding: '24px 28px' }}>
 
@@ -191,7 +201,7 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
             🛒 Carritos Abandonados
           </h2>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: '#6b7280' }}>
-            Últimas 72 horas · Flujo automático de recuperación vía WhatsApp
+            Últimos 7 días · Flujo automático de recuperación vía WhatsApp
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -362,7 +372,7 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
         <div style={{ textAlign: 'center', padding: 40, color: '#6b7280' }}>Cargando carritos...</div>
       ) : carritosFiltrados.length === 0 ? (
         <div style={{ textAlign: 'center', padding: 40, color: '#6b7280' }}>
-          {filtro === 'todos' ? 'No hay carritos abandonados en las últimas 72h' : 'No hay carritos con este filtro'}
+          {filtro === 'todos' ? 'No hay carritos abandonados en los últimos 7 días' : 'No hay carritos con este filtro'}
         </div>
       ) : (
         <div style={{ overflowX: 'auto' }}>
@@ -377,7 +387,7 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
               </tr>
             </thead>
             <tbody>
-              {carritosFiltrados.map(c => {
+              {carritosPagina.map(c => {
                 const estado = estadoCarrito(c, flujo.length);
                 const tieneTelefono = Boolean(c.cliente_telefono);
                 const siguiente = proximoPaso(c, flujo.length); // próximo paso a enviar (o null si completo)
@@ -480,8 +490,56 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
         </div>
       )}
 
-      <div style={{ marginTop: 16, fontSize: 11, color: '#9ca3af' }}>
-        {carritosFiltrados.length} carritos mostrados · Flujo de {flujo.length || '—'} mensaje{flujo.length === 1 ? '' : 's'} · Corre cada 30 min · Sin envíos entre 23:00–09:00 UY
+      {/* Paginado (15 contactos por página) */}
+      {!loading && totalPaginas > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 6, marginTop: 18, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={() => setPagina(p => Math.max(1, p - 1))}
+            disabled={paginaActual <= 1}
+            style={{
+              padding: '5px 12px', borderRadius: 8, border: '1.5px solid #d1d5db', fontSize: 12,
+              background: '#fff', color: '#374151',
+              cursor: paginaActual <= 1 ? 'not-allowed' : 'pointer', opacity: paginaActual <= 1 ? 0.4 : 1,
+            }}
+          >
+            ← Anterior
+          </button>
+
+          {Array.from({ length: totalPaginas }, (_, i) => i + 1).map(n => (
+            <button
+              key={n}
+              type="button"
+              onClick={() => setPagina(n)}
+              style={{
+                minWidth: 32, padding: '5px 9px', borderRadius: 8, border: '1.5px solid',
+                fontSize: 12, cursor: 'pointer', fontWeight: n === paginaActual ? 600 : 400,
+                borderColor: n === paginaActual ? 'var(--brand-primary)' : '#d1d5db',
+                background:  n === paginaActual ? 'var(--brand-primary)' : '#fff',
+                color:       n === paginaActual ? '#fff' : '#374151',
+              }}
+            >
+              {n}
+            </button>
+          ))}
+
+          <button
+            type="button"
+            onClick={() => setPagina(p => Math.min(totalPaginas, p + 1))}
+            disabled={paginaActual >= totalPaginas}
+            style={{
+              padding: '5px 12px', borderRadius: 8, border: '1.5px solid #d1d5db', fontSize: 12,
+              background: '#fff', color: '#374151',
+              cursor: paginaActual >= totalPaginas ? 'not-allowed' : 'pointer', opacity: paginaActual >= totalPaginas ? 0.4 : 1,
+            }}
+          >
+            Siguiente →
+          </button>
+        </div>
+      )}
+
+      <div style={{ marginTop: 16, fontSize: 11, color: '#9ca3af', textAlign: 'center' }}>
+        {carritosFiltrados.length} carritos · Página {paginaActual} de {totalPaginas} · Flujo de {flujo.length || '—'} mensaje{flujo.length === 1 ? '' : 's'} · Corre cada 30 min · Sin envíos entre 23:00–09:00 UY
       </div>
     </div>
   );

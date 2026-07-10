@@ -4943,7 +4943,7 @@ app.get('/api/etiqueta-marcopostal/:guiaId', requireAuth, async (req, res) => {
 
 // ── Carritos Abandonados ─────────────────────────────────────────────────────
 
-// GET /api/carritos-abandonados — lista los carritos de las últimas 72h con stats
+// GET /api/carritos-abandonados — lista los carritos de los últimos 7 días con stats
 app.get('/api/carritos-abandonados', requireAuth, async (req, res) => {
   try {
     const result = await obtenerCarritosDB();

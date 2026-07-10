@@ -2159,6 +2159,14 @@ function AppContent({ user, logout }) {
               </button>
               <button
                 type="button"
+                className={`side-nav-item ${activeView === 'stockNc' ? 'side-nav-item-active' : ''}`}
+                onClick={() => setActiveView('stockNc')}
+              >
+                <span className="side-nav-icon">🎨</span>
+                Stock Colores
+              </button>
+              <button
+                type="button"
                 className="side-nav-item side-nav-cta"
                 onClick={handleAbrirStockPlanner}
                 title="Abrir StockPlanner con sesión iniciada"
@@ -2967,7 +2975,7 @@ function AppContent({ user, logout }) {
         <MisPedidosPanel user={user} />
       )}
 
-      {activeView === 'stockNc' && !esAdmin && !esAtencion && (
+      {activeView === 'stockNc' && !esAtencion && (
         <StockNcPanel mostrarToast={mostrarToast} />
       )}
 

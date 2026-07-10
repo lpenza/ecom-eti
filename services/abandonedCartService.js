@@ -201,6 +201,57 @@ function resolverContacto(checkout, clienteShopify, contactoCapturado) {
   return { telefono, email, nombre };
 }
 
+// ─── Cruce de contactos: carrito ↔ compra concretada ─────────────────────────
+// El checkout_token no siempre coincide (el cliente puede terminar la compra
+// desde otro dispositivo o checkout), así que antes de mandar cualquier mensaje
+// cruzamos también por email y teléfono contra las órdenes de las últimas
+// VENTANA_RECUPERADO_CONTACTO_HORAS horas y marcamos recuperado.
+const VENTANA_RECUPERADO_CONTACTO_HORAS = 24;
+
+function normalizarEmail(email) {
+  return String(email || '').trim().toLowerCase() || null;
+}
+
+// Últimos 8 dígitos: descarta prefijo de país / 0 inicial y ruido de formato
+function normalizarTelefono(tel) {
+  const digitos = String(tel || '').replace(/\D/g, '');
+  return digitos.length >= 8 ? digitos.slice(-8) : null;
+}
+
+// Construye el índice de contactos que compraron en las últimas `horas` horas,
+// a partir de las órdenes recientes traídas de Shopify.
+function construirIndiceCompras(ordenes, horas) {
+  const limite = Date.now() - horas * HORA_MS;
+  const emails = new Set();
+  const telefonos = new Set();
+
+  for (const o of ordenes || []) {
+    if (o.created_at && new Date(o.created_at).getTime() < limite) continue;
+
+    const email = normalizarEmail(o.email || o.contact_email || o.customer?.email);
+    if (email) emails.add(email);
+
+    for (const t of [o.phone, o.customer?.phone, o.shipping_address?.phone, o.billing_address?.phone]) {
+      const n = normalizarTelefono(t);
+      if (n) telefonos.add(n);
+    }
+  }
+
+  return { emails, telefonos };
+}
+
+// True si el contacto del carrito ya figura en una compra reciente del índice
+// (coincidencia por email o teléfono).
+function carritoYaCompro(carrito, indice) {
+  const email = normalizarEmail(carrito.cliente_email);
+  if (email && indice.emails.has(email)) return true;
+
+  const tel = normalizarTelefono(carrito.cliente_telefono);
+  if (tel && indice.telefonos.has(tel)) return true;
+
+  return false;
+}
+
 /**
  * Determina qué paso del flujo enviar a un carrito, respetando el orden y las
  * demoras configuradas en `flujo`. Los pasos se mandan de a uno y en secuencia.
@@ -259,9 +310,13 @@ async function procesarCarritosAbandonados() {
   }
   console.log(`[AbandonedCart] 🛒 ${checkouts.length} carritos recibidos de Shopify`);
 
-  // Tokens de carritos YA recuperados (convertidos en orden) — para no escribirle a quien ya compró
-  const tokensRecuperados = await shopifyService.obtenerTokensRecuperados();
-  console.log(`[AbandonedCart] 🧾 ${tokensRecuperados.size} órdenes recientes (carritos recuperados)`);
+  // Órdenes recientes (un solo fetch): sirven para detectar carritos recuperados
+  // por checkout_token (72h) y, además, por CONTACTO —email/teléfono— de compras
+  // hechas en las últimas 24h, aunque el token no coincida.
+  const ordenesRecientes = await shopifyService.obtenerOrdenesRecientes(72);
+  const tokensRecuperados = new Set(ordenesRecientes.map(o => o.checkout_token).filter(Boolean));
+  const indiceCompras = construirIndiceCompras(ordenesRecientes, VENTANA_RECUPERADO_CONTACTO_HORAS);
+  console.log(`[AbandonedCart] 🧾 ${tokensRecuperados.size} órdenes 72h · compras <${VENTANA_RECUPERADO_CONTACTO_HORAS}h → ${indiceCompras.emails.size} emails / ${indiceCompras.telefonos.size} tels`);
 
   let enviados = 0;
 
@@ -310,6 +365,18 @@ async function procesarCarritosAbandonados() {
     // 2.b Validar que el carrito NO se haya recuperado (orden creada con ese token)
     if (tokensRecuperados.has(checkout.token)) {
       console.log(`[AbandonedCart] ✅ Carrito recuperado (orden existe) → ${checkout.id} — marcado y omitido`);
+      await supabase
+        .from('abandoned_carts')
+        .update({ recovered: true })
+        .eq('shopify_checkout_id', String(checkout.id));
+      continue;
+    }
+
+    // 2.c Antes de mandar CUALQUIER mensaje: si este cliente ya compró en las
+    // últimas 24h (mismo email o teléfono) aunque haya sido con otro checkout,
+    // lo damos por recuperado y no le escribimos.
+    if (carritoYaCompro(carrito, indiceCompras)) {
+      console.log(`[AbandonedCart] ✅ Cliente compró <${VENTANA_RECUPERADO_CONTACTO_HORAS}h (match por contacto) → ${checkout.id} — marcado recuperado`);
       await supabase
         .from('abandoned_carts')
         .update({ recovered: true })
@@ -385,8 +452,11 @@ async function sincronizarDesdeShopify() {
   const checkouts = await shopifyService.obtenerCarritosAbandonados();
   console.log(`[AbandonedCart] ${checkouts.length} checkouts recibidos de Shopify`);
 
-  // Tokens de carritos ya recuperados (convertidos en orden)
-  const tokensRecuperados = await shopifyService.obtenerTokensRecuperados();
+  // Órdenes recientes (un solo fetch): recuperados por token (72h) y por contacto
+  // —email/teléfono/nombre+apellido— de compras de las últimas 24h.
+  const ordenesRecientes = await shopifyService.obtenerOrdenesRecientes(72);
+  const tokensRecuperados = new Set(ordenesRecientes.map(o => o.checkout_token).filter(Boolean));
+  const indiceCompras = construirIndiceCompras(ordenesRecientes, VENTANA_RECUPERADO_CONTACTO_HORAS);
 
   let nuevos = 0;
   let actualizados = 0;
@@ -406,7 +476,9 @@ async function sincronizarDesdeShopify() {
     // Cruzar con lo capturado por el pixel (donde sí está el teléfono real)
     const contactoCapturado = await buscarContactoCapturado(checkout);
     const { telefono, email, nombre } = resolverContacto(checkout, cliente, contactoCapturado);
-    const recuperado = tokensRecuperados.has(checkout.token);
+    // Recuperado si coincide el token de la orden O si el contacto ya compró <24h
+    const recuperado = tokensRecuperados.has(checkout.token)
+      || carritoYaCompro({ cliente_email: email, cliente_telefono: telefono }, indiceCompras);
 
     if (telefono) conTelefono++; else sinTelefono++;
     if (recuperado) recuperados++;
@@ -515,11 +587,11 @@ async function crearCarritoManual({ telefono, nombre, cartUrl } = {}) {
 }
 
 async function obtenerCarritosDB() {
-  const desde72h = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+  const desde7d = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const { data: carritos, error } = await supabase
     .from('abandoned_carts')
     .select('*')
-    .gte('abandoned_at', desde72h)
+    .gte('abandoned_at', desde7d)
     .order('abandoned_at', { ascending: false });
 
   if (error) throw error;

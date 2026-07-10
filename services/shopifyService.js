@@ -96,6 +96,30 @@ class ShopifyService {
     );
   }
 
+  // Devuelve las órdenes de las últimas `horas` horas con los campos de contacto
+  // necesarios para cruzar carritos abandonados con compras ya concretadas.
+  // Se usa para detectar recuperados por checkout_token Y por contacto (email /
+  // teléfono / nombre+apellido), porque el cliente puede terminar la compra desde
+  // otro dispositivo o checkout y el token no coincide.
+  async obtenerOrdenesRecientes(horas = 72) {
+    const desde = new Date(Date.now() - horas * 60 * 60 * 1000).toISOString();
+    try {
+      const response = await axios.get(`${this.baseUrl}/orders.json`, {
+        headers: this.getHeaders(),
+        params: {
+          status: 'any',
+          created_at_min: desde,
+          limit: 250,
+          fields: 'id,checkout_token,checkout_id,created_at,email,contact_email,phone,customer,shipping_address,billing_address',
+        },
+      });
+      return response.data.orders || [];
+    } catch (err) {
+      console.warn(`[Shopify] obtenerOrdenesRecientes falló: ${err.message}`);
+      return []; // ante error, no bloqueamos el flujo (devolvemos vacío)
+    }
+  }
+
   // Devuelve un Set con los checkout_token de las órdenes de las últimas 72h.
   // Sirve para saber qué carritos abandonados ya se RECUPERARON (se convirtieron en orden).
   async obtenerTokensRecuperados() {
