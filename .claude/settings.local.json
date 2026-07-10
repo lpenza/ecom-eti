@@ -43,7 +43,9 @@
       "Bash(node -e \"require\\('./services/shopifyService'\\); console.log\\('service OK'\\);\")",
       "Bash(node -c server.js)",
       "Bash(node -e \"try{require.resolve\\('pg'\\); console.log\\('pg disponible'\\);}catch{console.log\\('pg NO instalado'\\);}\")",
-      "Bash(node -e \"require\\('./services/supabaseService'\\); console.log\\('OK'\\)\")"
+      "Bash(node -e \"require\\('./services/supabaseService'\\); console.log\\('OK'\\)\")",
+      "Bash(node -e \"require\\('@babel/core'\\).transformFileSync\\('src/components/StockNcPanel.jsx',{presets:['@babel/preset-react']}\\); console.log\\('OK JSX parse'\\)\")",
+      "Bash(node -e \"require\\('esbuild'\\).transformSync\\(require\\('fs'\\).readFileSync\\('src/components/StockNcPanel.jsx','utf8'\\),{loader:'jsx'}\\); console.log\\('OK esbuild JSX parse'\\)\")"
     ]
   }
 }

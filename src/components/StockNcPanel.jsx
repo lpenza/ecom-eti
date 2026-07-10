@@ -15,6 +15,8 @@ export default function StockNcPanel({ mostrarToast }) {
   // Borradores de edición por SKU y estado de guardado por SKU.
   const [drafts, setDrafts] = useState({}); // sku -> string
   const [guardando, setGuardando] = useState({}); // sku -> bool
+  // Producto pendiente de confirmar en el modal de conteo: { prod, valor, diff } | null
+  const [confirmData, setConfirmData] = useState(null);
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -57,23 +59,33 @@ export default function StockNcPanel({ mostrarToast }) {
     }
   }
 
-  async function handleGuardar(prod) {
-    const sku = prod.sku;
-    const raw = drafts[sku];
-    const valor = Number(raw);
-    if (!Number.isInteger(valor)) {
-      mostrarToast?.('El stock debe ser un número entero', 'error');
+  // Paso 1: validar el conteo físico y abrir el modal de confirmación mostrando la diferencia.
+  // No escribe nada todavía: solo prepara la advertencia.
+  function solicitarGuardar(prod) {
+    const raw = drafts[prod.sku];
+    if (raw === '' || raw == null) {
+      mostrarToast?.('Ingresá el conteo físico antes de guardar', 'error');
       return;
     }
-    if (valor === Number(prod.stock)) return; // sin cambios
+    const valor = Number(raw);
+    if (!Number.isInteger(valor)) {
+      mostrarToast?.('El conteo debe ser un número entero', 'error');
+      return;
+    }
+    if (valor < 0) {
+      mostrarToast?.('El conteo no puede ser negativo', 'error');
+      return;
+    }
+    if (valor === Number(prod.stock)) return; // coincide con el sistema: nada que confirmar
+    setConfirmData({ prod, valor, diff: valor - Number(prod.stock) });
+  }
 
-    const ok = window.confirm(
-      `¿Confirmás actualizar el stock de ${prod.nombre} (${sku})?\n\n` +
-      `${prod.stock}  →  ${valor}\n\n` +
-      `Este cambio se guarda en la base y se refleja en Shopify (todas las variantes con este SKU).`
-    );
-    if (!ok) return;
-
+  // Paso 2: el usuario confirmó a pesar de la advertencia → recién acá se aplica el cambio.
+  async function confirmarGuardado() {
+    if (!confirmData) return;
+    const { prod, valor } = confirmData;
+    const sku = prod.sku;
+    setConfirmData(null);
     setGuardando((g) => ({ ...g, [sku]: true }));
     try {
       const res = await actualizarStockNC(prod.id, sku, valor);
@@ -138,8 +150,9 @@ export default function StockNcPanel({ mostrarToast }) {
             <tr>
               <th>SKU</th>
               <th>Color</th>
-              <th>Stock actual</th>
+              <th>Stock del sistema</th>
               <th>Conteo físico</th>
+              <th>Diferencia</th>
               <th>Actualizado</th>
               <th></th>
             </tr>
@@ -147,7 +160,9 @@ export default function StockNcPanel({ mostrarToast }) {
           <tbody>
             {filtrados.map((p) => {
               const draft = drafts[p.sku] ?? '';
-              const cambiado = Number(draft) !== Number(p.stock);
+              const draftValido = draft !== '' && draft != null && Number.isInteger(Number(draft));
+              const diff = draftValido ? Number(draft) - Number(p.stock) : null;
+              const cambiado = diff !== null && diff !== 0;
               const bajo = Number(p.stock) <= Number(p.stock_minimo ?? 0);
               return (
                 <tr key={p.id} className={bajo ? 'stocknc-row-bajo' : ''}>
@@ -163,16 +178,30 @@ export default function StockNcPanel({ mostrarToast }) {
                       className="stocknc-input"
                       value={draft}
                       onChange={(e) => setDrafts((d) => ({ ...d, [p.sku]: e.target.value }))}
-                      onKeyDown={(e) => { if (e.key === 'Enter') handleGuardar(p); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') solicitarGuardar(p); }}
                     />
+                  </td>
+                  <td className="stocknc-diff-cell">
+                    {diff === null ? (
+                      <span className="stocknc-diff-muted">—</span>
+                    ) : diff === 0 ? (
+                      <span className="stocknc-diff stocknc-diff-eq">✓ coincide</span>
+                    ) : (
+                      <span
+                        className={`stocknc-diff ${diff > 0 ? 'stocknc-diff-pos' : 'stocknc-diff-neg'}`}
+                        title={diff > 0 ? `Sobran ${diff} respecto al sistema` : `Faltan ${Math.abs(diff)} respecto al sistema`}
+                      >
+                        {diff > 0 ? `+${diff}` : diff}
+                      </span>
+                    )}
                   </td>
                   <td className="stocknc-fecha">{formatFecha(p.updated_at)}</td>
                   <td>
                     <button
                       className="btn btn-primary btn-sm"
-                      onClick={() => handleGuardar(p)}
+                      onClick={() => solicitarGuardar(p)}
                       disabled={!cambiado || guardando[p.sku]}
-                      title={cambiado ? 'Guardar y reflejar en Shopify' : 'Sin cambios'}
+                      title={cambiado ? 'Revisar diferencia y actualizar' : 'Ingresá un conteo distinto al del sistema'}
                     >
                       {guardando[p.sku] ? '…' : 'Guardar'}
                     </button>
@@ -181,14 +210,72 @@ export default function StockNcPanel({ mostrarToast }) {
               );
             })}
             {filtrados.length === 0 && !loading && (
-              <tr><td colSpan={6} className="stocknc-empty">No hay productos NC para mostrar</td></tr>
+              <tr><td colSpan={7} className="stocknc-empty">No hay productos NC para mostrar</td></tr>
             )}
             {loading && (
-              <tr><td colSpan={6} className="stocknc-empty">Cargando…</td></tr>
+              <tr><td colSpan={7} className="stocknc-empty">Cargando…</td></tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {confirmData && (
+        <div className="modal modal-open" onClick={() => setConfirmData(null)}>
+          <div
+            className="modal-content modal-medium"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3>Confirmar conteo de stock</h3>
+              <button className="btn-close" onClick={() => setConfirmData(null)}>&times;</button>
+            </div>
+
+            <div className="modal-body">
+              <p className="stocknc-confirm-prod">
+                <strong>{confirmData.prod.nombre}</strong>
+                <span className="stocknc-confirm-sku">{confirmData.prod.sku}</span>
+              </p>
+
+              <div className="stocknc-confirm-nums">
+                <div className="stocknc-confirm-num">
+                  <span className="stocknc-confirm-label">Sistema</span>
+                  <span className="stocknc-confirm-value">{confirmData.prod.stock}</span>
+                </div>
+                <div className="stocknc-confirm-arrow">→</div>
+                <div className="stocknc-confirm-num">
+                  <span className="stocknc-confirm-label">Tu conteo</span>
+                  <span className="stocknc-confirm-value">{confirmData.valor}</span>
+                </div>
+                <div className={`stocknc-confirm-num stocknc-confirm-diff ${confirmData.diff > 0 ? 'pos' : 'neg'}`}>
+                  <span className="stocknc-confirm-label">Diferencia</span>
+                  <span className="stocknc-confirm-value">
+                    {confirmData.diff > 0 ? `+${confirmData.diff}` : confirmData.diff}
+                  </span>
+                </div>
+              </div>
+
+              <div className="stocknc-confirm-warn">
+                ⚠ El conteo <strong>no coincide</strong> con el stock del sistema
+                ({confirmData.diff > 0
+                  ? `sobran ${confirmData.diff}`
+                  : `faltan ${Math.abs(confirmData.diff)}`} unidad(es)).
+                Al confirmar vas a <strong>sobrescribir</strong> el stock actual y reflejarlo en
+                Shopify (todas las variantes con este SKU quedan iguales). Esta acción no se
+                deshace automáticamente: si no estás seguro, volvé a contar antes de continuar.
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setConfirmData(null)}>
+                Cancelar y volver a contar
+              </button>
+              <button className="btn btn-danger" onClick={confirmarGuardado}>
+                Sí, actualizar a {confirmData.valor}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

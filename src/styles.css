@@ -5207,6 +5207,92 @@ body {
 :root[data-theme="dark"] .stocknc-table tbody tr:hover td { background: var(--brand-surface-alt); }
 :root[data-theme="dark"] .stocknc-row-bajo td { background: rgba(120, 90, 10, 0.25); }
 
+/* Columna Diferencia (conteo vs sistema) en vivo */
+.stocknc-diff-cell { white-space: nowrap; }
+
+.stocknc-diff {
+  display: inline-block;
+  min-width: 46px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 0.12rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.stocknc-diff-pos { color: #166534; background: #dcfce7; border-color: #86efac; }
+.stocknc-diff-neg { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
+.stocknc-diff-eq  { color: #166534; font-weight: 600; }
+.stocknc-diff-muted { color: var(--brand-text-soft); }
+
+/* Modal de confirmación de conteo físico */
+.stocknc-confirm-prod {
+  margin: 0 0 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.stocknc-confirm-prod strong { font-size: 1.05rem; color: var(--brand-heading); }
+.stocknc-confirm-sku {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 0.82rem;
+  color: var(--brand-primary);
+}
+
+.stocknc-confirm-nums {
+  display: flex;
+  align-items: stretch;
+  gap: 0.6rem;
+  margin-bottom: 1.1rem;
+  flex-wrap: wrap;
+}
+.stocknc-confirm-num {
+  flex: 1;
+  min-width: 88px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.75rem 0.5rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-md);
+  background: var(--brand-surface-alt, #faf5f7);
+}
+.stocknc-confirm-label {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--brand-text-soft);
+  font-weight: 600;
+}
+.stocknc-confirm-value { font-size: 1.55rem; font-weight: 800; color: var(--brand-heading); line-height: 1; }
+.stocknc-confirm-arrow {
+  align-self: center;
+  font-size: 1.3rem;
+  color: var(--brand-text-soft);
+}
+.stocknc-confirm-diff.pos { border-color: #86efac; background: #dcfce7; }
+.stocknc-confirm-diff.pos .stocknc-confirm-value { color: #166534; }
+.stocknc-confirm-diff.neg { border-color: #fca5a5; background: #fee2e2; }
+.stocknc-confirm-diff.neg .stocknc-confirm-value { color: #991b1b; }
+
+.stocknc-confirm-warn {
+  background: #fffbeb;
+  border: 1px solid #fde047;
+  border-left: 4px solid #f59e0b;
+  border-radius: var(--radius-md);
+  padding: 0.8rem 1rem;
+  font-size: 0.9rem;
+  color: #7c4a03;
+  line-height: 1.5;
+}
+
+:root[data-theme="dark"] .stocknc-confirm-warn {
+  background: rgba(120, 90, 10, 0.22);
+  color: #f5d98a;
+}
+
 .atencion-info-card {
   display: grid;
   grid-template-columns: 1fr 1fr;
