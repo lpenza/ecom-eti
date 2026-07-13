@@ -4,6 +4,8 @@ import {
   sincronizarCarritosAbandonados,
   probarMensajeCarrito,
   crearCarritoManual,
+  revisarColaCarritos,
+  enviarLinkPendientes,
 } from '../services/api';
 
 // Mostrar el botón "Carrito de prueba" (oculto en producción; poner en true para testear)
@@ -86,6 +88,7 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
   const [flujo, setFlujo]               = useState([]); // pasos del flujo: [{ template, demoraHoras }]
   const [loading, setLoading]           = useState(false);
   const [sincronizando, setSincronizando] = useState(false);
+  const [revisando, setRevisando]       = useState(false); // revisar cola / enviar a pendientes
   const [enviando, setEnviando]         = useState(null); // id del carrito enviando
   const [filtro, setFiltro]             = useState('todos'); // todos | pendientes | enviados | recuperados
   const [pagina, setPagina]             = useState(1); // paginado de la tabla (15 por página)
@@ -125,6 +128,44 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
       mostrarToast(`Error sincronizando: ${err.message}`, 'error');
     } finally {
       setSincronizando(false);
+    }
+  }
+
+  // Revisa carritos: marca recuperados los que ya compraron y muestra cuántos quedan en cola.
+  async function handleRevisarCola() {
+    setRevisando(true);
+    try {
+      const res = await revisarColaCarritos();
+      mostrarToast(
+        `Revisados ${res.revisados} · ${res.yaCompraron} ya compraron · ${res.enColaTotal} en cola para enviar link`,
+        'ok'
+      );
+      await cargar();
+    } catch (err) {
+      mostrarToast(`Error revisando cola: ${err.message}`, 'error');
+    } finally {
+      setRevisando(false);
+    }
+  }
+
+  // Envía el link (próximo paso del flujo) a TODOS los carritos en cola. Pide confirmación.
+  async function handleEnviarPendientes() {
+    const ok = window.confirm(
+      `Se enviará el link de recuperación por WhatsApp a los carritos en cola (con teléfono y sin compra).\n\n` +
+      `Esto ignora el horario y el interruptor automático. ¿Enviar ahora?`
+    );
+    if (!ok) return;
+
+    setRevisando(true);
+    try {
+      const res = await enviarLinkPendientes();
+      const errTxt = res.errores?.length ? ` · ${res.errores.length} con error` : '';
+      mostrarToast(`Enviados ${res.enviados}/${res.intentados} links${errTxt}`, res.errores?.length ? 'error' : 'ok');
+      await cargar();
+    } catch (err) {
+      mostrarToast(`Error enviando links: ${err.message}`, 'error');
+    } finally {
+      setRevisando(false);
     }
   }
 
@@ -221,10 +262,30 @@ export default function CarritosAbandonadosPanel({ mostrarToast }) {
           <button
             className="btn btn-primary"
             onClick={handleSincronizar}
-            disabled={sincronizando}
+            disabled={sincronizando || revisando}
             style={{ whiteSpace: 'nowrap' }}
           >
             {sincronizando ? '⏳ Sincronizando...' : '🔄 Sincronizar Shopify'}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={handleRevisarCola}
+            disabled={sincronizando || revisando}
+            title="Marca como recuperados los que ya compraron y arma la cola de los pendientes (no envía nada)"
+            style={{ whiteSpace: 'nowrap', border: '1.5px solid #16a34a', background: '#f0fdf4', color: '#15803d', fontWeight: 600 }}
+          >
+            {revisando ? '⏳ Revisando...' : '🔎 Revisar y encolar'}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={handleEnviarPendientes}
+            disabled={sincronizando || revisando}
+            title="Envía el link de recuperación a todos los carritos en cola (ignora horario e interruptor)"
+            style={{ whiteSpace: 'nowrap', border: '1.5px solid #2563eb', background: '#eff6ff', color: '#1d4ed8', fontWeight: 600 }}
+          >
+            ✉️ Enviar link a la cola
           </button>
         </div>
       </div>

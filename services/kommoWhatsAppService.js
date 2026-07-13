@@ -1,6 +1,22 @@
 const axios = require('axios');
 require('dotenv').config();
 
+// Códigos de idioma español que Meta puede usar para aprobar una plantilla.
+// Meta exige que el `language.code` del envío coincida EXACTO con el de la
+// plantilla aprobada; si no, devuelve 132001 ("no existe en esa traducción").
+// Como no siempre sabemos con qué variante se aprobó (es, es_AR, es_ES…),
+// probamos el idioma configurado primero y, ante un 132001, reintentamos con
+// estas variantes hasta que una funcione. Así el envío admite cualquier español.
+const SPANISH_LANG_FALLBACKS = ['es_AR', 'es', 'es_ES', 'es_MX', 'es_LA', 'es_419', 'es_US', 'es_CO', 'es_CL', 'es_PE'];
+
+// Código de error de Meta: la plantilla existe pero NO en el idioma solicitado.
+const META_ERR_TEMPLATE_LANG_MISSING = 132001;
+
+// Recuerda, por nombre de plantilla, con qué código de idioma aceptó Meta el
+// envío, para que los siguientes mensajes del mismo ciclo vayan directo al
+// idioma correcto sin repetir intentos fallidos.
+const idiomaResueltoPorPlantilla = new Map();
+
 // Normaliza teléfono uruguayo al formato internacional sin '+'.
 // UY: el 0 inicial es prefijo nacional y NO va en el formato internacional.
 //   095806208  → 59895806208   (no 598095806208)
@@ -75,7 +91,10 @@ class KommoWhatsAppService {
     this.metaPhoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID; // ID del número (NO el WABA ID)
     this.metaToken         = process.env.WHATSAPP_ACCESS_TOKEN;    // token de acceso de Meta
     this.metaApiVersion    = process.env.WHATSAPP_API_VERSION || 'v21.0';
-    this.templateLang      = process.env.WA_TEMPLATE_LANG || 'es'; // debe coincidir con Meta
+    // Debe coincidir EXACTO con el idioma con que la plantilla está aprobada en Meta.
+    // Las plantillas carrito_abandonado_*_v2 están en "Spanish (ARG)" = es_AR.
+    // Un desajuste acá provoca el error 132001 (template no existe en esa traducción).
+    this.templateLang      = process.env.WA_TEMPLATE_LANG || 'es_AR';
   }
 
   // ¿Está configurado el envío real por Meta?
@@ -139,22 +158,22 @@ class KommoWhatsAppService {
    * @param {string} cartUrl      - URL del carrito abandonado (para el botón dinámico)
    * @param {string} [language]   - Código de idioma (default: 'es')
    */
-  async enviarTemplate({ telefono, templateName, nombre, cartUrl, language }) {
-    const phone = normalizarTelefono(telefono);
-    if (!phone) throw new Error(`Teléfono inválido: ${telefono}`);
+  // Orden de códigos de idioma a intentar para una plantilla. Si el idioma pedido
+  // es un español, devolvemos TODAS las variantes (empezando por el conocido-bueno
+  // en cache y por el pedido) para tolerar cualquier "tipo de español" de Meta. Si
+  // es otro idioma, respetamos solo ese (sin reintentos de variantes).
+  ordenIdiomas(templateName, language) {
+    const pedido = language || this.templateLang;
+    const esEspanol = /^es(_|-|$)/i.test(pedido);
+    if (!esEspanol) return [pedido];
 
-    const lang = language || this.templateLang;
-    const components = buildComponents(templateName, { nombre, cartUrl });
+    const cacheado = idiomaResueltoPorPlantilla.get(templateName);
+    // Dedup preservando orden: cache → pedido → variantes de español
+    return [...new Set([cacheado, pedido, ...SPANISH_LANG_FALLBACKS].filter(Boolean))];
+  }
 
-    // Si no hay credenciales de Meta, seguimos en modo STUB (no envía nada)
-    if (!this.metaConfigurado) {
-      const payload = { to: phone, template: { name: templateName, language: { code: lang }, components } };
-      console.log(`[KommoWA] 📤 STUB (sin credenciales Meta) → ${phone} | template: "${templateName}"`);
-      console.log(`[KommoWA] Payload listo:`, JSON.stringify(payload, null, 2));
-      return { success: true, stub: true, phone, templateName, payload };
-    }
-
-    // ── Envío real vía WhatsApp Cloud API de Meta ───────────────────────────────
+  // POST crudo a la Cloud API de Meta con un idioma concreto.
+  async postTemplate({ phone, templateName, lang, components }) {
     const url = `https://graph.facebook.com/${this.metaApiVersion}/${this.metaPhoneNumberId}/messages`;
     const body = {
       messaging_product: 'whatsapp',
@@ -162,20 +181,55 @@ class KommoWhatsAppService {
       type: 'template',
       template: { name: templateName, language: { code: lang }, components },
     };
+    return axios.post(url, body, {
+      headers: { Authorization: `Bearer ${this.metaToken}`, 'Content-Type': 'application/json' },
+    });
+  }
 
-    try {
-      const res = await axios.post(url, body, {
-        headers: { Authorization: `Bearer ${this.metaToken}`, 'Content-Type': 'application/json' },
-      });
-      const messageId = res.data?.messages?.[0]?.id || null;
-      console.log(`[KommoWA] ✅ Enviado → ${phone} | template: "${templateName}" | msgId: ${messageId}`);
-      return { success: true, stub: false, phone, templateName, messageId };
-    } catch (err) {
-      const metaError = err.response?.data?.error;
-      const detalle = metaError ? `${metaError.code} - ${metaError.message}` : err.message;
-      console.error(`[KommoWA] ❌ Error enviando a ${phone}: ${detalle}`);
-      throw new Error(`Meta WhatsApp API: ${detalle}`);
+  async enviarTemplate({ telefono, templateName, nombre, cartUrl, language }) {
+    const phone = normalizarTelefono(telefono);
+    if (!phone) throw new Error(`Teléfono inválido: ${telefono}`);
+
+    const components = buildComponents(templateName, { nombre, cartUrl });
+    const langs = this.ordenIdiomas(templateName, language);
+
+    // Si no hay credenciales de Meta, seguimos en modo STUB (no envía nada)
+    if (!this.metaConfigurado) {
+      const lang = langs[0];
+      const payload = { to: phone, template: { name: templateName, language: { code: lang }, components } };
+      console.log(`[KommoWA] 📤 STUB (sin credenciales Meta) → ${phone} | template: "${templateName}" (${lang})`);
+      console.log(`[KommoWA] Payload listo:`, JSON.stringify(payload, null, 2));
+      return { success: true, stub: true, phone, templateName, payload };
     }
+
+    // ── Envío real vía WhatsApp Cloud API de Meta ───────────────────────────────
+    // Probamos cada idioma candidato; SOLO reintentamos ante 132001 (la plantilla
+    // no existe en ese idioma). Cualquier otro error corta de inmediato.
+    let ultimoError = null;
+    for (const lang of langs) {
+      try {
+        const res = await this.postTemplate({ phone, templateName, lang, components });
+        idiomaResueltoPorPlantilla.set(templateName, lang); // cache para próximos envíos
+        const messageId = res.data?.messages?.[0]?.id || null;
+        console.log(`[KommoWA] ✅ Enviado → ${phone} | template: "${templateName}" (${lang}) | msgId: ${messageId}`);
+        return { success: true, stub: false, phone, templateName, lang, messageId };
+      } catch (err) {
+        ultimoError = err;
+        const metaError = err.response?.data?.error;
+        const quedanVariantes = lang !== langs[langs.length - 1];
+        if (metaError?.code === META_ERR_TEMPLATE_LANG_MISSING && quedanVariantes) {
+          idiomaResueltoPorPlantilla.delete(templateName); // el cache ya no aplica
+          console.warn(`[KommoWA] ⚠️ "${templateName}" no existe en "${lang}" (132001) — reintento con otra variante de español`);
+          continue;
+        }
+        break; // otro error (o ya no quedan variantes): no reintentar
+      }
+    }
+
+    const metaError = ultimoError?.response?.data?.error;
+    const detalle = metaError ? `${metaError.code} - ${metaError.message}` : ultimoError?.message;
+    console.error(`[KommoWA] ❌ Error enviando a ${phone}: ${detalle}`);
+    throw new Error(`Meta WhatsApp API: ${detalle}`);
   }
 }
 

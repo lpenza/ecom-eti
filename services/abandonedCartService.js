@@ -611,4 +611,101 @@ async function obtenerCarritosDB() {
   return { carritos, stats, flujo };
 }
 
-module.exports = { procesarCarritosAbandonados, marcarComoRecuperado, sincronizarDesdeShopify, probarMensaje, crearCarritoManual, obtenerCarritosDB, obtenerFlujo, obtenerFlujoConfig, guardarFlujoConfig, guardarCheckoutCapturado };
+// Próximo paso pendiente (1-indexado) de un carrito según el total de pasos del
+// flujo, o null si ya recibió todos.
+function proximoPasoPendiente(carrito, totalPasos) {
+  const enviados = carrito.pasos_enviados || {};
+  for (let n = 1; n <= totalPasos; n++) {
+    if (!enviados[n]) return n;
+  }
+  return null;
+}
+
+/**
+ * Revisa todos los carritos y arma la cola de envío:
+ *  1. Sincroniza con Shopify → marca RECUPERADOS los que ya completaron la compra
+ *     (por token de orden o por contacto que compró en las últimas 24h).
+ *  2. Devuelve la "cola": carritos con teléfono, NO recuperados y con pasos del
+ *     flujo pendientes, cada uno con el próximo paso que le toca.
+ *
+ * No envía nada: solo reconcilia y reporta a quién habría que escribirle.
+ */
+async function revisarYEncolar() {
+  const sync = await sincronizarDesdeShopify(); // reconcilia recuperados desde Shopify
+
+  const { carritos, flujo } = await obtenerCarritosDB();
+  const totalPasos = flujo.length;
+  const nEnviados = (c) => Object.keys(c.pasos_enviados || {}).length;
+
+  const enCola = carritos
+    .filter(c => c.cliente_telefono && !c.recovered && nEnviados(c) < totalPasos)
+    .map(c => ({
+      id:            c.id,
+      nombre:        c.cliente_nombre,
+      telefono:      c.cliente_telefono,
+      pasosEnviados: nEnviados(c),
+      proximoPaso:   proximoPasoPendiente(c, totalPasos),
+    }));
+
+  const resumen = {
+    totalPasos,
+    revisados:    carritos.length,
+    yaCompraron:  carritos.filter(c => c.recovered).length,        // recuperados
+    sinTelefono:  carritos.filter(c => !c.cliente_telefono && !c.recovered).length,
+    enColaTotal:  enCola.length,
+    enCola,
+    sync,
+  };
+
+  console.log(`[AbandonedCart] 🔎 Revisión: ${resumen.revisados} revisados · ${resumen.yaCompraron} ya compraron · ${resumen.enColaTotal} en cola para enviar link`);
+  return resumen;
+}
+
+/**
+ * Envía el PRÓXIMO paso pendiente del flujo (normalmente el link de recuperación)
+ * a TODOS los carritos en cola. Acción manual y explícita: ignora la restricción
+ * horaria y el interruptor CARRITOS_ENVIO_ACTIVO. Antes de enviar vuelve a revisar
+ * Shopify (vía revisarYEncolar) para no escribirle a quien ya compró.
+ *
+ * @param {number} [limite] - Máximo de carritos a los que enviar (para tandas/pruebas)
+ */
+async function enviarLinkAPendientes({ limite } = {}) {
+  const { enCola } = await revisarYEncolar();
+
+  // Deduplicar por teléfono: un mismo cliente puede tener varios checkouts
+  // abandonados; solo le mandamos UNA vez (nos quedamos con el más reciente, que
+  // viene primero porque la cola está ordenada por abandoned_at desc).
+  const vistos = new Set();
+  const unicos = [];
+  let duplicados = 0;
+  for (const item of enCola) {
+    const key = normalizarTelefono(item.telefono);
+    if (key && vistos.has(key)) { duplicados++; continue; }
+    if (key) vistos.add(key);
+    unicos.push(item);
+  }
+  if (duplicados) console.log(`[AbandonedCart] 🔁 ${duplicados} carritos duplicados por teléfono omitidos del envío`);
+
+  const objetivos = Number.isFinite(limite) && limite > 0 ? unicos.slice(0, limite) : unicos;
+
+  let enviados = 0;
+  const errores = [];
+
+  for (const item of objetivos) {
+    if (!item.proximoPaso) continue;
+    try {
+      // probarMensaje ya envía el template + registra el paso en pasos_enviados,
+      // así el carrito avanza en el flujo y no se le reenvía el mismo mensaje.
+      await probarMensaje(item.id, item.proximoPaso);
+      enviados++;
+    } catch (err) {
+      errores.push({ id: item.id, nombre: item.nombre, telefono: item.telefono, error: err.message });
+      console.error(`[AbandonedCart] ❌ Envío en cola falló → ${item.telefono}: ${err.message}`);
+    }
+  }
+
+  console.log(`[AbandonedCart] ✉️ Cola procesada: ${enviados}/${objetivos.length} enviados · ${errores.length} con error · ${duplicados} duplicados omitidos`);
+  return { enCola: enCola.length, duplicados, intentados: objetivos.length, enviados, errores };
+}
+
+module.exports = { procesarCarritosAbandonados, marcarComoRecuperado, sincronizarDesdeShopify, probarMensaje, crearCarritoManual, obtenerCarritosDB, obtenerFlujo, obtenerFlujoConfig, guardarFlujoConfig, guardarCheckoutCapturado, revisarYEncolar, enviarLinkAPendientes };

@@ -25,7 +25,7 @@ Datos comunes a las 3:
 | Campo      | Valor                                  |
 |------------|----------------------------------------|
 | Categoría  | `MARKETING`                            |
-| Idioma     | Español (`es`) — debe coincidir con `WA_TEMPLATE_LANG` |
+| Idioma     | Spanish (ARG) = `es_AR` — debe coincidir EXACTO con `WA_TEMPLATE_LANG` (un desajuste da error 132001) |
 | Variables  | Body: `{{1}}` = nombre · Botón URL: dinámico |
 
 ---

@@ -57,7 +57,7 @@ const etiquetaPdfService = require('./services/etiquetaPdfService');
 const etiquetaPdfCleanup = require('./services/etiquetaPdfCleanup');
 const shopifyService = require('./services/shopifyService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
-const { procesarCarritosAbandonados, sincronizarDesdeShopify, probarMensaje, crearCarritoManual, obtenerCarritosDB, obtenerFlujoConfig, guardarFlujoConfig, guardarCheckoutCapturado } = require('./services/abandonedCartService');
+const { procesarCarritosAbandonados, sincronizarDesdeShopify, probarMensaje, crearCarritoManual, obtenerCarritosDB, obtenerFlujoConfig, guardarFlujoConfig, guardarCheckoutCapturado, revisarYEncolar, enviarLinkAPendientes } = require('./services/abandonedCartService');
 const emailService = require('./services/emailService');
 const logService = require('./services/logService');
 
@@ -4961,6 +4961,32 @@ app.post('/api/carritos-abandonados/sincronizar', requireAuth, async (req, res) 
     res.json({ success: true, ...result });
   } catch (err) {
     logService.error('Error sincronizando carritos de Shopify', { error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/carritos-abandonados/revisar-cola — reconcilia con Shopify (marca
+// recuperados los que ya compraron) y devuelve la cola de los que faltan contactar.
+// No envía mensajes.
+app.post('/api/carritos-abandonados/revisar-cola', requireAuth, async (req, res) => {
+  try {
+    const result = await revisarYEncolar();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    logService.error('Error revisando cola de carritos abandonados', { error: err.message });
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/carritos-abandonados/enviar-pendientes — envía el link (próximo paso)
+// a TODOS los carritos en cola. Acción manual: ignora horario e interruptor.
+app.post('/api/carritos-abandonados/enviar-pendientes', requireAuth, async (req, res) => {
+  try {
+    const limite = Number(req.body?.limite);
+    const result = await enviarLinkAPendientes({ limite: Number.isFinite(limite) ? limite : undefined });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    logService.error('Error enviando link a carritos pendientes', { error: err.message });
     res.status(500).json({ success: false, error: err.message });
   }
 });

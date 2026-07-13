@@ -495,6 +495,20 @@ export async function crearCarritoManual({ telefono, nombre, cartUrl }) {
   });
 }
 
+// Reconcilia con Shopify (marca recuperados los que ya compraron) y devuelve la
+// cola de carritos pendientes de contactar. No envía mensajes.
+export async function revisarColaCarritos() {
+  return await fetchAPI('/carritos-abandonados/revisar-cola', { method: 'POST' });
+}
+
+// Envía el link (próximo paso del flujo) a todos los carritos en cola.
+export async function enviarLinkPendientes(limite) {
+  return await fetchAPI('/carritos-abandonados/enviar-pendientes', {
+    method: 'POST',
+    body: JSON.stringify(limite ? { limite } : {}),
+  });
+}
+
 // ==================== MARCAR DESPACHADOS BULK ====================
 
 /**
