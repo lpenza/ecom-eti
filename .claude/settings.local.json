@@ -48,7 +48,12 @@
       "Bash(node -e \"require\\('esbuild'\\).transformSync\\(require\\('fs'\\).readFileSync\\('src/components/StockNcPanel.jsx','utf8'\\),{loader:'jsx'}\\); console.log\\('OK esbuild JSX parse'\\)\")",
       "Bash(node --check services/abandonedCartService.js)",
       "Bash(node --check services/shopifyService.js)",
-      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\)\")"
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\)\")",
+      "Bash(node -e \"require\\('./services/kommoWhatsAppService'\\); require\\('./services/abandonedCartService'\\); console.log\\('backend OK: servicios cargan sin error de sintaxis'\\);\")",
+      "Bash(WA_TEMPLATE_LANG=es_AR node -e ' *)",
+      "Bash(WHATSAPP_PHONE_NUMBER_ID=123 WHATSAPP_ACCESS_TOKEN=tok WA_TEMPLATE_LANG=es_AR node -e ' *)",
+      "Bash(railway up *)",
+      "Bash(timeout 18 railway logs --service ecom-eti)"
     ]
   }
 }

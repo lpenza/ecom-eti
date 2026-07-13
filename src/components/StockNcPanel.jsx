@@ -17,6 +17,9 @@ export default function StockNcPanel({ mostrarToast }) {
   const [guardando, setGuardando] = useState({}); // sku -> bool
   // Producto pendiente de confirmar en el modal de conteo: { prod, valor, diff } | null
   const [confirmData, setConfirmData] = useState(null);
+  // Lista de cambios pendiente de confirmar para guardado en lote: [{ prod, valor, diff }] | null
+  const [bulkConfirm, setBulkConfirm] = useState(null);
+  const [guardandoTodo, setGuardandoTodo] = useState(false);
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -104,6 +107,63 @@ export default function StockNcPanel({ mostrarToast }) {
     }
   }
 
+  // Todas las filas con un conteo válido distinto al del sistema, listas para guardar juntas.
+  // Se calcula sobre todos los productos (no sobre el filtro de búsqueda) para no perder
+  // conteos hechos antes de filtrar.
+  const cambiosPendientes = useMemo(() => {
+    const out = [];
+    for (const p of productos) {
+      const raw = drafts[p.sku];
+      if (raw === '' || raw == null) continue;
+      const valor = Number(raw);
+      if (!Number.isInteger(valor) || valor < 0) continue;
+      if (valor === Number(p.stock)) continue;
+      out.push({ prod: p, valor, diff: valor - Number(p.stock) });
+    }
+    return out;
+  }, [productos, drafts]);
+
+  // Paso 1 (lote): abrir el modal de confirmación listando todos los cambios pendientes.
+  function solicitarGuardarTodo() {
+    if (cambiosPendientes.length === 0) {
+      mostrarToast?.('No hay conteos distintos al sistema para guardar', 'warning');
+      return;
+    }
+    setBulkConfirm(cambiosPendientes);
+  }
+
+  // Paso 2 (lote): aplicar todos los cambios secuencialmente (cada uno también sincroniza Shopify).
+  async function confirmarGuardadoBulk() {
+    if (!bulkConfirm || bulkConfirm.length === 0) return;
+    const items = bulkConfirm;
+    setBulkConfirm(null);
+    setGuardandoTodo(true);
+    let ok = 0;
+    const errores = [];
+    for (const { prod, valor } of items) {
+      const sku = prod.sku;
+      setGuardando((g) => ({ ...g, [sku]: true }));
+      try {
+        const res = await actualizarStockNC(prod.id, sku, valor);
+        if (!res.success) {
+          errores.push(sku);
+        } else {
+          ok++;
+          setProductos((prev) => prev.map((p) => (p.sku === sku ? { ...p, stock: valor, updated_at: res.producto?.updated_at || p.updated_at } : p)));
+        }
+      } catch {
+        errores.push(sku);
+      } finally {
+        setGuardando((g) => ({ ...g, [sku]: false }));
+      }
+    }
+    setGuardandoTodo(false);
+    if (ok > 0) mostrarToast?.(`${ok} producto(s) actualizados en el sistema y Shopify`, 'success');
+    if (errores.length > 0) {
+      mostrarToast?.(`${errores.length} con error: ${errores.slice(0, 4).join(', ')}${errores.length > 4 ? '…' : ''}`, 'error');
+    }
+  }
+
   const filtrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
     if (!q) return productos;
@@ -124,10 +184,10 @@ export default function StockNcPanel({ mostrarToast }) {
           </p>
         </div>
         <div className="stocknc-header-actions">
-          <button className="btn btn-secondary btn-sm" onClick={cargar} disabled={loading || sincronizando}>
+          <button className="btn btn-secondary btn-sm" onClick={cargar} disabled={loading || sincronizando || guardandoTodo}>
             🔄 Actualizar
           </button>
-          <button className="btn btn-primary btn-sm" onClick={handleSincronizar} disabled={sincronizando || loading}>
+          <button className="btn btn-primary btn-sm" onClick={handleSincronizar} disabled={sincronizando || loading || guardandoTodo}>
             {sincronizando ? 'Sincronizando…' : '⬇️ Sincronizar desde Shopify'}
           </button>
         </div>
@@ -142,6 +202,18 @@ export default function StockNcPanel({ mostrarToast }) {
           onChange={(e) => setBusqueda(e.target.value)}
         />
         <span className="stocknc-count">{filtrados.length} producto(s)</span>
+        <button
+          className="btn btn-primary btn-sm stocknc-guardar-todo"
+          onClick={solicitarGuardarTodo}
+          disabled={cambiosPendientes.length === 0 || guardandoTodo || loading}
+          title={cambiosPendientes.length > 0
+            ? `Guardar los ${cambiosPendientes.length} conteo(s) modificados de una vez`
+            : 'Contá al menos un producto con un valor distinto al del sistema'}
+        >
+          {guardandoTodo
+            ? 'Guardando…'
+            : `💾 Guardar todo${cambiosPendientes.length > 0 ? ` (${cambiosPendientes.length})` : ''}`}
+        </button>
       </div>
 
       <div className="stocknc-body">
@@ -177,6 +249,7 @@ export default function StockNcPanel({ mostrarToast }) {
                       type="number"
                       className="stocknc-input"
                       value={draft}
+                      disabled={guardandoTodo}
                       onChange={(e) => setDrafts((d) => ({ ...d, [p.sku]: e.target.value }))}
                       onKeyDown={(e) => { if (e.key === 'Enter') solicitarGuardar(p); }}
                     />
@@ -200,7 +273,7 @@ export default function StockNcPanel({ mostrarToast }) {
                     <button
                       className="btn btn-primary btn-sm"
                       onClick={() => solicitarGuardar(p)}
-                      disabled={!cambiado || guardando[p.sku]}
+                      disabled={!cambiado || guardando[p.sku] || guardandoTodo}
                       title={cambiado ? 'Revisar diferencia y actualizar' : 'Ingresá un conteo distinto al del sistema'}
                     >
                       {guardando[p.sku] ? '…' : 'Guardar'}
@@ -271,6 +344,66 @@ export default function StockNcPanel({ mostrarToast }) {
               </button>
               <button className="btn btn-danger" onClick={confirmarGuardado}>
                 Sí, actualizar a {confirmData.valor}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {bulkConfirm && (
+        <div className="modal modal-open" onClick={() => setBulkConfirm(null)}>
+          <div
+            className="modal-content modal-medium"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header">
+              <h3>Confirmar {bulkConfirm.length} conteo(s) de stock</h3>
+              <button className="btn-close" onClick={() => setBulkConfirm(null)}>&times;</button>
+            </div>
+
+            <div className="modal-body">
+              <div className="stocknc-confirm-warn">
+                ⚠ Vas a <strong>sobrescribir</strong> el stock de {bulkConfirm.length} producto(s)
+                y reflejarlo en Shopify (todas las variantes con cada SKU quedan iguales).
+                Revisá las diferencias antes de continuar: esta acción no se deshace automáticamente.
+              </div>
+
+              <div className="stocknc-bulk-list">
+                <table className="stocknc-bulk-table">
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Color</th>
+                      <th>Sistema</th>
+                      <th>Tu conteo</th>
+                      <th>Diferencia</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {bulkConfirm.map(({ prod, valor, diff }) => (
+                      <tr key={prod.id}>
+                        <td className="stocknc-sku">{prod.sku}</td>
+                        <td>{prod.nombre}</td>
+                        <td>{prod.stock}</td>
+                        <td><strong>{valor}</strong></td>
+                        <td>
+                          <span className={`stocknc-diff ${diff > 0 ? 'stocknc-diff-pos' : 'stocknc-diff-neg'}`}>
+                            {diff > 0 ? `+${diff}` : diff}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={() => setBulkConfirm(null)}>
+                Cancelar
+              </button>
+              <button className="btn btn-danger" onClick={confirmarGuardadoBulk}>
+                Sí, actualizar {bulkConfirm.length} producto(s)
               </button>
             </div>
           </div>
