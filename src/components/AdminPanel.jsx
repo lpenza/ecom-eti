@@ -13,6 +13,10 @@ function fetchAdmin(url, options = {}) {
 const hoy = new Date().toISOString().slice(0, 10);
 const inicioMes = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
 
+// Fecha de hoy en horario local (Uruguay), no UTC — para el levante.
+const _h = new Date();
+const hoyLocal = `${_h.getFullYear()}-${String(_h.getMonth() + 1).padStart(2, '0')}-${String(_h.getDate()).padStart(2, '0')}`;
+
 const nuevoUsuarioVacio = { nombre: '', email: '', password: '', role: 'user' };
 const nuevoProductoVacio = { nombre: '', descripcion: '', sku: '', precio: '', activo: true };
 
@@ -82,6 +86,14 @@ export default function AdminPanel() {
   const [guardandoFlujo, setGuardandoFlujo] = useState(false);
   const [errorFlujo, setErrorFlujo] = useState('');
 
+  // ── Levantes (solicitar retiro a UES) ──
+  const [levanteFecha, setLevanteFecha] = useState(hoyLocal);
+  const [levanteLoading, setLevanteLoading] = useState(false);
+  const [levantes, setLevantes] = useState([]);
+  const [levanteExiste, setLevanteExiste] = useState(false);
+  const [uesAuth, setUesAuth] = useState(false);
+  const [uesLoginLoading, setUesLoginLoading] = useState(false);
+
   const [toast, setToast] = useState({ msg: '', tipo: 'ok' });
 
   const mostrarToast = (msg, tipo = 'ok') => {
@@ -113,6 +125,77 @@ export default function AdminPanel() {
   }, [desde, hasta]);
 
   useEffect(() => { cargarReporte(); }, [cargarReporte]);
+
+  // ── Levantes: estado de sesión UES ──
+  const verificarUesAuth = useCallback(() => {
+    fetchAdmin('/ues/status')
+      .then((res) => setUesAuth(!!res.authenticated))
+      .catch(() => setUesAuth(false));
+  }, []);
+
+  // Cargar registro de levantes y saber si ya hay uno para la fecha elegida
+  const cargarLevantes = useCallback((fecha) => {
+    const qs = fecha ? `?fecha=${fecha}` : '';
+    fetchAdmin(`/ues/levantes${qs}`)
+      .then((res) => {
+        if (res.success) {
+          setLevantes(res.levantes || []);
+          setLevanteExiste(!!res.existe);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (tab === 'levantes') {
+      verificarUesAuth();
+      cargarLevantes(levanteFecha);
+    }
+  }, [tab, verificarUesAuth, cargarLevantes, levanteFecha]);
+
+  const handleLoginUesLevante = async () => {
+    setUesLoginLoading(true);
+    try {
+      const res = await fetchAdmin('/ues/login', { method: 'POST' });
+      if (res.success) {
+        setUesAuth(true);
+        mostrarToast('✅ Login exitoso en UES', 'ok');
+      } else {
+        mostrarToast(res.error || 'No se pudo iniciar sesión en UES', 'error');
+      }
+    } catch {
+      mostrarToast('Error al iniciar sesión en UES', 'error');
+    } finally {
+      setUesLoginLoading(false);
+    }
+  };
+
+  const handleSolicitarLevante = async () => {
+    if (!levanteFecha) {
+      mostrarToast('Seleccioná una fecha para el levante', 'error');
+      return;
+    }
+    setLevanteLoading(true);
+    try {
+      const res = await fetchAdmin('/ues/levante', {
+        method: 'POST',
+        body: JSON.stringify({ fecha: levanteFecha }),
+      });
+      if (res.success) {
+        mostrarToast('✅ Levante solicitado a UES', 'ok');
+        setLevanteExiste(true);
+        cargarLevantes(levanteFecha);
+      } else {
+        if (/sesión|sesion|login/i.test(res.error || '')) setUesAuth(false);
+        if (/ya existe/i.test(res.error || '')) setLevanteExiste(true);
+        mostrarToast(res.error || 'No se pudo solicitar el levante', 'error');
+      }
+    } catch {
+      mostrarToast('Error al solicitar el levante', 'error');
+    } finally {
+      setLevanteLoading(false);
+    }
+  };
 
   // ── Carga de productos ──
   const cargarProductos = useCallback(() => {
@@ -395,6 +478,9 @@ export default function AdminPanel() {
         </button>
         <button className={`admin-tab${tab === 'carritos' ? ' admin-tab-active' : ''}`} onClick={() => setTab('carritos')}>
           Carritos abandonados
+        </button>
+        <button className={`admin-tab${tab === 'levantes' ? ' admin-tab-active' : ''}`} onClick={() => setTab('levantes')}>
+          Levantes
         </button>
       </div>
 
@@ -1105,6 +1191,99 @@ export default function AdminPanel() {
                 Cada plantilla debe estar creada y aprobada en Meta, con la misma estructura (cuerpo con <code>{'{{1}}'}</code> = nombre + botón de URL dinámica). Cambiar el flujo afecta también a los carritos que ya están en curso.
               </p>
             </>
+          )}
+        </section>
+      )}
+
+      {/* ══════════════ TAB LEVANTES ══════════════ */}
+      {tab === 'levantes' && (
+        <section className="admin-section">
+          <h2 className="admin-section-title">Solicitar levante</h2>
+          <p className="admin-section-desc">
+            Pedile a UES que pase a retirar los paquetes. Sólo elegís la fecha del levante
+            (por defecto, hoy); el resto de los datos de origen y contacto son fijos.
+          </p>
+
+          <div
+            className="admin-field"
+            style={{ marginBottom: 12, fontSize: 14 }}
+          >
+            <span>
+              Estado UES:{' '}
+              <strong style={{ color: uesAuth ? 'var(--success, #16a34a)' : 'var(--danger, #dc2626)' }}>
+                {uesAuth ? 'Sesión iniciada' : 'Sin sesión'}
+              </strong>
+            </span>
+          </div>
+
+          {!uesAuth && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={handleLoginUesLevante}
+              disabled={uesLoginLoading}
+              style={{ marginBottom: 16 }}
+            >
+              {uesLoginLoading ? 'Ingresando...' : '🔐 Login UES'}
+            </button>
+          )}
+
+          <div className="admin-nuevo-fields" style={{ marginBottom: 16 }}>
+            <div className="admin-field">
+              <label>Fecha del levante</label>
+              <input
+                type="date"
+                value={levanteFecha}
+                onChange={(e) => setLevanteFecha(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={handleSolicitarLevante}
+            disabled={levanteLoading || !uesAuth || levanteExiste}
+          >
+            {levanteLoading ? 'Solicitando...' : '📦 Solicitar levante'}
+          </button>
+
+          {levanteExiste && (
+            <p className="admin-section-desc" style={{ marginTop: 12 }}>
+              Ya hay un levante solicitado para el {levanteFecha}. Elegí otra fecha para pedir uno nuevo.
+            </p>
+          )}
+          {!uesAuth && (
+            <p className="admin-section-desc" style={{ marginTop: 12 }}>
+              Iniciá sesión en UES para poder solicitar el levante.
+            </p>
+          )}
+
+          {/* ── Registro de levantes ── */}
+          <div className="admin-section-header-row" style={{ marginTop: 28 }}>
+            <h2 className="admin-section-title" style={{ margin: 0 }}>Levantes solicitados</h2>
+          </div>
+          {levantes.length === 0 ? (
+            <p className="admin-section-desc">Todavía no se registró ningún levante.</p>
+          ) : (
+            <table className="admin-reporte-table" style={{ marginTop: 10 }}>
+              <thead>
+                <tr>
+                  <th>Fecha del levante</th>
+                  <th>Solicitado por</th>
+                  <th>Solicitado el</th>
+                </tr>
+              </thead>
+              <tbody>
+                {levantes.map((l) => (
+                  <tr key={l.id}>
+                    <td>{l.fecha_levante}</td>
+                    <td>{l.usuario_nombre || l.usuario_email || '—'}</td>
+                    <td>{l.created_at ? new Date(l.created_at).toLocaleString('es-UY') : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </section>
       )}

@@ -1645,6 +1645,49 @@ class SupabaseService {
     return data;
   }
 
+  // ── Levantes UES ─────────────────────────────────────────────────────────────
+
+  // ¿Ya existe un levante registrado para esa fecha? (un levante por día)
+  async existeLevanteEnFecha(fecha) {
+    const { data, error } = await supabase
+      .from('ues_levantes')
+      .select('id')
+      .eq('fecha_levante', fecha)
+      .maybeSingle();
+    if (error) throw error;
+    return !!data;
+  }
+
+  // Registrar un levante solicitado a UES
+  async registrarLevante({ fecha_levante, numero_levante = null, respuesta_ues = null, usuario_id = null, usuario_email = null, usuario_nombre = null }) {
+    const { data, error } = await supabase
+      .from('ues_levantes')
+      .insert({
+        fecha_levante,
+        numero_levante,
+        respuesta_ues,
+        usuario_id,
+        usuario_email,
+        usuario_nombre,
+        created_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  // Listar levantes registrados (más recientes primero)
+  async obtenerLevantes(limit = 30) {
+    const { data, error } = await supabase
+      .from('ues_levantes')
+      .select('id, fecha_levante, numero_levante, usuario_email, usuario_nombre, created_at')
+      .order('fecha_levante', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return data || [];
+  }
+
   // ── Pedidos admin ────────────────────────────────────────────────────────────
 
   async buscarPedidosAdmin(q = '') {

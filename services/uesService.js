@@ -852,6 +852,47 @@ class UESService {
     }
   }
 
+  // Construir payload para solicitar un levante (que UES pase a retirar paquetes).
+  // Todos los datos son fijos (origen/contacto del remitente); lo único que varía
+  // es la fecha del levante, que por defecto es el día en que se genera.
+  // Los valores por defecto se pueden sobreescribir por variables de entorno.
+  construirPayloadLevante(fechaLevante) {
+    return {
+      service: 'levanteCrear',
+      chofer_id: process.env.UES_LEVANTE_CHOFER_ID || '8225-11189',
+      agente_id: process.env.UES_LEVANTE_AGENTE_ID || '2',
+      cliente_id: process.env.UES_LEVANTE_CLIENTE_ID || '11189',
+      nombre_contacto: process.env.UES_LEVANTE_CONTACTO_NOMBRE || 'Facundo',
+      tipo_id: Number(process.env.UES_LEVANTE_TIPO_ID || 1),
+      para: 'cliente',
+      fecha_levante: fechaLevante,
+      guias: [],
+      direccion_origen_id: Number(process.env.UES_LEVANTE_DIRECCION_ORIGEN_ID || 39570225),
+      telefono_contacto: process.env.UES_LEVANTE_CONTACTO_TELEFONO || '+598 92 656 787',
+      observaciones:
+        process.env.UES_LEVANTE_OBSERVACIONES || 'Pasar entre las 13 y las 15hs',
+    };
+  }
+
+  // Solicitar un levante a UES. Si no se indica fecha, usa el día actual.
+  async crearLevante(fechaLevante = null) {
+    const fecha = fechaLevante || new Date().toISOString().slice(0, 10);
+    const payload = this.construirPayloadLevante(fecha);
+
+    logService.info('Solicitando levante a UES', payload);
+
+    const resp = await this.dispatcherPost(payload);
+    logService.info('Respuesta levanteCrear UES:', resp);
+
+    if (resp?.code === 'ERROR') {
+      throw new Error(
+        resp?.msg || resp?.returned_message || 'Error al solicitar el levante en UES'
+      );
+    }
+
+    return resp;
+  }
+
   // Regenerar caché de contexto UES (guardar en archivo)
 }
 

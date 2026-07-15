@@ -1415,6 +1415,73 @@ app.get('/api/ues/status', (req, res) => {
   res.json({ authenticated: isAuthenticated });
 });
 
+// Listar levantes registrados. Con ?fecha=YYYY-MM-DD además indica si ya hay
+// uno para esa fecha (para deshabilitar el botón en el front).
+app.get('/api/ues/levantes', requireAuth, async (req, res) => {
+  try {
+    const { fecha } = req.query;
+    const levantes = await supabaseService.obtenerLevantes();
+    const existe = fecha
+      ? levantes.some((l) => l.fecha_levante === fecha)
+      : false;
+    res.json({ success: true, levantes, existe });
+  } catch (error) {
+    logService.error('Error al listar levantes UES', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Solicitar un levante (que UES pase a retirar paquetes).
+// Sólo varía la fecha; el resto del payload es fijo (origen/contacto del remitente).
+app.post('/api/ues/levante', requireAuth, async (req, res) => {
+  try {
+    if (!uesService.token) {
+      return res.status(401).json({
+        success: false,
+        error: 'Debes iniciar sesión en UES antes de solicitar un levante.',
+      });
+    }
+
+    const { fecha } = req.body || {};
+    const fechaLevante = fecha || new Date().toISOString().slice(0, 10);
+
+    // Un levante por día: si ya existe, no volver a solicitarlo.
+    if (await supabaseService.existeLevanteEnFecha(fechaLevante)) {
+      return res.status(409).json({
+        success: false,
+        error: `Ya existe un levante registrado para el ${fechaLevante}.`,
+      });
+    }
+
+    const resultado = await uesService.crearLevante(fechaLevante);
+
+    // Registrar el levante (best-effort: si falla el guardado, el levante ya se
+    // creó en UES, así que avisamos pero no lo damos por fallido).
+    let registro = null;
+    try {
+      registro = await supabaseService.registrarLevante({
+        fecha_levante: fechaLevante,
+        numero_levante: resultado?.id ?? resultado?.levante_id ?? null,
+        respuesta_ues: resultado ?? null,
+        usuario_id: req.user?.id ?? null,
+        usuario_email: req.user?.email ?? null,
+        usuario_nombre: req.user?.nombre ?? null,
+      });
+    } catch (regErr) {
+      logService.warning('Levante creado en UES pero no se pudo registrar en la base', {
+        fecha: fechaLevante,
+        error: regErr.message,
+      });
+    }
+
+    logService.info(`Levante solicitado en UES (${req.user?.email})`, { fecha: fechaLevante, resultado });
+    res.json({ success: true, data: resultado, registro });
+  } catch (error) {
+    logService.error('Error al solicitar levante UES', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Vista previa de payloads UES (sin enviar a UES)
 app.get('/api/ues/payload-preview/:pedidoId', async (req, res) => {
   try {

@@ -53,7 +53,9 @@
       "Bash(WA_TEMPLATE_LANG=es_AR node -e ' *)",
       "Bash(WHATSAPP_PHONE_NUMBER_ID=123 WHATSAPP_ACCESS_TOKEN=tok WA_TEMPLATE_LANG=es_AR node -e ' *)",
       "Bash(railway up *)",
-      "Bash(timeout 18 railway logs --service ecom-eti)"
+      "Bash(timeout 18 railway logs --service ecom-eti)",
+      "Bash(node -c services/uesService.js)",
+      "Bash(node -c services/supabaseService.js)"
     ]
   }
 }
