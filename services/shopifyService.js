@@ -103,20 +103,39 @@ class ShopifyService {
   // otro dispositivo o checkout y el token no coincide.
   async obtenerOrdenesRecientes(horas = 72) {
     const desde = new Date(Date.now() - horas * 60 * 60 * 1000).toISOString();
+    const MAX_PAGINAS = 20; // tope de seguridad: 20 × 250 = 5000 órdenes
+    const fields = 'id,checkout_token,checkout_id,created_at,email,contact_email,phone,customer,shipping_address,billing_address';
     try {
-      const response = await axios.get(`${this.baseUrl}/orders.json`, {
-        headers: this.getHeaders(),
-        params: {
-          status: 'any',
-          created_at_min: desde,
-          limit: 250,
-          fields: 'id,checkout_token,checkout_id,created_at,email,contact_email,phone,customer,shipping_address,billing_address',
-        },
-      });
-      return response.data.orders || [];
+      const ordenes = [];
+      // Primera página con los filtros; las siguientes se piden con la URL que
+      // Shopify devuelve en el header Link (paginación por cursor: al usar
+      // page_info NO se pueden reenviar los otros filtros, solo el limit).
+      let url = `${this.baseUrl}/orders.json`;
+      let params = {
+        status: 'any',
+        created_at_min: desde,
+        limit: 250,
+        fields,
+      };
+
+      for (let pagina = 0; pagina < MAX_PAGINAS && url; pagina++) {
+        const response = await axios.get(url, { headers: this.getHeaders(), params });
+        ordenes.push(...(response.data.orders || []));
+
+        // Buscar el link "next" en el header Link para seguir paginando
+        const linkHeader = response.headers?.link || response.headers?.Link || '';
+        const next = linkHeader.split(',').find(p => p.includes('rel="next"'));
+        const match = next && next.match(/<([^>]+)>/);
+        url = match ? match[1] : null;
+        params = undefined; // el page_info ya viene embebido en la URL "next"
+      }
+
+      return ordenes;
     } catch (err) {
+      // Propagamos el error: quien envía mensajes DEBE poder distinguir "no hay
+      // órdenes" de "no pude consultar", para no escribirle a quien ya compró.
       console.warn(`[Shopify] obtenerOrdenesRecientes falló: ${err.message}`);
-      return []; // ante error, no bloqueamos el flujo (devolvemos vacío)
+      throw new Error(`No se pudieron obtener las órdenes recientes de Shopify: ${err.message}`);
     }
   }
 

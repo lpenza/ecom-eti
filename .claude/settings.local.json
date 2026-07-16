@@ -55,7 +55,10 @@
       "Bash(railway up *)",
       "Bash(timeout 18 railway logs --service ecom-eti)",
       "Bash(node -c services/uesService.js)",
-      "Bash(node -c services/supabaseService.js)"
+      "Bash(node -c services/supabaseService.js)",
+      "Bash(node -e \"require\\('./services/shopifyService.js'\\); console.log\\('OK sintaxis'\\)\")",
+      "Bash(node -e \"require\\('./services/shopifyService.js'\\); require\\('./services/abandonedCartService.js'\\); console.log\\('servicios OK'\\)\")",
+      "Bash(node \"C:/Users/braya/AppData/Local/Temp/claude/C--Users-braya-Desktop-Veline-apps-Velinne-Envios-ecom-eti/d4f2e1a9-b1ab-4c43-87e2-fa062e290310/scratchpad/test_carritos.js\")"
     ]
   }
 }

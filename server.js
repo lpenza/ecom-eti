@@ -5155,14 +5155,27 @@ app.listen(PORT, async () => {
   // Arranca cleanup diario de PDFs MarcoPostal (retención env-configurable, default 7 días)
   etiquetaPdfCleanup.startScheduler();
 
-  // Cron: recuperación de carritos abandonados vía WhatsApp (cada 30 minutos)
-  cron.schedule('*/30 * * * *', async () => {
+  // Cron: recuperación de carritos abandonados vía WhatsApp (cada 30 minutos).
+  // Si el ciclo no pudo verificar en Shopify que el cliente NO haya comprado
+  // (verificacionFallida), NO se envió nada y reintentamos a los 5 minutos en
+  // lugar de esperar los 30 del próximo cron.
+  let carritosRetryPendiente = false;
+  const ejecutarCicloCarritos = async () => {
     try {
-      await procesarCarritosAbandonados();
+      const resultado = await procesarCarritosAbandonados();
+      if (resultado?.verificacionFallida && !carritosRetryPendiente) {
+        carritosRetryPendiente = true;
+        logService.warn('[cron] Carritos: no se pudo verificar órdenes en Shopify; no se envió nada, reintento en 5 min');
+        setTimeout(() => {
+          carritosRetryPendiente = false;
+          ejecutarCicloCarritos();
+        }, 5 * 60 * 1000);
+      }
     } catch (err) {
       logService.error('[cron] Error en recuperación de carritos abandonados', err);
     }
-  });
+  };
+  cron.schedule('*/30 * * * *', ejecutarCicloCarritos);
 
   // Cron: sincronizar stock de colores NC desde Shopify hacia productos.stock (cada 2 horas).
   // Configurable con STOCK_SKU_SYNC_CRON; se puede desactivar con STOCK_SKU_SYNC_ENABLED=false.

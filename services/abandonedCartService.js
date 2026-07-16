@@ -313,7 +313,17 @@ async function procesarCarritosAbandonados() {
   // Órdenes recientes (un solo fetch): sirven para detectar carritos recuperados
   // por checkout_token (72h) y, además, por CONTACTO —email/teléfono— de compras
   // hechas en las últimas 24h, aunque el token no coincida.
-  const ordenesRecientes = await shopifyService.obtenerOrdenesRecientes(72);
+  //
+  // FAIL-CLOSED: si Shopify no responde no podemos garantizar que el cliente NO
+  // haya comprado, así que NO enviamos ningún mensaje este ciclo y devolvemos
+  // `verificacionFallida` para que el llamador reintente en unos minutos.
+  let ordenesRecientes;
+  try {
+    ordenesRecientes = await shopifyService.obtenerOrdenesRecientes(72);
+  } catch (err) {
+    console.error(`[AbandonedCart] ⛔ No pude verificar órdenes recientes; NO envío este ciclo: ${err.message}`);
+    return { procesados: checkouts.length, enviados: 0, error: err.message, verificacionFallida: true };
+  }
   const tokensRecuperados = new Set(ordenesRecientes.map(o => o.checkout_token).filter(Boolean));
   const indiceCompras = construirIndiceCompras(ordenesRecientes, VENTANA_RECUPERADO_CONTACTO_HORAS);
   console.log(`[AbandonedCart] 🧾 ${tokensRecuperados.size} órdenes 72h · compras <${VENTANA_RECUPERADO_CONTACTO_HORAS}h → ${indiceCompras.emails.size} emails / ${indiceCompras.telefonos.size} tels`);
