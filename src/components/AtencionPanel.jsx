@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { obtenerPedidosAtencion, obtenerDetallePedido } from '../services/api';
 import CrearPedidoModal from './modals/CrearPedidoModal';
+import { formatFechaCortaUy } from '../utils/fechas';
 
 // Estado visible para atención al cliente, derivado con la misma lógica que usa
 // el tablero de admin (precedencia: procesado > despachado > etiqueta > contacto > validar).
@@ -29,10 +30,7 @@ const TIPO_ENVIO_LABELS = {
   recibilo_hoy: '⚡ Recibilo Hoy',
 };
 
-function fmtFecha(iso) {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit' });
-}
+const fmtFecha = formatFechaCortaUy;
 
 const PEDIDOS_POR_PAGINA = 15;
 

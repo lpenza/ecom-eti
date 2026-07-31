@@ -628,7 +628,8 @@ class SupabaseService {
     }
   }
 
-  // Obtener pedidos Recibilo Hoy (pendientes de despacho)
+  // Obtener pedidos Recibilo Hoy (pendientes de despacho). Al despacharse pasan a la
+  // vista Despachados (como cualquier pedido), donde se envía el fulfillment.
   async obtenerPedidosRecibilo() {
     try {
       const { data, error } = await supabase
@@ -1645,6 +1646,38 @@ class SupabaseService {
     return data;
   }
 
+  // Listar el historial de ajustes manuales de stock NC (más reciente primero).
+  // Filtros opcionales: rango de fechas (YYYY-MM-DD, inclusive), sku y usuario_id.
+  async listarAjustesStockNC({ desde = null, hasta = null, sku = null, usuario_id = null, limit = 500 } = {}) {
+    let q = supabase
+      .from('stock_ajustes_nc')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(Math.min(Number(limit) || 500, 2000));
+
+    if (desde) q = q.gte('created_at', `${desde}T00:00:00`);
+    // 'hasta' es inclusive: tomamos hasta el final de ese día.
+    if (hasta) q = q.lte('created_at', `${hasta}T23:59:59.999`);
+    if (sku) q = q.ilike('sku', `%${String(sku).trim()}%`);
+    if (usuario_id) q = q.eq('usuario_id', usuario_id);
+
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Traer nombre/sku de varios productos de una sola vez (para enriquecer listados).
+  async listarProductosPorIds(ids = []) {
+    const limpios = [...new Set(ids.filter(Boolean))];
+    if (limpios.length === 0) return [];
+    const { data, error } = await supabase
+      .from('productos')
+      .select('id, sku, nombre')
+      .in('id', limpios);
+    if (error) throw error;
+    return data || [];
+  }
+
   // ── Levantes UES ─────────────────────────────────────────────────────────────
 
   // ¿Ya existe un levante registrado para esa fecha? (un levante por día)
@@ -1675,6 +1708,20 @@ class SupabaseService {
       .single();
     if (error) throw error;
     return data;
+  }
+
+  // Levantes registrados dentro de un rango de fechas. Lo usa el control de facturación:
+  // UES cobra por solicitud de levante, así que la cantidad del período tiene que
+  // coincidir con la que factura.
+  async obtenerLevantesEnPeriodo(desde, hasta) {
+    const { data, error } = await supabase
+      .from('ues_levantes')
+      .select('id, fecha_levante, numero_levante, usuario_email, usuario_nombre, created_at')
+      .gte('fecha_levante', desde)
+      .lte('fecha_levante', hasta)
+      .order('fecha_levante', { ascending: true });
+    if (error) throw error;
+    return data || [];
   }
 
   // Listar levantes registrados (más recientes primero)
@@ -2139,6 +2186,236 @@ class SupabaseService {
       periodoAnterior: { desde: desdeAnterior, hasta: hastaAnterior },
       comparativa,
     };
+  }
+
+  // ── Control de facturación de envíos ────────────────────────────────────────
+  // Ver sql/create_facturacion_envios.sql. Las búsquedas por lote van chunkeadas
+  // porque `.in()` viaja en la query string y con 200+ guías revienta la URL.
+
+  async obtenerTarifasFacturacion() {
+    const { data, error } = await supabase
+      .from('facturacion_tarifas')
+      .select('*')
+      .eq('activo', true)
+      .order('proveedor', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  }
+
+  async guardarTarifaFacturacion(tarifa) {
+    const payload = {
+      proveedor: tarifa.proveedor,
+      servicio: tarifa.servicio || '*',
+      categoria_zona: tarifa.categoria_zona || '*',
+      importe: Number(tarifa.importe),
+      incluye_iva: !!tarifa.incluye_iva,
+      activo: tarifa.activo !== false,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (tarifa.id) {
+      const { data, error } = await supabase
+        .from('facturacion_tarifas')
+        .update(payload)
+        .eq('id', tarifa.id)
+        .select()
+        .single();
+      if (error) throw error;
+      return data;
+    }
+
+    const { data, error } = await supabase
+      .from('facturacion_tarifas')
+      .insert(payload)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async obtenerParametrosFacturacion() {
+    const { data, error } = await supabase
+      .from('facturacion_parametros')
+      .select('*');
+    if (error) throw error;
+    return data || [];
+  }
+
+  async guardarParametrosFacturacion(parametros) {
+    const filas = Object.entries(parametros).map(([clave, valor]) => ({
+      clave,
+      valor: String(valor),
+      updated_at: new Date().toISOString(),
+    }));
+    if (filas.length === 0) return [];
+
+    const { data, error } = await supabase
+      .from('facturacion_parametros')
+      .upsert(filas, { onConflict: 'clave' })
+      .select();
+    if (error) throw error;
+    return data || [];
+  }
+
+  async obtenerLiquidacionesFacturacion({ proveedor = null, limite = 50 } = {}) {
+    let query = supabase
+      .from('facturacion_liquidaciones')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limite);
+    if (proveedor) query = query.eq('proveedor', proveedor);
+
+    const { data, error } = await query;
+    if (error) throw error;
+    return data || [];
+  }
+
+  async obtenerLiquidacionFacturacion(id) {
+    const { data, error } = await supabase
+      .from('facturacion_liquidaciones')
+      .select('*')
+      .eq('id', id)
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async buscarLiquidacionPorHash(hash) {
+    const { data, error } = await supabase
+      .from('facturacion_liquidaciones')
+      .select('*')
+      .eq('archivo_hash', hash)
+      .limit(1);
+    if (error) throw error;
+    return data?.[0] || null;
+  }
+
+  async crearLiquidacionFacturacion(liquidacion) {
+    const { data, error } = await supabase
+      .from('facturacion_liquidaciones')
+      .insert({ ...liquidacion, created_at: new Date().toISOString() })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async insertarLineasFacturacion(lineas) {
+    if (!Array.isArray(lineas) || lineas.length === 0) return 0;
+    let insertadas = 0;
+    for (let i = 0; i < lineas.length; i += 200) {
+      const lote = lineas.slice(i, i + 200);
+      const { error } = await supabase.from('facturacion_lineas').insert(lote);
+      if (error) throw error;
+      insertadas += lote.length;
+    }
+    return insertadas;
+  }
+
+  async obtenerLineasFacturacion(liquidacionId) {
+    const { data, error } = await supabase
+      .from('facturacion_lineas')
+      .select('*')
+      .eq('liquidacion_id', liquidacionId)
+      .order('fecha', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  }
+
+  async buscarLineasFacturacionPorGuias(proveedor, guias = []) {
+    return this._buscarLineasFacturacionPor('guia', proveedor, guias);
+  }
+
+  async buscarLineasFacturacionPorOrdenes(proveedor, ordenes = []) {
+    return this._buscarLineasFacturacionPor('orden', proveedor, ordenes);
+  }
+
+  async _buscarLineasFacturacionPor(campo, proveedor, valores = []) {
+    const limpios = [...new Set((valores || []).filter(Boolean).map(String))];
+    if (limpios.length === 0) return [];
+
+    const resultados = [];
+    for (let i = 0; i < limpios.length; i += 200) {
+      const lote = limpios.slice(i, i + 200);
+      const { data, error } = await supabase
+        .from('facturacion_lineas')
+        .select('id, liquidacion_id, proveedor, guia, orden, fecha, importe_total, revision_estado')
+        .eq('proveedor', proveedor)
+        .in(campo, lote);
+      if (error) throw error;
+      if (data) resultados.push(...data);
+    }
+    return resultados;
+  }
+
+  async actualizarRevisionLineaFacturacion(id, { estado, nota = null, usuario = null }) {
+    const { data, error } = await supabase
+      .from('facturacion_lineas')
+      .update({
+        revision_estado: estado,
+        revision_nota: nota,
+        revision_usuario: usuario,
+        revision_at: new Date().toISOString(),
+      })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async eliminarLiquidacionFacturacion(id) {
+    // Las líneas caen por ON DELETE CASCADE.
+    const { error } = await supabase
+      .from('facturacion_liquidaciones')
+      .delete()
+      .eq('id', id);
+    if (error) throw error;
+    return true;
+  }
+
+  // Pedidos por número de seguimiento (guía de UES o guiaId de MarcoPostal).
+  async buscarPedidosPorTrackings(trackings = []) {
+    return this._buscarPedidosPor('numero_seguimiento_ues', trackings);
+  }
+
+  // Pedidos por número de orden. Se buscan también los reenvíos "RCL-<orden>", que son
+  // los que justifican un segundo cobro sobre la misma orden.
+  async buscarPedidosPorNumeros(numeros = []) {
+    const base = [...new Set((numeros || []).filter(Boolean).map(String))];
+    if (base.length === 0) return [];
+    const conReenvios = base.flatMap((n) => [n, `RCL-${n}`, `COL-${n}`]);
+    return this._buscarPedidosPor('numero_pedido', conReenvios);
+  }
+
+  async _buscarPedidosPor(campo, valores = []) {
+    const limpios = [...new Set((valores || []).filter(Boolean).map(String))];
+    if (limpios.length === 0) return [];
+
+    const resultados = [];
+    for (let i = 0; i < limpios.length; i += 200) {
+      const lote = limpios.slice(i, i + 200);
+      const { data, error } = await supabase
+        .from('pedidos')
+        .select('id, numero_pedido, numero_seguimiento_ues, cliente_nombre, estado, es_reenvio, es_reclamo, created_at')
+        .in(campo, lote);
+      if (error) throw error;
+      if (data) resultados.push(...data);
+    }
+    return resultados;
+  }
+
+  // Pedidos con etiqueta generada dentro del período que deberían aparecer en el archivo
+  // del courier. Sirve para el chequeo inverso "esto lo despaché pero no me lo cobraron".
+  async obtenerPedidosConGuiaEnPeriodo(desde, hasta) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('id, numero_pedido, numero_seguimiento_ues, cliente_nombre, created_at')
+      .not('numero_seguimiento_ues', 'is', null)
+      .gte('created_at', desde)
+      .lte('created_at', hasta);
+    if (error) throw error;
+    return data || [];
   }
 }
 

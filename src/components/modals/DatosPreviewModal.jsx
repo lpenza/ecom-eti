@@ -7,6 +7,7 @@ import {
   obtenerPuntosRetiroUES,
   previewGuiaMarcoPostal,
 } from '../../services/api';
+import { formatFechaUy } from '../../utils/fechas';
 
 function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex = 0, onReviewedChange, onClose, onConfirm, isReclamoMode = false, onUpdateRevisionContacto }) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
@@ -1734,7 +1735,7 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
             <h4>📊 Información del Envío</h4>
             <div className="preview-field">
               <strong>Fecha Pedido:</strong>
-              <span>{currentPedido.fecha_pedido ? new Date(currentPedido.fecha_pedido).toLocaleDateString('es-UY') : '-'}</span>
+              <span>{formatFechaUy(currentPedido.fecha_pedido, '-')}</span>
             </div>
             <div className="preview-field">
               <strong>Estado:</strong>

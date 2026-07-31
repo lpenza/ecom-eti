@@ -4,6 +4,7 @@ import {
   LineChart, Line,
 } from 'recharts';
 import { obtenerColorTrends, refrescarColorTrends } from '../services/api';
+import { formatDiaMesUy, formatFechaHoraCompletaUy } from '../utils/fechas';
 
 const PALETTE = ['#e85a8a', '#7a6ad8', '#3aa3d6', '#4cc38a', '#f5a623', '#d05656', '#9aa0a6', '#8d6e63', '#4a90e2', '#c85cd9'];
 
@@ -33,9 +34,7 @@ function formatFecha(s, granularidad) {
     const [y, m] = s.split('-');
     return `${m}/${y.slice(2)}`;
   }
-  const d = new Date(`${s}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return s;
-  return d.toLocaleDateString('es-UY', { day: '2-digit', month: 'short' });
+  return formatDiaMesUy(s, s);
 }
 
 export default function ColorTrendsPanel() {
@@ -185,7 +184,7 @@ export default function ColorTrendsPanel() {
           <p className="ct-subtitle">
             Unidades vendidas por color (esmaltes sueltos + componentes de kits/sets).
             {data?.refreshed_at && (
-              <span className="ct-refreshed"> · Cache: {new Date(data.refreshed_at).toLocaleString('es-UY')}</span>
+              <span className="ct-refreshed"> · Cache: {formatFechaHoraCompletaUy(data.refreshed_at)}</span>
             )}
           </p>
         </div>

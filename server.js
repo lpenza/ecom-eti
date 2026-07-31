@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const path = require('path');
+const crypto = require('crypto');
 const fs = require('fs').promises;
 const axios = require('axios');
 const { google } = require('googleapis');
@@ -36,7 +37,9 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
-app.use(bodyParser.json({ charset: 'utf-8' }));
+// El límite por defecto (100 kb) se queda corto para /api/facturacion/cargar, que
+// recibe el .xlsx del courier en base64 (~85 kb para un mes típico).
+app.use(bodyParser.json({ charset: 'utf-8', limit: '15mb' }));
 app.use(express.static('public'));
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, 'dist')));
@@ -56,6 +59,8 @@ const marcoPostalWebService = require('./services/marcoPostalWebService');
 const etiquetaPdfService = require('./services/etiquetaPdfService');
 const etiquetaPdfCleanup = require('./services/etiquetaPdfCleanup');
 const shopifyService = require('./services/shopifyService');
+const facturacionParserService = require('./services/facturacionParserService');
+const facturacionAuditService = require('./services/facturacionAuditService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
 const { procesarCarritosAbandonados, sincronizarDesdeShopify, probarMensaje, crearCarritoManual, obtenerCarritosDB, obtenerFlujoConfig, guardarFlujoConfig, guardarCheckoutCapturado, revisarYEncolar, enviarLinkAPendientes } = require('./services/abandonedCartService');
 const emailService = require('./services/emailService');
@@ -364,6 +369,419 @@ app.get('/api/admin/entregas-sin-despacho', requireAuth, requireAdmin, async (re
     res.json({ success: true, pedidos });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Log de ajustes manuales de stock NC hechos en la pantalla "Stock Colores".
+// Filtros: ?desde=YYYY-MM-DD&hasta=YYYY-MM-DD&sku=NC-01&usuario_id=<uuid>&limit=500
+app.get('/api/admin/stock-ajustes-nc', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { desde, hasta, sku, usuario_id, limit } = req.query || {};
+    const ajustes = await supabaseService.listarAjustesStockNC({
+      desde: desde || null,
+      hasta: hasta || null,
+      sku: sku || null,
+      usuario_id: usuario_id || null,
+      limit: limit || 500,
+    });
+
+    // La auditoría sólo guarda el SKU: agregamos el nombre del color para que el log se lea.
+    let productosPorId = {};
+    try {
+      const productos = await supabaseService.listarProductosPorIds(ajustes.map((a) => a.producto_id));
+      productosPorId = Object.fromEntries(productos.map((p) => [p.id, p]));
+    } catch (_) { /* si falla, el log sale igual pero sin nombre */ }
+
+    res.json({
+      success: true,
+      ajustes: ajustes.map((a) => ({
+        ...a,
+        producto_nombre: productosPorId[a.producto_id]?.nombre || null,
+      })),
+    });
+  } catch (err) {
+    // La tabla puede no existir todavía (sql/create_stock_ajustes_nc.sql sin correr):
+    // en ese caso no es un error de la app, devolvemos lista vacía + aviso.
+    const falta = /stock_ajustes_nc/i.test(err.message || '') &&
+                  /does not exist|schema cache|not find/i.test(err.message || '');
+    logService.error('Error listando ajustes de stock NC', err);
+    if (falta) {
+      return res.json({
+        success: true,
+        ajustes: [],
+        aviso: 'La tabla stock_ajustes_nc todavía no existe. Corré sql/create_stock_ajustes_nc.sql en Supabase para empezar a registrar el historial.',
+      });
+    }
+    res.status(500).json({ success: false, ajustes: [], error: err.message });
+  }
+});
+
+// ── Control de facturación de envíos ─────────────────────────────────────────
+// Carga los Excel mensuales de UES y MarcoPostal, los audita contra los pedidos de
+// la app y contra las liquidaciones anteriores, y devuelve el reporte de hallazgos.
+// Ver sql/create_facturacion_envios.sql.
+
+const FACTURACION_TABLAS = /facturacion_(tarifas|parametros|liquidaciones|lineas)/i;
+const AVISO_FACTURACION_SIN_TABLAS =
+  'Las tablas de facturación todavía no existen. Corré sql/create_facturacion_envios.sql en Supabase.';
+
+function faltanTablasFacturacion(error) {
+  const msg = error?.message || '';
+  return FACTURACION_TABLAS.test(msg) && /does not exist|schema cache|not find/i.test(msg);
+}
+
+// Lee tarifas y parámetros, con defaults por si la tabla de parámetros está incompleta.
+async function cargarConfigFacturacion() {
+  const [tarifas, parametrosRaw] = await Promise.all([
+    supabaseService.obtenerTarifasFacturacion(),
+    supabaseService.obtenerParametrosFacturacion(),
+  ]);
+
+  const params = Object.fromEntries(parametrosRaw.map((p) => [p.clave, p.valor]));
+  const ivaTasa = Number(params.iva_tasa);
+  const costoContable = Number(params.costo_contable_mvd);
+  const costoLevante = Number(params.ues_costo_levante);
+
+  return {
+    tarifas,
+    parametrosRaw,
+    ivaTasa: Number.isFinite(ivaTasa) ? ivaTasa : 0.22,
+    costoContableMvd: Number.isFinite(costoContable) ? costoContable : null,
+    costoLevante: Number.isFinite(costoLevante) ? costoLevante : 0,
+    zonasExtendidas: String(params.mp_zonas_extendidas || '3,9,10')
+      .split(',')
+      .map((z) => Number(String(z).trim()))
+      .filter(Number.isFinite),
+  };
+}
+
+// Pasa una línea auditada al shape de la tabla facturacion_lineas.
+function lineaAFila(linea, liquidacionId, proveedor) {
+  return {
+    liquidacion_id: liquidacionId,
+    proveedor,
+    guia: linea.guia,
+    orden: linea.orden,
+    fecha: linea.fecha ? linea.fecha.toISOString() : null,
+    servicio: linea.servicio,
+    estado: linea.estado,
+    destinatario: linea.destinatario,
+    localidad: linea.localidad,
+    departamento: linea.departamento,
+    zona: linea.zona,
+    categoria_zona: linea.categoriaZona,
+    peso: linea.peso,
+    importe_neto: linea.importeNeto,
+    iva: linea.iva,
+    importe_total: linea.importeTotal,
+    importe_origen: linea.importeOrigen,
+    pedido_id: linea.pedidoId || null,
+    fila_excel: linea.filaExcel,
+    raw: linea.raw || null,
+  };
+}
+
+// Importa (o previsualiza) un archivo. Con `guardar: false` no escribe nada: parsea,
+// audita y devuelve el reporte para que el usuario decida antes de persistir.
+app.post('/api/facturacion/cargar', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const {
+      filename, contenidoBase64, periodoDesde, periodoHasta,
+      guardar = false, forzar = false, levantesCantidad = null,
+    } = req.body || {};
+    if (!contenidoBase64) {
+      return res.status(400).json({ success: false, error: 'Falta el contenido del archivo' });
+    }
+
+    const buffer = Buffer.from(contenidoBase64, 'base64');
+    if (buffer.length === 0) {
+      return res.status(400).json({ success: false, error: 'El archivo llegó vacío' });
+    }
+    const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+
+    const config = await cargarConfigFacturacion();
+    const parsed = await facturacionParserService.parseArchivo(buffer, {
+      tarifas: config.tarifas,
+      ivaTasa: config.ivaTasa,
+      zonasExtendidas: config.zonasExtendidas,
+    });
+
+    // El período lo define el usuario si lo indica; si no, el rango real del archivo.
+    const desde = periodoDesde ? new Date(`${periodoDesde}T00:00:00-03:00`) : parsed.periodoDesde;
+    const hasta = periodoHasta ? new Date(`${periodoHasta}T23:59:59-03:00`) : parsed.periodoHasta;
+
+    const liquidacionPrevia = await supabaseService.buscarLiquidacionPorHash(hash);
+
+    const { lineas, resumen, avisos, levantes } = await facturacionAuditService.auditarLineas({
+      proveedor: parsed.proveedor,
+      lineas: parsed.lineas,
+      periodoDesde: desde,
+      periodoHasta: hasta,
+      totalDeclarado: parsed.totalDeclarado,
+      parametros: {
+        ivaTasa: config.ivaTasa,
+        costoContableMvd: config.costoContableMvd,
+        costoLevante: config.costoLevante,
+      },
+      levantesDetectados: parsed.levantesDetectados,
+      cantidadFacturada: levantesCantidad === null ? null : Number(levantesCantidad),
+    });
+
+    if (liquidacionPrevia) {
+      avisos.unshift({
+        tipo: 'archivo_ya_cargado',
+        mensaje: `Este mismo archivo ya se cargó el ${new Date(liquidacionPrevia.created_at).toLocaleDateString('es-UY')} (liquidación #${liquidacionPrevia.id}).`,
+      });
+    }
+
+    let liquidacion = null;
+    if (guardar) {
+      if (liquidacionPrevia && !forzar) {
+        return res.status(409).json({
+          success: false,
+          error: 'Este archivo ya fue importado. Volvé a intentar con "forzar" si querés guardarlo igual.',
+          liquidacionPrevia,
+        });
+      }
+
+      liquidacion = await supabaseService.crearLiquidacionFacturacion({
+        proveedor: parsed.proveedor,
+        archivo_nombre: filename || 'sin-nombre.xlsx',
+        archivo_hash: hash,
+        periodo_desde: desde ? desde.toISOString().slice(0, 10) : null,
+        periodo_hasta: hasta ? hasta.toISOString().slice(0, 10) : null,
+        total_filas: lineas.length,
+        // Los totales guardados incluyen los levantes: es lo que UES factura en total.
+        total_neto: resumen.totalGeneral.neto,
+        total_iva: resumen.totalGeneral.iva,
+        total_con_iva: resumen.totalGeneral.total,
+        total_declarado: parsed.totalDeclarado,
+        levantes_cantidad: levantes?.cantidad || 0,
+        levantes_costo_unitario: levantes?.costoUnitario ?? null,
+        levantes_total: levantes?.total || 0,
+        usuario_email: req.user?.email || null,
+      });
+
+      await supabaseService.insertarLineasFacturacion(
+        lineas.map((l) => lineaAFila(l, liquidacion.id, parsed.proveedor))
+      );
+
+      logService.info(`Liquidación de facturación guardada (${req.user?.email})`, {
+        liquidacionId: liquidacion.id,
+        proveedor: parsed.proveedor,
+        lineas: lineas.length,
+        levantes: levantes?.cantidad || 0,
+        totalConIva: resumen.totalGeneral.total,
+      });
+    }
+
+    res.json({
+      success: true,
+      guardado: !!liquidacion,
+      liquidacion,
+      proveedor: parsed.proveedor,
+      hoja: parsed.hoja,
+      archivoHash: hash,
+      periodo: {
+        desde: desde ? desde.toISOString() : null,
+        hasta: hasta ? hasta.toISOString() : null,
+      },
+      totalDeclarado: parsed.totalDeclarado,
+      resumen,
+      avisos,
+      levantes,
+      lineas,
+    });
+  } catch (error) {
+    logService.error('Facturación — error importando archivo', error);
+    if (faltanTablasFacturacion(error)) {
+      return res.status(400).json({ success: false, error: AVISO_FACTURACION_SIN_TABLAS });
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/facturacion/liquidaciones', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const liquidaciones = await supabaseService.obtenerLiquidacionesFacturacion({
+      proveedor: req.query.proveedor || null,
+    });
+    res.json({ success: true, liquidaciones });
+  } catch (error) {
+    logService.error('Facturación — error listando liquidaciones', error);
+    if (faltanTablasFacturacion(error)) {
+      return res.json({ success: true, liquidaciones: [], aviso: AVISO_FACTURACION_SIN_TABLAS });
+    }
+    res.status(500).json({ success: false, liquidaciones: [], error: error.message });
+  }
+});
+
+// Reporte de una liquidación ya guardada: se vuelve a auditar sobre lo persistido, así
+// refleja los duplicados que aparecieron en liquidaciones posteriores y las revisiones.
+app.get('/api/facturacion/liquidaciones/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const liquidacion = await supabaseService.obtenerLiquidacionFacturacion(req.params.id);
+    const filas = await supabaseService.obtenerLineasFacturacion(req.params.id);
+    const config = await cargarConfigFacturacion();
+
+    // Reconstruir el shape que espera el auditor desde las filas guardadas.
+    const lineas = filas.map((f) => {
+      const servicioNormalizado = facturacionParserService.normalizarTexto(f.servicio);
+      const tarifa = facturacionParserService.buscarTarifa(
+        config.tarifas, f.proveedor, servicioNormalizado, f.categoria_zona || '*'
+      );
+      const tarifaEsperadaNeta = tarifa
+        ? facturacionParserService.redondear2(
+          tarifa.incluye_iva ? Number(tarifa.importe) / (1 + config.ivaTasa) : Number(tarifa.importe)
+        )
+        : null;
+
+      return {
+        id: f.id,
+        guia: f.guia,
+        orden: f.orden,
+        fecha: f.fecha ? new Date(f.fecha) : null,
+        servicio: f.servicio,
+        servicioNormalizado,
+        estado: f.estado,
+        destinatario: f.destinatario,
+        localidad: f.localidad,
+        departamento: f.departamento,
+        zona: f.zona,
+        categoriaZona: f.categoria_zona,
+        peso: f.peso === null ? null : Number(f.peso),
+        importeNeto: Number(f.importe_neto),
+        iva: Number(f.iva),
+        importeTotal: Number(f.importe_total),
+        importeOrigen: f.importe_origen,
+        tarifaEsperadaNeta,
+        sinTarifa: !tarifa,
+        filaExcel: f.fila_excel,
+        raw: f.raw,
+        // El Excel ya no está: los datos del levante se recuperan de `raw` para poder
+        // volver a contar los días de levante en domicilio.
+        levanteTipo: facturacionParserService.normalizarTexto(f.raw?.levante),
+        levanteFecha: f.raw?.levanteFecha ? new Date(f.raw.levanteFecha) : null,
+        revisionEstado: f.revision_estado,
+        revisionNota: f.revision_nota,
+        revisionUsuario: f.revision_usuario,
+        revisionAt: f.revision_at,
+      };
+    });
+
+    const { resumen, avisos, levantes } = await facturacionAuditService.auditarLineas({
+      proveedor: liquidacion.proveedor,
+      lineas,
+      periodoDesde: liquidacion.periodo_desde ? new Date(`${liquidacion.periodo_desde}T00:00:00-03:00`) : null,
+      periodoHasta: liquidacion.periodo_hasta ? new Date(`${liquidacion.periodo_hasta}T23:59:59-03:00`) : null,
+      totalDeclarado: liquidacion.total_declarado === null ? null : Number(liquidacion.total_declarado),
+      parametros: {
+        ivaTasa: config.ivaTasa,
+        costoContableMvd: config.costoContableMvd,
+        costoLevante: config.costoLevante,
+      },
+      levantesDetectados: facturacionParserService.detectarLevantes(lineas),
+      cantidadFacturada: liquidacion.levantes_cantidad ?? null,
+      liquidacionIdActual: liquidacion.id,
+    });
+
+    res.json({
+      success: true,
+      guardado: true,
+      liquidacion,
+      proveedor: liquidacion.proveedor,
+      periodo: { desde: liquidacion.periodo_desde, hasta: liquidacion.periodo_hasta },
+      totalDeclarado: liquidacion.total_declarado,
+      resumen,
+      avisos,
+      levantes,
+      lineas,
+    });
+  } catch (error) {
+    logService.error('Facturación — error obteniendo reporte', error);
+    if (faltanTablasFacturacion(error)) {
+      return res.status(400).json({ success: false, error: AVISO_FACTURACION_SIN_TABLAS });
+    }
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/facturacion/liquidaciones/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await supabaseService.eliminarLiquidacionFacturacion(req.params.id);
+    logService.info(`Facturación — liquidación ${req.params.id} eliminada por ${req.user?.email}`);
+    res.json({ success: true });
+  } catch (error) {
+    logService.error('Facturación — error eliminando liquidación', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.patch('/api/facturacion/lineas/:id/revision', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { estado, nota } = req.body || {};
+    const validos = ['pendiente', 'reclamado', 'justificado', 'acreditado'];
+    if (!validos.includes(estado)) {
+      return res.status(400).json({ success: false, error: `Estado inválido. Válidos: ${validos.join(', ')}` });
+    }
+
+    const linea = await supabaseService.actualizarRevisionLineaFacturacion(req.params.id, {
+      estado,
+      nota: nota || null,
+      usuario: req.user?.email || null,
+    });
+    res.json({ success: true, linea });
+  } catch (error) {
+    logService.error('Facturación — error marcando revisión', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/facturacion/config', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const config = await cargarConfigFacturacion();
+    res.json({
+      success: true,
+      tarifas: config.tarifas,
+      parametros: config.parametrosRaw,
+      ivaTasa: config.ivaTasa,
+      costoContableMvd: config.costoContableMvd,
+      zonasExtendidas: config.zonasExtendidas,
+    });
+  } catch (error) {
+    logService.error('Facturación — error leyendo configuración', error);
+    if (faltanTablasFacturacion(error)) {
+      return res.json({ success: true, tarifas: [], parametros: [], aviso: AVISO_FACTURACION_SIN_TABLAS });
+    }
+    res.status(500).json({ success: false, tarifas: [], parametros: [], error: error.message });
+  }
+});
+
+app.put('/api/facturacion/tarifas', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { tarifa } = req.body || {};
+    if (!tarifa?.proveedor || tarifa.importe === undefined) {
+      return res.status(400).json({ success: false, error: 'Falta proveedor o importe' });
+    }
+    const guardada = await supabaseService.guardarTarifaFacturacion(tarifa);
+    res.json({ success: true, tarifa: guardada });
+  } catch (error) {
+    logService.error('Facturación — error guardando tarifa', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put('/api/facturacion/parametros', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { parametros } = req.body || {};
+    if (!parametros || typeof parametros !== 'object') {
+      return res.status(400).json({ success: false, error: 'Falta el objeto parametros' });
+    }
+    const guardados = await supabaseService.guardarParametrosFacturacion(parametros);
+    res.json({ success: true, parametros: guardados });
+  } catch (error) {
+    logService.error('Facturación — error guardando parámetros', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -2212,10 +2630,11 @@ async function handleFulfillmentShopify(req, res) {
           continue;
         }
 
-        // URL de tracking según departamento. MV → MarcoPostal, resto → UES (env template).
+        // URL de tracking según departamento. MV y Recibilo Hoy → MarcoPostal, resto → UES (env template).
         // No mandamos tracking_company para no depender de carriers registrados en Shopify.
         const esMontevideo = String(pedido.departamento || '').trim().toLowerCase() === 'montevideo';
-        const fulfillmentOptions = esMontevideo
+        const esRecibilo = pedido.tipo_envio === 'recibilo_hoy';
+        const fulfillmentOptions = (esMontevideo || esRecibilo)
           ? { trackingUrl: 'https://marcopostal.epresis.com/seguimiento' }
           : {};
 
@@ -4933,18 +5352,24 @@ app.post('/api/generar-etiqueta-marcopostal/:pedidoId', requireAuth, async (req,
     }
 
     const isPickup = pedido.tipo_envio === 'pickup_local';
+    const isRecibilo = pedido.tipo_envio === 'recibilo_hoy';
     const isExpress = Boolean(pedido.es_envio_express);
 
-    if (!isPickup && !isExpress) {
-      return res.status(400).json({ success: false, error: 'El pedido no es express ni pickup' });
+    if (!isPickup && !isRecibilo && !isExpress) {
+      return res.status(400).json({ success: false, error: 'El pedido no es express, pickup ni recibilo hoy' });
     }
 
     // Pickup → usa el flujo web (session + CSRF) con servicio_id=9 (PickUp en MP)
+    // Recibilo Hoy → flujo web de delivery (mismo formulario nueva-guia-v2)
     // Express → mantiene el flujo legacy API-token (compatibilidad)
     let guiaId;
     let raw = null;
     if (isPickup) {
       const result = await marcoPostalWebService.generarGuiaPickup(pedido, req.body?.payloadOverrides || {});
+      guiaId = result.guiaId;
+      raw = result.raw;
+    } else if (isRecibilo) {
+      const result = await marcoPostalWebService.generarGuia(pedido, req.body?.payloadOverrides || {});
       guiaId = result.guiaId;
       raw = result.raw;
     } else {
@@ -4958,7 +5383,7 @@ app.post('/api/generar-etiqueta-marcopostal/:pedidoId', requireAuth, async (req,
 
     // Renderizar PDF local (sólo aplica al flow web; legacy ya tiene su URL HTML)
     let pdfUrl = null;
-    if (isPickup) {
+    if (isPickup || isRecibilo) {
       try {
         pdfUrl = await etiquetaPdfService.renderEtiquetaMarcoPostal(guiaId);
       } catch (pdfErr) {
@@ -4986,7 +5411,7 @@ app.post('/api/generar-etiqueta-marcopostal/:pedidoId', requireAuth, async (req,
       pedidoId,
       guiaId,
       labelUrl,
-      modo: isPickup ? 'pickup-web' : 'express-legacy',
+      modo: isPickup ? 'pickup-web' : isRecibilo ? 'recibilo-web' : 'express-legacy',
     });
 
     res.json({ success: true, guiaId, labelUrl, raw });

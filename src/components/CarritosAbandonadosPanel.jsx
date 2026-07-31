@@ -7,6 +7,7 @@ import {
   revisarColaCarritos,
   enviarLinkPendientes,
 } from '../services/api';
+import { formatUy, tiempoRelativoUy } from '../utils/fechas';
 
 // Mostrar el botón "Carrito de prueba" (oculto en producción; poner en true para testear)
 const MOSTRAR_CARRITO_PRUEBA = false;
@@ -19,22 +20,12 @@ function linkAleatorio() {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
-function tiempoRelativo(isoDate) {
-  if (!isoDate) return '—';
-  const diff = Date.now() - new Date(isoDate).getTime();
-  const min  = Math.floor(diff / 60000);
-  const hrs  = Math.floor(min / 60);
-  const dias = Math.floor(hrs / 24);
-  if (dias > 0)  return `hace ${dias}d ${hrs % 24}h`;
-  if (hrs > 0)   return `hace ${hrs}h ${min % 60}m`;
-  return `hace ${min}m`;
-}
+const tiempoRelativo = tiempoRelativoUy;
 
 function formatHora(isoDate) {
   if (!isoDate) return null;
-  const d = new Date(isoDate);
-  return d.toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit' })
-    + ' ' + d.toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit' });
+  return formatUy(isoDate, { day: '2-digit', month: '2-digit' })
+    + ' ' + formatUy(isoDate, { hour: '2-digit', minute: '2-digit' });
 }
 
 // Cantidad de pasos del flujo ya enviados para un carrito

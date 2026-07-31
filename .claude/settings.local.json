@@ -58,7 +58,15 @@
       "Bash(node -c services/supabaseService.js)",
       "Bash(node -e \"require\\('./services/shopifyService.js'\\); console.log\\('OK sintaxis'\\)\")",
       "Bash(node -e \"require\\('./services/shopifyService.js'\\); require\\('./services/abandonedCartService.js'\\); console.log\\('servicios OK'\\)\")",
-      "Bash(node \"C:/Users/braya/AppData/Local/Temp/claude/C--Users-braya-Desktop-Veline-apps-Velinne-Envios-ecom-eti/d4f2e1a9-b1ab-4c43-87e2-fa062e290310/scratchpad/test_carritos.js\")"
+      "Bash(node \"C:/Users/braya/AppData/Local/Temp/claude/C--Users-braya-Desktop-Veline-apps-Velinne-Envios-ecom-eti/d4f2e1a9-b1ab-4c43-87e2-fa062e290310/scratchpad/test_carritos.js\")",
+      "PowerShell(npx vite build 2>$null)",
+      "PowerShell(node \"C:\\\\Users\\\\braya\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-braya-Desktop-Veline-apps-Velinne-Envios-ecom-eti\\\\5bf24ff4-1d70-4c63-ab23-2fcb078671ca\\\\scratchpad\\\\check-tabla.js\")",
+      "PowerShell(node tmp-check-tabla.js)",
+      "PowerShell(node tmp-check-fecha.js)",
+      "PowerShell(node tmp-test-fechas.mjs)",
+      "PowerShell(node tmp-test-fmt.mjs 2>$null)",
+      "PowerShell(npx vite build 2>&1)",
+      "Bash(node -e \"const s=require\\('./package.json'\\).scripts; console.log\\(JSON.stringify\\(s,null,2\\)\\)\")"
     ]
   }
 }

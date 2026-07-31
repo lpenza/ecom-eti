@@ -6,6 +6,7 @@ import {
   obtenerNotasCliente,
   obtenerPedidosFollowUp,
 } from '../services/api';
+import { formatFechaLargaUy, formatFechaUy, formatUy } from '../utils/fechas';
 
 const TASK_STATUS_STORAGE_KEY = 'velinne_followup_task_status_v1';
 const CUSTOMER_STATES = [
@@ -29,12 +30,7 @@ function getTodayIso() {
 }
 
 function getTodayLabel() {
-  return new Date().toLocaleDateString('es-UY', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
+  return formatFechaLargaUy();
 }
 
 function normalizePhoneForWa(phone) {
@@ -53,22 +49,16 @@ function getInitials(name) {
 }
 
 function formatDate(iso) {
-  if (!iso) return '-';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '-';
-  return d.toLocaleDateString('es-UY');
+  return formatFechaUy(iso, '-');
 }
 
 function formatDateTime(iso) {
-  if (!iso) return '-';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '-';
-  return d.toLocaleString('es-UY', {
+  return formatUy(iso, {
     day: '2-digit',
     month: 'short',
     hour: '2-digit',
     minute: '2-digit',
-  });
+  }, '-');
 }
 
 function formatPrimerNombre(nombreCompleto) {

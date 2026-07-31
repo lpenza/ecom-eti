@@ -4,6 +4,7 @@ import {
   obtenerBotContactHistory,
   obtenerBotContacts,
 } from '../services/api';
+import { formatFechaHoraUy } from '../utils/fechas';
 
 // ── Metadata maps ─────────────────────────────────────────────────────────────
 
@@ -127,12 +128,7 @@ function getRecommendedAction(contact) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function formatDate(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleString('es-UY', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
+const formatDate = formatFechaHoraUy;
 
 function formatPhone(value) {
   const raw = String(value || '');

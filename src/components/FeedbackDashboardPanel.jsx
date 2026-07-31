@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { obtenerFeedbackDashboard, analizarRazonesCompra, reintentarFollowup } from '../services/api';
+import { formatDiaMesUy, formatUy } from '../utils/fechas';
 
 function percent(part, total) {
   if (!total) return 0;
@@ -11,9 +12,7 @@ function formatPct(part, total) {
 }
 
 function formatDateLabel(isoDate) {
-  const d = new Date(`${isoDate}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return isoDate;
-  return d.toLocaleDateString('es-UY', { day: '2-digit', month: 'short' });
+  return formatDiaMesUy(isoDate, isoDate);
 }
 
 function normalizeLabel(label) {
@@ -228,10 +227,7 @@ function StateBadge({ state }) {
 }
 
 function formatRelativeDate(isoDate) {
-  if (!isoDate) return '—';
-  const d = new Date(isoDate);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleDateString('es-UY', { day: '2-digit', month: 'short', year: '2-digit' });
+  return formatUy(isoDate, { day: '2-digit', month: 'short', year: '2-digit' });
 }
 
 function maskPhone(phone) {

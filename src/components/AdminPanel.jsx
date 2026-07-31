@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { formatFechaHoraCompletaUy, hoyIsoUy } from '../utils/fechas';
 
 const API = '/api';
 
@@ -10,12 +11,10 @@ function fetchAdmin(url, options = {}) {
   }).then((r) => r.json());
 }
 
-const hoy = new Date().toISOString().slice(0, 10);
-const inicioMes = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
-
-// Fecha de hoy en horario local (Uruguay), no UTC — para el levante.
-const _h = new Date();
-const hoyLocal = `${_h.getFullYear()}-${String(_h.getMonth() + 1).padStart(2, '0')}-${String(_h.getDate()).padStart(2, '0')}`;
+// Todas las fechas por defecto se calculan en horario uruguayo: con toISOString()
+// (UTC) después de las 21:00 UY el filtro arrancaba con la fecha del día siguiente.
+const hoy = hoyIsoUy();
+const inicioMes = `${hoy.slice(0, 7)}-01`;
 
 const nuevoUsuarioVacio = { nombre: '', email: '', password: '', role: 'user' };
 const nuevoProductoVacio = { nombre: '', descripcion: '', sku: '', precio: '', activo: true };
@@ -86,8 +85,16 @@ export default function AdminPanel() {
   const [guardandoFlujo, setGuardandoFlujo] = useState(false);
   const [errorFlujo, setErrorFlujo] = useState('');
 
+  // ── Stock colores: log de ajustes manuales ──
+  const [ajustes, setAjustes] = useState([]);
+  const [loadingAjustes, setLoadingAjustes] = useState(false);
+  const [avisoAjustes, setAvisoAjustes] = useState('');
+  const [ajustesDesde, setAjustesDesde] = useState(inicioMes);
+  const [ajustesHasta, setAjustesHasta] = useState(hoy);
+  const [ajustesSku, setAjustesSku] = useState('');
+
   // ── Levantes (solicitar retiro a UES) ──
-  const [levanteFecha, setLevanteFecha] = useState(hoyLocal);
+  const [levanteFecha, setLevanteFecha] = useState(hoy);
   const [levanteLoading, setLevanteLoading] = useState(false);
   const [levantes, setLevantes] = useState([]);
   const [levanteExiste, setLevanteExiste] = useState(false);
@@ -361,6 +368,64 @@ export default function AdminPanel() {
     if (tab === 'entregas') cargarEntregasSinDespacho();
   }, [tab, cargarEntregasSinDespacho]);
 
+  // ── Carga del log de ajustes de stock NC ──
+  const cargarAjustes = useCallback(() => {
+    setLoadingAjustes(true);
+    setAvisoAjustes('');
+    const qs = new URLSearchParams();
+    if (ajustesDesde) qs.set('desde', ajustesDesde);
+    if (ajustesHasta) qs.set('hasta', ajustesHasta);
+    if (ajustesSku.trim()) qs.set('sku', ajustesSku.trim());
+    fetchAdmin(`/admin/stock-ajustes-nc?${qs.toString()}`)
+      .then((res) => {
+        if (res.success) {
+          setAjustes(res.ajustes || []);
+          if (res.aviso) setAvisoAjustes(res.aviso);
+        } else {
+          mostrarToast(res.error || 'Error cargando el log de stock', 'error');
+        }
+      })
+      .catch(() => mostrarToast('Error cargando el log de stock', 'error'))
+      .finally(() => setLoadingAjustes(false));
+  }, [ajustesDesde, ajustesHasta, ajustesSku]);
+
+  useEffect(() => {
+    if (tab === 'stock') cargarAjustes();
+    // Sólo al entrar a la pestaña o cambiar el rango: el SKU se aplica con el botón.
+  }, [tab, ajustesDesde, ajustesHasta]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Exportar el log filtrado a CSV para revisarlo fuera del sistema.
+  function exportarAjustesCsv() {
+    if (ajustes.length === 0) {
+      mostrarToast('No hay ajustes para exportar', 'error');
+      return;
+    }
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const filas = [
+      ['Fecha', 'SKU', 'Color', 'Anterior', 'Nuevo', 'Diferencia', 'Usuario', 'Email', 'Origen'],
+      ...ajustes.map((a) => [
+        formatFechaHoraCompletaUy(a.created_at, ''),
+        a.sku,
+        a.producto_nombre ?? '',
+        a.stock_anterior ?? '',
+        a.stock_nuevo,
+        a.stock_anterior == null ? '' : Number(a.stock_nuevo) - Number(a.stock_anterior),
+        a.usuario_nombre ?? '',
+        a.usuario_email ?? '',
+        a.origen ?? '',
+      ]),
+    ];
+    const csv = '﻿' + filas.map((f) => f.map(esc).join(';')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ajustes-stock-nc-${ajustesDesde}_a_${ajustesHasta}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   // ── Carga y handlers del flujo de carritos ──
   const cargarFlujo = useCallback(() => {
     setLoadingFlujo(true);
@@ -475,6 +540,9 @@ export default function AdminPanel() {
         </button>
         <button className={`admin-tab${tab === 'entregas' ? ' admin-tab-active' : ''}`} onClick={() => setTab('entregas')}>
           Entregas sin despacho
+        </button>
+        <button className={`admin-tab${tab === 'stock' ? ' admin-tab-active' : ''}`} onClick={() => setTab('stock')}>
+          Stock colores
         </button>
         <button className={`admin-tab${tab === 'carritos' ? ' admin-tab-active' : ''}`} onClick={() => setTab('carritos')}>
           Carritos abandonados
@@ -1056,13 +1124,7 @@ export default function AdminPanel() {
                     <td>{p.entrega_sin_despacho_motivo || '—'}</td>
                     <td>{p.entrega_sin_despacho_por || '—'}</td>
                     <td>
-                      {p.entrega_sin_despacho_at
-                        ? new Date(p.entrega_sin_despacho_at).toLocaleString('es-UY', {
-                            timeZone: 'America/Montevideo',
-                            day: '2-digit', month: '2-digit', year: 'numeric',
-                            hour: '2-digit', minute: '2-digit',
-                          })
-                        : '—'}
+                      {formatFechaHoraCompletaUy(p.entrega_sin_despacho_at)}
                     </td>
                     <td>
                       <span className={`admin-badge admin-badge-estado-${p.estado}`}>{p.estado}</span>
@@ -1074,6 +1136,128 @@ export default function AdminPanel() {
           )}
         </section>
       )}
+
+      {/* ══════════════ TAB STOCK COLORES (log de ajustes) ══════════════ */}
+      {tab === 'stock' && (() => {
+        const totalPos = ajustes.reduce((s, a) => {
+          const d = a.stock_anterior == null ? 0 : Number(a.stock_nuevo) - Number(a.stock_anterior);
+          return d > 0 ? s + d : s;
+        }, 0);
+        const totalNeg = ajustes.reduce((s, a) => {
+          const d = a.stock_anterior == null ? 0 : Number(a.stock_nuevo) - Number(a.stock_anterior);
+          return d < 0 ? s + d : s;
+        }, 0);
+
+        return (
+          <section className="admin-section">
+            <div className="admin-section-header-row">
+              <h2 className="admin-section-title" style={{ margin: 0 }}>Ajustes manuales de stock (Stock Colores)</h2>
+              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                <button className="btn btn-secondary btn-sm" onClick={exportarAjustesCsv} disabled={ajustes.length === 0}>
+                  ⬇️ CSV
+                </button>
+                <button className="btn btn-secondary btn-sm" onClick={cargarAjustes} disabled={loadingAjustes}>
+                  {loadingAjustes ? 'Cargando...' : '🔄 Actualizar'}
+                </button>
+              </div>
+            </div>
+            <p className="admin-section-desc">
+              Cada vez que alguien guarda un conteo físico en la pantalla "Stock Colores" queda registrado
+              acá: quién lo hizo, el valor que tenía el sistema, el valor nuevo y cuándo.
+              La sincronización automática desde Shopify no se registra — sólo los cambios manuales.
+            </p>
+
+            {avisoAjustes && (
+              <div className="admin-error" style={{ background: '#fffbeb', color: '#92400e', borderColor: '#fde68a' }}>
+                {avisoAjustes}
+              </div>
+            )}
+
+            <div className="admin-reporte-filtros">
+              <label>
+                Desde
+                <input type="date" value={ajustesDesde} onChange={(e) => setAjustesDesde(e.target.value)} />
+              </label>
+              <label>
+                Hasta
+                <input type="date" value={ajustesHasta} onChange={(e) => setAjustesHasta(e.target.value)} />
+              </label>
+              <label>
+                SKU
+                <input
+                  type="text"
+                  placeholder="Filtrar por SKU…"
+                  value={ajustesSku}
+                  onChange={(e) => setAjustesSku(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && cargarAjustes()}
+                />
+              </label>
+              <button className="btn btn-primary btn-sm" onClick={cargarAjustes} disabled={loadingAjustes}>
+                Filtrar
+              </button>
+            </div>
+
+            {!loadingAjustes && ajustes.length > 0 && (
+              <p className="admin-section-desc" style={{ marginTop: 4 }}>
+                {ajustes.length} ajuste(s) · sumaron <strong style={{ color: '#16a34a' }}>+{totalPos}</strong> ·
+                {' '}restaron <strong style={{ color: '#dc2626' }}>{totalNeg}</strong> unidades
+              </p>
+            )}
+
+            {loadingAjustes && <p className="admin-rep-empty">Cargando...</p>}
+
+            {!loadingAjustes && ajustes.length === 0 && !avisoAjustes && (
+              <p className="admin-rep-empty">No hay ajustes manuales de stock en el período seleccionado.</p>
+            )}
+
+            {!loadingAjustes && ajustes.length > 0 && (
+              <table className="admin-reporte-table admin-pedidos-table">
+                <thead>
+                  <tr>
+                    <th>Fecha</th>
+                    <th>SKU / Color</th>
+                    <th>Sistema</th>
+                    <th>Nuevo</th>
+                    <th>Diferencia</th>
+                    <th>Usuario</th>
+                    <th>Origen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ajustes.map((a) => {
+                    const diff = a.stock_anterior == null
+                      ? null
+                      : Number(a.stock_nuevo) - Number(a.stock_anterior);
+                    return (
+                      <tr key={a.id}>
+                        <td>{formatFechaHoraCompletaUy(a.created_at)}</td>
+                        <td>
+                          <span className="admin-rep-nombre">{a.sku}</span>
+                          <span className="admin-rep-email">{a.producto_nombre || '—'}</span>
+                        </td>
+                        <td className="admin-rep-num">{a.stock_anterior ?? '—'}</td>
+                        <td className="admin-rep-num"><strong>{a.stock_nuevo}</strong></td>
+                        <td className="admin-rep-num">
+                          {diff === null ? '—' : (
+                            <span style={{ fontWeight: 600, color: diff > 0 ? '#16a34a' : diff < 0 ? '#dc2626' : '#6b7280' }}>
+                              {diff > 0 ? `+${diff}` : diff}
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          <span className="admin-rep-nombre">{a.usuario_nombre || '—'}</span>
+                          <span className="admin-rep-email">{a.usuario_email || '—'}</span>
+                        </td>
+                        <td>{a.origen || '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </section>
+        );
+      })()}
 
       {/* ══════════════ TAB CARRITOS ABANDONADOS ══════════════ */}
       {tab === 'carritos' && (
@@ -1279,7 +1463,7 @@ export default function AdminPanel() {
                   <tr key={l.id}>
                     <td>{l.fecha_levante}</td>
                     <td>{l.usuario_nombre || l.usuario_email || '—'}</td>
-                    <td>{l.created_at ? new Date(l.created_at).toLocaleString('es-UY') : '—'}</td>
+                    <td>{formatFechaHoraCompletaUy(l.created_at)}</td>
                   </tr>
                 ))}
               </tbody>

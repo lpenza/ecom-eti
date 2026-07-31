@@ -1,6 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import { buscarEtiquetaDrive, guardarLinkDriveEnPedido, mergePedidosPDF, asociarGuiaMarcoPostal } from '../services/api';
 import MarcoPostalPreviewModal from './modals/MarcoPostalPreviewModal';
+import { formatFechaCortaUy } from '../utils/fechas';
 
 const DRIVE_FOLDER_URL = 'https://drive.google.com/drive/folders/1lp7dpwdCg49nvqbGhW0efvXGV49q2lWQ';
 
@@ -11,10 +12,7 @@ const ESTADO_LABELS = {
   enviado:           { label: 'Procesado',       cls: 'de-estado-enviado',    icon: '✅' },
 };
 
-function fmtDate(iso) {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit' });
-}
+const fmtDate = formatFechaCortaUy;
 
 function extractDriveFileId(url) {
   if (!url) return null;
@@ -83,6 +81,9 @@ export default function DeliveryEspecialTable({
   const tipoIcon  = tipo === 'pickup_local' ? '🏪' : tipo === 'recibilo_hoy' ? '⚡' : '📦';
   const esReenvio = tipo === 'reenvio';
   const esPickup  = tipo === 'pickup_local';
+  const esRecibilo = tipo === 'recibilo_hoy';
+  // Pickup y Recibilo Hoy generan etiquetas MarcoPostal (delivery MV / retiro en oficina)
+  const conMarcoPostal = esPickup || tipo === 'recibilo_hoy';
 
   const pedidosOrdenados = groupByTracking(
     [...pedidos].sort((a, b) => {
@@ -233,9 +234,9 @@ export default function DeliveryEspecialTable({
     }
   }, [pedidosOrdenados, selectedIds, tipo, mostrarToast]);
 
-  // ── Generar etiquetas MarcoPostal en bulk (solo pickup) ────────────────────
+  // ── Generar etiquetas MarcoPostal en bulk (pickup y recibilo hoy) ──────────
   const handleGenerarEtiquetasMPBulk = useCallback(async () => {
-    if (tipo !== 'pickup_local' || !onGenerarEtiquetaMP) return;
+    if (!conMarcoPostal || !onGenerarEtiquetaMP) return;
     const pedidosSel = pedidosOrdenados.filter((p) => selectedIds.has(p.id));
     if (pedidosSel.length === 0) return;
 
@@ -295,7 +296,7 @@ export default function DeliveryEspecialTable({
         // Popup bloqueado → forzar descarga
         const a = document.createElement('a');
         a.href = url;
-        a.download = `etiquetas-pickup-${new Date().toISOString().slice(0, 10)}.pdf`;
+        a.download = `etiquetas-${tipo}-${new Date().toISOString().slice(0, 10)}.pdf`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -400,7 +401,7 @@ export default function DeliveryEspecialTable({
             <span style={{ fontSize: 12, color: '#555', marginLeft: 8 }}>{bulkLoadingText}</span>
           )}
           <div className="de-bulk-actions">
-            {tipo === 'pickup_local' && onGenerarEtiquetaMP && (
+            {conMarcoPostal && onGenerarEtiquetaMP && (
               <button
                 className="btn btn-primary btn-sm"
                 onClick={handleGenerarEtiquetasMPBulk}
@@ -423,9 +424,9 @@ export default function DeliveryEspecialTable({
               title="Marcar todos los seleccionados como despachados">
               🚀 Despachar todos
             </button>
-            {/* Pickup no se procesa desde acá: el fulfillment se dispara desde la vista
-                Despachados (botón "Enviar Fulfillment"), que hace todo el ciclo. */}
-            {!esPickup && (
+            {/* Recibilo Hoy: al despacharse pasa a la vista Despachados, donde se envía el
+                fulfillment (exento del requisito de cadetería). Procesar es solo para reenvíos. */}
+            {!esPickup && !esRecibilo && (
               <button
                 className="btn btn-success btn-sm"
                 onClick={handleProcesarBulk}
@@ -680,7 +681,7 @@ export default function DeliveryEspecialTable({
 
                     {/* Acciones individuales */}
                     <td className="reclamo-actions">
-                      {tipo === 'pickup_local' && (
+                      {conMarcoPostal && (
                         <button
                           className="btn btn-primary btn-sm"
                           title="Previsualizar y generar etiqueta Marco Postal"
@@ -690,14 +691,18 @@ export default function DeliveryEspecialTable({
                         </button>
                       )}
                       <button className={`btn btn-sm ${isDespachado ? 'btn-secondary' : 'btn-primary'}`}
-                        disabled={isDespachado}
-                        title={isDespachado ? 'Ya despachado' : 'Marcar como despachado'}
+                        disabled={isDespachado || (esRecibilo && !pedido.numero_seguimiento_ues)}
+                        title={
+                          isDespachado ? 'Ya despachado'
+                          : esRecibilo && !pedido.numero_seguimiento_ues ? 'Generá la etiqueta MP antes de despachar'
+                          : 'Marcar como despachado'
+                        }
                         onClick={() => onMarcarDespachado?.(pedido.id)}>
                         🚀 Despachar
                       </button>
-                      {/* Pickup no se procesa desde acá: el fulfillment se dispara desde
-                          la vista Despachados (botón "Enviar Fulfillment"). */}
-                      {!esPickup && (
+                      {/* Recibilo Hoy: al despacharse pasa a la vista Despachados, donde se
+                          envía el fulfillment. Procesar es solo para reenvíos. */}
+                      {!esPickup && !esRecibilo && (
                         <button
                           className={`btn btn-sm ${estado === 'enviado' ? 'btn-secondary' : 'btn-success'}`}
                           disabled={estado === 'enviado' || !urls}

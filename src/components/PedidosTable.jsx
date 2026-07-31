@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { buscarEtiquetaDrive, guardarLinkDriveEnPedido } from '../services/api';
+import { formatFechaHoraCompletaUy, formatUy, parseTimestampUtc } from '../utils/fechas';
 
 // Extrae file ID de un link de Drive y devuelve URLs de preview y descarga.
 // Funciona con /file/d/{id}/view, /file/d/{id}/edit, webViewLink, etc.
@@ -17,18 +18,6 @@ function getDriveUrls(link) {
   return { previewUrl: link, downloadUrl: link };
 }
 
-// Supabase devuelve timestamptz como ISO; pero algunas filas viejas / vistas pueden
-// venir sin sufijo de zona ("2026-05-13 20:30:50.171378"). En ese caso new Date()
-// lo interpreta como hora LOCAL y aparece un offset fantasma (en UY, +3h al SLA).
-// Esta función fuerza el parseo como UTC cuando no hay zona explícita.
-function parseTimestampUtc(value) {
-  if (!value) return NaN;
-  const s = String(value).trim();
-  const tieneZona = /([zZ]|[+-]\d{2}:?\d{2})$/.test(s);
-  // Normaliza espacio→T y agrega Z si no hay zona, para forzar UTC.
-  const iso = tieneZona ? s.replace(' ', 'T') : s.replace(' ', 'T') + 'Z';
-  return new Date(iso).getTime();
-}
 
 // SLA MarcoPostal: 48h desde created_at (pago). Devuelve datos para pintar el badge.
 // Devuelve null si el pedido no es MarcoPostal o no tiene created_at.
@@ -56,7 +45,7 @@ function SlaBadge({ pedido }) {
   if (!sla) return <span style={{ color: '#aaa' }}>-</span>;
   return (
     <span
-      title={`SLA MarcoPostal 48h desde pago (${new Date(parseTimestampUtc(pedido.created_at)).toLocaleString('es-UY', { timeZone: 'America/Montevideo' })})`}
+      title={`SLA MarcoPostal 48h desde pago (${formatFechaHoraCompletaUy(pedido.created_at)})`}
       style={{
         display: 'inline-block',
         background: sla.bg,
@@ -440,17 +429,12 @@ function PedidoRow({
     onContactarPendiente?.(pedido.id);
   };
 
-  const formatUltimoContacto = (iso) => {
-    if (!iso) return '';
-    const fecha = new Date(iso);
-    if (Number.isNaN(fecha.getTime())) return '';
-    return fecha.toLocaleString('es-UY', {
-      day: '2-digit',
-      month: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  };
+  const formatUltimoContacto = (iso) => formatUy(iso, {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }, '');
 
   const esReclamo = Boolean(pedido.es_reclamo);
   const esDuplicateTracking = Boolean(pedido._isDuplicateTracking);

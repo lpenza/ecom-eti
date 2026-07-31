@@ -1,14 +1,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { obtenerMisPedidosArmados } from '../services/api';
+import { formatFechaHoraCompletaUy } from '../utils/fechas';
 
 const hoy = new Date().toISOString().slice(0, 10);
 const inicioMes = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
 
-function formatFecha(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
+const formatFecha = formatFechaHoraCompletaUy;
 
 export default function MisPedidosPanel({ user }) {
   const [desde, setDesde] = useState(inicioMes);

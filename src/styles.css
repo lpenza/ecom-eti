@@ -5133,6 +5133,37 @@ body {
   letter-spacing: 0.04em;
 }
 
+/* Encabezados clickeables para ordenar la tabla de stock */
+.stocknc-th-sort {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.stocknc-th-sort:hover {
+  color: var(--brand-primary);
+  background: #fff1f5;
+}
+
+.stocknc-th-sort-activa {
+  color: var(--brand-primary);
+}
+
+.stocknc-sort-icon {
+  margin-left: 0.35rem;
+  font-size: 0.7rem;
+  opacity: 0.35;
+}
+
+.stocknc-th-sort-activa .stocknc-sort-icon {
+  opacity: 1;
+}
+
+.stocknc-th-sort:hover .stocknc-sort-icon {
+  opacity: 0.8;
+}
+
 .stocknc-table td {
   padding: 0.7rem 1rem;
   border-bottom: 1px solid #f1e7eb;
@@ -8012,3 +8043,347 @@ body {
   .cadeteria-panel { padding: 0.9rem; }
   .modal-footer { flex-wrap: wrap; }
 }
+
+/* ── Control de Facturación (UES / MarcoPostal) ──────────────────────────────
+   Panel de admin donde se sube el Excel mensual del courier. Reusa las variables
+   de marca; los colores de severidad salen de las mismas de toasts/badges. */
+
+.fact-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem;
+  gap: 1rem;
+  overflow-y: auto;
+}
+
+.fact-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.fact-title {
+  font-size: 1.4rem;
+  font-family: Georgia, 'Times New Roman', serif;
+  color: var(--brand-heading);
+  margin: 0;
+}
+
+.fact-sub {
+  font-size: 0.88rem;
+  color: var(--brand-text-soft);
+  margin: 0.25rem 0 0;
+  max-width: 760px;
+}
+
+/* Zona de subida */
+.fact-drop {
+  position: relative;
+  border: 2px dashed var(--brand-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--brand-surface-alt);
+  padding: 1.6rem 1rem;
+  text-align: center;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.fact-drop-activa {
+  border-color: var(--brand-primary);
+  background: var(--brand-primary-soft);
+}
+
+.fact-drop-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.fact-drop-icon { font-size: 1.8rem; }
+
+.fact-drop-texto {
+  font-weight: 600;
+  color: var(--brand-text);
+  margin-top: 0.35rem;
+}
+
+.fact-drop-hint {
+  font-size: 0.82rem;
+  color: var(--brand-text-soft);
+  margin-top: 0.2rem;
+}
+
+/* Cabecera del reporte */
+.fact-reporte-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.fact-proveedor {
+  display: inline-block;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--brand-primary-soft);
+  color: var(--brand-primary);
+  margin-right: 0.6rem;
+}
+
+.fact-proveedor-ues { background: var(--info-bg); color: var(--info-text); }
+.fact-proveedor-marcopostal { background: var(--warning-bg); color: var(--warning-text); }
+
+.fact-reporte-meta {
+  font-size: 0.86rem;
+  color: var(--brand-text-soft);
+}
+
+.fact-aviso {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.9rem;
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+/* Tarjetas de resumen */
+.fact-resumen {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.85rem;
+}
+
+.fact-card {
+  background: var(--brand-surface);
+  border: 1px solid var(--brand-border);
+  border-left: 4px solid var(--brand-primary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--brand-shadow-soft);
+  padding: 0.9rem 1rem;
+}
+
+.fact-card-pickup   { border-left-color: var(--info-text); }
+.fact-card-contable { border-left-color: var(--warning-text); }
+.fact-card-reclamo  { border-left-color: var(--danger-text); }
+
+.fact-card-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--brand-text-soft);
+}
+
+.fact-card-valor {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--brand-heading);
+  margin: 0.25rem 0;
+}
+
+.fact-card-detalle {
+  font-size: 0.82rem;
+  color: var(--brand-text-soft);
+}
+
+.fact-pos { color: var(--warning-text); }
+.fact-neg { color: var(--success-text); }
+
+.fact-money { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* Chips de hallazgos */
+.fact-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.fact-chip {
+  border: 1px solid var(--brand-border);
+  background: var(--brand-surface);
+  color: var(--brand-text-soft);
+  border-radius: 999px;
+  padding: 0.35rem 0.8rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.fact-chip:hover { border-color: var(--brand-primary); color: var(--brand-primary); }
+
+.fact-chip-activo {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  color: #fff;
+}
+
+.fact-chip-alta  { border-color: var(--danger-text);  color: var(--danger-text); }
+.fact-chip-media { border-color: var(--warning-text); color: var(--warning-text); }
+.fact-chip-info,
+.fact-chip-baja  { border-color: var(--brand-border); color: var(--brand-text-soft); }
+
+.fact-chip-alta.fact-chip-activo  { background: var(--danger-text);  border-color: var(--danger-text); color: #fff; }
+.fact-chip-media.fact-chip-activo { background: var(--warning-text); border-color: var(--warning-text); color: #fff; }
+
+.fact-search {
+  flex: 1;
+  min-width: 220px;
+  max-width: 360px;
+  padding: 0.5rem 0.8rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-md);
+  font-size: 0.88rem;
+  background: var(--brand-surface);
+  color: var(--brand-text);
+}
+
+/* Tablas */
+.fact-body,
+.fact-desglose,
+.fact-historial {
+  background: var(--brand-surface);
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--brand-shadow-soft);
+  overflow-x: auto;
+}
+
+.fact-historial { padding: 1rem; }
+
+.fact-historial-titulo {
+  font-size: 1rem;
+  color: var(--brand-heading);
+  margin: 0 0 0.6rem;
+}
+
+.fact-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.fact-table thead {
+  background: var(--brand-surface-alt);
+  border-bottom: 1px solid var(--brand-border);
+}
+
+.fact-table th {
+  padding: 0.65rem 0.85rem;
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--brand-text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.fact-table td {
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid var(--brand-border);
+  font-size: 0.86rem;
+  color: var(--brand-text);
+  vertical-align: middle;
+}
+
+.fact-table tbody tr:last-child td { border-bottom: none; }
+.fact-table tbody tr:hover td { background: var(--brand-surface-alt); }
+
+.fact-row-alerta td { background: var(--danger-bg); }
+.fact-row-alerta:hover td { background: var(--danger-bg); }
+.fact-row-activa td { background: var(--brand-primary-soft); }
+
+.fact-num { text-align: right; font-variant-numeric: tabular-nums; }
+.fact-nowrap { white-space: nowrap; }
+
+.fact-mono {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.fact-pedido-match { color: var(--brand-text-soft); font-size: 0.78rem; }
+.fact-servicio { font-size: 0.82rem; }
+.fact-zona { color: var(--brand-text-soft); }
+.fact-ok { color: var(--success-text); font-weight: 700; }
+
+.fact-badge {
+  display: inline-block;
+  margin: 0.1rem 0.25rem 0.1rem 0;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.fact-badge-alta  { background: var(--danger-bg);  color: var(--danger-text); }
+.fact-badge-media { background: var(--warning-bg); color: var(--warning-text); }
+.fact-badge-baja  { background: var(--brand-secondary); color: var(--brand-text-soft); }
+.fact-badge-info  { background: var(--info-bg); color: var(--info-text); }
+
+.fact-select,
+.fact-input-num {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--brand-border);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  background: var(--brand-surface);
+  color: var(--brand-text);
+}
+
+.fact-input-num { width: 90px; text-align: right; }
+
+.fact-acciones { display: flex; gap: 0.35rem; }
+
+.fact-vacio {
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--brand-text-soft);
+  font-size: 0.88rem;
+}
+
+.fact-config .fact-table { margin-bottom: 1rem; }
+
+.fact-param { display: flex; flex-direction: column; gap: 0.25rem; }
+
+.fact-param-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--brand-text-soft);
+}
+
+@media (max-width: 768px) {
+  .fact-panel { padding: 0.9rem; }
+  .fact-table { min-width: 760px; }
+}
+
+/* Tarjeta de solicitudes de levante (sólo UES) */
+.fact-card-levantes { border-left-color: var(--brand-accent); }
+
+.fact-card-alerta {
+  border-left-color: var(--danger-text);
+  background: var(--danger-bg);
+}
+
+.fact-levante-input {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.2rem;
+}
+
+.fact-levante-input .fact-input-num { width: 64px; }

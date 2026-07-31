@@ -54,8 +54,10 @@ import {
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
 import ArmadorPanel from './components/ArmadorPanel';
 import StockNcPanel from './components/StockNcPanel';
+import FacturacionPanel from './components/FacturacionPanel';
 import AtencionPanel from './components/AtencionPanel';
 import CadeteriaPanel from './components/CadeteriaPanel';
+import { formatFechaUy } from './utils/fechas';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
 
@@ -2151,6 +2153,14 @@ function AppContent({ user, logout }) {
               </button>
               <button
                 type="button"
+                className={`side-nav-item ${activeView === 'facturacion' ? 'side-nav-item-active' : ''}`}
+                onClick={() => setActiveView('facturacion')}
+              >
+                <span className="side-nav-icon">🧾</span>
+                Control de Facturación
+              </button>
+              <button
+                type="button"
                 className={`side-nav-item ${activeView === 'admin' ? 'side-nav-item-active' : ''}`}
                 onClick={() => setActiveView('admin')}
               >
@@ -2534,7 +2544,7 @@ function AppContent({ user, logout }) {
                               {isDespachado && !isEnviado && <span className="reclamo-estado-badge reclamo-estado-despachado">🚀 Despachado</span>}
                               {!isDespachado && !isEnviado && <span className="reclamo-estado-badge reclamo-estado-generada">📦 Etiqueta lista</span>}
                             </td>
-                            <td>{reclamo.created_at ? new Date(reclamo.created_at).toLocaleDateString('es-UY') : '—'}</td>
+                            <td>{formatFechaUy(reclamo.created_at)}</td>
                             <td className="reclamo-actions">
                               <button
                                 type="button"
@@ -2605,9 +2615,8 @@ function AppContent({ user, logout }) {
                 tipo="recibilo_hoy"
                 onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'recibilo_hoy')}
                 onMarcarDespachadosBulk={(ids) => handleMarcarDespachadosBulkEspecial(ids, 'recibilo_hoy')}
-                onProcesar={(id) => handleProcesarEspecial(id, 'recibilo_hoy')}
-                onProcesarBulk={(ids) => handleProcesarBulkEspecial(ids, 'recibilo_hoy')}
                 onActualizar={cargarPedidosRecibilo}
+                onGenerarEtiquetaMP={handleGenerarEtiquetaMP}
                 mostrarToast={mostrarToast}
               />
             </div>
@@ -2965,6 +2974,10 @@ function AppContent({ user, logout }) {
 
       {activeView === 'carritos' && (
         <CarritosAbandonadosPanel mostrarToast={mostrarToast} />
+      )}
+
+      {activeView === 'facturacion' && user.role === 'admin' && (
+        <FacturacionPanel mostrarToast={mostrarToast} />
       )}
 
       {activeView === 'admin' && user.role === 'admin' && (

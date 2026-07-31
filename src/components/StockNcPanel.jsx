@@ -1,11 +1,21 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { obtenerStockNC, sincronizarStockNC, actualizarStockNC } from '../services/api';
+import { formatFechaHoraUy, parseTimestampUtc } from '../utils/fechas';
 
-function formatFecha(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return d.toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-}
+// La hora se muestra siempre en horario uruguayo (ver src/utils/fechas.js: los
+// timestamps de productos vuelven en UTC pero sin sufijo de zona).
+const formatFecha = formatFechaHoraUy;
+
+// Columnas ordenables. `dirInicial` es la dirección al hacer el primer click:
+// las de texto arrancan A→Z y las numéricas / de fecha arrancan de mayor a menor.
+const COLUMNAS = [
+  { campo: 'sku',        label: 'SKU',               dirInicial: 'asc'  },
+  { campo: 'nombre',     label: 'Color',             dirInicial: 'asc'  },
+  { campo: 'stock',      label: 'Stock del sistema', dirInicial: 'desc' },
+  { campo: 'conteo',     label: 'Conteo físico',     dirInicial: 'desc' },
+  { campo: 'diff',       label: 'Diferencia',        dirInicial: 'desc' },
+  { campo: 'updated_at', label: 'Actualizado',       dirInicial: 'desc' },
+];
 
 export default function StockNcPanel({ mostrarToast }) {
   const [productos, setProductos] = useState([]);
@@ -20,6 +30,8 @@ export default function StockNcPanel({ mostrarToast }) {
   // Lista de cambios pendiente de confirmar para guardado en lote: [{ prod, valor, diff }] | null
   const [bulkConfirm, setBulkConfirm] = useState(null);
   const [guardandoTodo, setGuardandoTodo] = useState(false);
+  // Orden de la tabla. Por defecto, lo último modificado va primero.
+  const [orden, setOrden] = useState({ campo: 'updated_at', dir: 'desc' });
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -173,6 +185,44 @@ export default function StockNcPanel({ mostrarToast }) {
     );
   }, [productos, busqueda]);
 
+  // Click en un encabezado: si ya se ordena por esa columna invierte la dirección,
+  // si no, la estrena con su dirección natural (texto A→Z, números y fechas de mayor a menor).
+  function ordenarPor(campo) {
+    const col = COLUMNAS.find((c) => c.campo === campo);
+    setOrden((o) => (o.campo === campo
+      ? { campo, dir: o.dir === 'asc' ? 'desc' : 'asc' }
+      : { campo, dir: col?.dirInicial || 'asc' }));
+  }
+
+  // Valor comparable de una fila para el campo activo. `null` = sin dato (va siempre al final).
+  const valorOrden = useCallback((p, campo) => {
+    if (campo === 'sku' || campo === 'nombre') return String(p[campo] || '').trim().toLowerCase();
+    if (campo === 'stock') return Number(p.stock) || 0;
+    if (campo === 'updated_at') {
+      const t = parseTimestampUtc(p.updated_at);
+      return Number.isFinite(t) ? t : null;
+    }
+    // Conteo y diferencia salen del borrador que el operario está tipeando.
+    const raw = drafts[p.sku];
+    if (raw === '' || raw == null || !Number.isInteger(Number(raw))) return null;
+    return campo === 'conteo' ? Number(raw) : Number(raw) - Number(p.stock);
+  }, [drafts]);
+
+  const ordenados = useMemo(() => {
+    const { campo, dir } = orden;
+    const signo = dir === 'asc' ? 1 : -1;
+    return [...filtrados].sort((a, b) => {
+      const va = valorOrden(a, campo);
+      const vb = valorOrden(b, campo);
+      // Las filas sin dato quedan al final sin importar la dirección.
+      if (va === null && vb === null) return 0;
+      if (va === null) return 1;
+      if (vb === null) return -1;
+      if (typeof va === 'string') return va.localeCompare(vb, 'es') * signo;
+      return (va - vb) * signo;
+    });
+  }, [filtrados, orden, valorOrden]);
+
   return (
     <div className="stocknc-panel">
       <div className="stocknc-header">
@@ -220,17 +270,27 @@ export default function StockNcPanel({ mostrarToast }) {
         <table className="stocknc-table">
           <thead>
             <tr>
-              <th>SKU</th>
-              <th>Color</th>
-              <th>Stock del sistema</th>
-              <th>Conteo físico</th>
-              <th>Diferencia</th>
-              <th>Actualizado</th>
+              {COLUMNAS.map((c) => {
+                const activa = orden.campo === c.campo;
+                return (
+                  <th
+                    key={c.campo}
+                    className={`stocknc-th-sort${activa ? ' stocknc-th-sort-activa' : ''}`}
+                    onClick={() => ordenarPor(c.campo)}
+                    title={`Ordenar por ${c.label.toLowerCase()}`}
+                  >
+                    {c.label}
+                    <span className="stocknc-sort-icon">
+                      {activa ? (orden.dir === 'asc' ? '▲' : '▼') : '↕'}
+                    </span>
+                  </th>
+                );
+              })}
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {filtrados.map((p) => {
+            {ordenados.map((p) => {
               const draft = drafts[p.sku] ?? '';
               const draftValido = draft !== '' && draft != null && Number.isInteger(Number(draft));
               const diff = draftValido ? Number(draft) - Number(p.stock) : null;
@@ -282,7 +342,7 @@ export default function StockNcPanel({ mostrarToast }) {
                 </tr>
               );
             })}
-            {filtrados.length === 0 && !loading && (
+            {ordenados.length === 0 && !loading && (
               <tr><td colSpan={7} className="stocknc-empty">No hay productos NC para mostrar</td></tr>
             )}
             {loading && (

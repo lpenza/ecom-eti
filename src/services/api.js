@@ -769,3 +769,56 @@ export async function obtenerMisPedidosArmados(desde, hasta) {
   if (hasta) params.append('hasta', hasta);
   return await fetchAPI(`/mis-pedidos-armados?${params}`);
 }
+
+
+// ==================== CONTROL DE FACTURACIÓN (UES / MARCOPOSTAL) ====================
+
+/**
+ * Sube un Excel de facturación del courier. Con `guardar: false` sólo devuelve el
+ * reporte (dry-run) para revisarlo antes de persistirlo.
+ */
+export async function cargarLiquidacionFacturacion({ filename, contenidoBase64, periodoDesde, periodoHasta, guardar = false, forzar = false, levantesCantidad = null }) {
+  return await fetchAPI('/facturacion/cargar', {
+    method: 'POST',
+    body: JSON.stringify({ filename, contenidoBase64, periodoDesde, periodoHasta, guardar, forzar, levantesCantidad }),
+  });
+}
+
+export async function obtenerLiquidacionesFacturacion(proveedor = null) {
+  const query = proveedor ? `?proveedor=${encodeURIComponent(proveedor)}` : '';
+  const data = await fetchAPI(`/facturacion/liquidaciones${query}`);
+  return Array.isArray(data?.liquidaciones) ? data.liquidaciones : [];
+}
+
+export async function obtenerReporteFacturacion(liquidacionId) {
+  return await fetchAPI(`/facturacion/liquidaciones/${liquidacionId}`);
+}
+
+export async function eliminarLiquidacionFacturacion(liquidacionId) {
+  return await fetchAPI(`/facturacion/liquidaciones/${liquidacionId}`, { method: 'DELETE' });
+}
+
+export async function marcarRevisionLineaFacturacion(lineaId, estado, nota = null) {
+  return await fetchAPI(`/facturacion/lineas/${lineaId}/revision`, {
+    method: 'PATCH',
+    body: JSON.stringify({ estado, nota }),
+  });
+}
+
+export async function obtenerConfigFacturacion() {
+  return await fetchAPI('/facturacion/config');
+}
+
+export async function guardarTarifaFacturacion(tarifa) {
+  return await fetchAPI('/facturacion/tarifas', {
+    method: 'PUT',
+    body: JSON.stringify({ tarifa }),
+  });
+}
+
+export async function guardarParametrosFacturacion(parametros) {
+  return await fetchAPI('/facturacion/parametros', {
+    method: 'PUT',
+    body: JSON.stringify({ parametros }),
+  });
+}
