@@ -1,4 +1,5 @@
 import React from 'react';
+import NotificacionesBoton from './NotificacionesBoton';
 
 function Header({ stats, activeFilter, onFilterChange, onLoginUES, uesAuthenticated, currentUser }) {
   const esAdmin = currentUser?.role === 'admin';
@@ -19,6 +20,7 @@ function Header({ stats, activeFilter, onFilterChange, onLoginUES, uesAuthentica
               >
                 {uesAuthenticated ? '✅ UES Conectado' : '🔐 Login UES'}
               </button>
+              <NotificacionesBoton />
             </>
           )}
         </div>

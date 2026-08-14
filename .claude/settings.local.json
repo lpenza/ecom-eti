@@ -66,7 +66,23 @@
       "PowerShell(node tmp-test-fechas.mjs)",
       "PowerShell(node tmp-test-fmt.mjs 2>$null)",
       "PowerShell(npx vite build 2>&1)",
-      "Bash(node -e \"const s=require\\('./package.json'\\).scripts; console.log\\(JSON.stringify\\(s,null,2\\)\\)\")"
+      "Bash(node -e \"const s=require\\('./package.json'\\).scripts; console.log\\(JSON.stringify\\(s,null,2\\)\\)\")",
+      "PowerShell(npm run build)",
+      "Bash(node \"C:/Users/braya/AppData/Local/Temp/claude/C--Users-braya-Desktop-Veline-apps-Velinne-Envios-ecom-eti/2f947e07-ffb9-47b7-b814-d947c65d1e82/scratchpad/diag.js\")",
+      "Bash(node \"C:/Users/braya/AppData/Local/Temp/claude/C--Users-braya-Desktop-Veline-apps-Velinne-Envios-ecom-eti/2f947e07-ffb9-47b7-b814-d947c65d1e82/scratchpad/diag2.js\")",
+      "Bash(node \"C:/Users/braya/AppData/Local/Temp/claude/C--Users-braya-Desktop-Veline-apps-Velinne-Envios-ecom-eti/2f947e07-ffb9-47b7-b814-d947c65d1e82/scratchpad/dryrun.js\")",
+      "Bash(railway variables *)",
+      "Bash(node \"C:/Users/braya/AppData/Local/Temp/claude/C--Users-braya-Desktop-Veline-apps-Velinne-Envios-ecom-eti/2f947e07-ffb9-47b7-b814-d947c65d1e82/scratchpad/dryrun2.js\")",
+      "Bash(node -e \"require\\('dotenv'\\).config\\(\\); const s=require\\('./services/abandonedCartService'\\); console.log\\('carga OK ·', Object.keys\\(s\\).length, 'exports'\\)\")",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(node --check services/supabaseService.js)",
+      "Bash(node -e \"const p=require\\('./package.json'\\);console.log\\(JSON.stringify\\(p.scripts,null,1\\)\\)\")",
+      "Bash(grep -n \"return \\(\\\\|<Toast\\\\|</div>\\\\s*$\\\\|app-container\\\\|className=\\\\\"app\" src/App.jsx)",
+      "Bash(node -e \"require\\('./services/supabaseService'\\); console.log\\('supabaseService OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(node -e \"require\\('./services/supabaseService'\\)\")",
+      "Bash(python -)",
+      "Bash(grep -n \"className=\\\\\"app-shell\\\\|className=\\\\\"app-main\\\\|<main\\\\|className={\\\\`app\" src/App.jsx)"
     ]
   }
 }

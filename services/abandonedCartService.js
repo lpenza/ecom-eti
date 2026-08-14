@@ -202,11 +202,31 @@ function resolverContacto(checkout, clienteShopify, contactoCapturado) {
 }
 
 // ─── Cruce de contactos: carrito ↔ compra concretada ─────────────────────────
-// El checkout_token no siempre coincide (el cliente puede terminar la compra
-// desde otro dispositivo o checkout), así que antes de mandar cualquier mensaje
-// cruzamos también por email y teléfono contra las órdenes de las últimas
-// VENTANA_RECUPERADO_CONTACTO_HORAS horas y marcamos recuperado.
-const VENTANA_RECUPERADO_CONTACTO_HORAS = 24;
+// Antes de mandar CUALQUIER mensaje hay que estar seguros de que el cliente no
+// compró ya. El cruce se hace contra un índice de compras recientes con tres
+// claves, en orden de confiabilidad:
+//
+//   token:<checkout_token>  el checkout se convirtió en orden (match exacto)
+//   cust:<customer_id>      mismo cliente de Shopify, aunque haya usado otro checkout
+//   mail:<email> / tel:<8 dígitos>  mismo contacto, aunque haya sido otro cliente
+//
+// IMPORTANTE — Protected Customer Data: la Admin API devuelve las órdenes y los
+// customers con el PII censurado (email, phone, nombre y calle vienen vacíos)
+// mientras la app no tenga aprobado el acceso a datos protegidos. Por eso el
+// email/teléfono de una compra NO se lee de la orden: se recupera de
+// `checkout_contacts` (lo que capturó el pixel en el checkout) cruzando por el
+// `checkout_token` de la orden. Si algún día se aprueba el acceso al PII, los
+// campos de la orden se usan igual y suman cobertura sin tocar nada.
+
+// Ventana de órdenes a consultar. Alineada con los 7 días que muestra el panel,
+// para poder reconciliar también carritos viejos que siguen en la DB y ya no
+// vuelven en /checkouts.json.
+const VENTANA_ORDENES_HORAS = 24 * 7;
+
+// Una compra cuenta como recuperación de un carrito si ocurrió después del
+// abandono. El margen tolera que checkout.updated_at se mueva alrededor del
+// momento en que se creó la orden.
+const MARGEN_COMPRA_MS = 6 * HORA_MS;
 
 function normalizarEmail(email) {
   return String(email || '').trim().toLowerCase() || null;
@@ -218,38 +238,271 @@ function normalizarTelefono(tel) {
   return digitos.length >= 8 ? digitos.slice(-8) : null;
 }
 
-// Construye el índice de contactos que compraron en las últimas `horas` horas,
-// a partir de las órdenes recientes traídas de Shopify.
-function construirIndiceCompras(ordenes, horas) {
-  const limite = Date.now() - horas * HORA_MS;
-  const emails = new Set();
-  const telefonos = new Set();
+// Claves de identidad de un contacto, de la más confiable a la menos.
+function clavesContacto({ token, customerId, emails = [], telefonos = [] }) {
+  const claves = [];
+  if (token) claves.push(`token:${token}`);
+  if (customerId) claves.push(`cust:${customerId}`);
+  for (const e of emails) {
+    const n = normalizarEmail(e);
+    if (n) claves.push(`mail:${n}`);
+  }
+  for (const t of telefonos) {
+    const n = normalizarTelefono(t);
+    if (n) claves.push(`tel:${n}`);
+  }
+  return [...new Set(claves)];
+}
+
+// Trae de `checkout_contacts` lo que capturó el pixel para una lista de tokens.
+// Devuelve Map<checkout_token, {email, phone}>.
+async function cargarContactosPorToken(tokens) {
+  const mapa = new Map();
+  const unicos = [...new Set((tokens || []).filter(Boolean))];
+  const LOTE = 200;
+
+  for (let i = 0; i < unicos.length; i += LOTE) {
+    const { data, error } = await supabase
+      .from('checkout_contacts')
+      .select('checkout_token, email, phone')
+      .in('checkout_token', unicos.slice(i, i + LOTE));
+
+    // FAIL-CLOSED: sin estos contactos no podemos saber quién compró (el PII de
+    // la orden viene censurado), así que el error se propaga y no se envía nada.
+    if (error) throw new Error(`No se pudieron leer los contactos del pixel: ${error.message}`);
+    for (const row of data || []) mapa.set(row.checkout_token, row);
+  }
+
+  return mapa;
+}
+
+// Índice Map<clave, timestamp de la compra más reciente con esa clave>.
+function construirIndiceCompras(ordenes, contactosPorToken = new Map()) {
+  const indice = new Map();
+  let conPII = 0;
+  let conPixel = 0;
 
   for (const o of ordenes || []) {
-    if (o.created_at && new Date(o.created_at).getTime() < limite) continue;
+    const ts = o.created_at ? new Date(o.created_at).getTime() : Date.now();
+    const capturado = o.checkout_token ? contactosPorToken.get(o.checkout_token) : null;
+    if (capturado) conPixel++;
 
-    const email = normalizarEmail(o.email || o.contact_email || o.customer?.email);
-    if (email) emails.add(email);
+    const emailsOrden = [o.email, o.contact_email, o.customer?.email];
+    const telefonosOrden = [o.phone, o.customer?.phone, o.shipping_address?.phone, o.billing_address?.phone];
+    if (emailsOrden.some(Boolean) || telefonosOrden.some(Boolean)) conPII++;
 
-    for (const t of [o.phone, o.customer?.phone, o.shipping_address?.phone, o.billing_address?.phone]) {
-      const n = normalizarTelefono(t);
-      if (n) telefonos.add(n);
+    const claves = clavesContacto({
+      token:      o.checkout_token,
+      customerId: o.customer?.id,
+      emails:     [...emailsOrden, capturado?.email],
+      telefonos:  [...telefonosOrden, capturado?.phone],
+    });
+
+    for (const clave of claves) {
+      if ((indice.get(clave) || 0) < ts) indice.set(clave, ts);
     }
   }
 
-  return { emails, telefonos };
+  const total = (ordenes || []).length;
+  if (total > 0 && conPII === 0) {
+    console.log('[AbandonedCart] ℹ️ Shopify censura el PII de las órdenes (Protected Customer Data): el cruce por email/teléfono usa los contactos del pixel');
+  }
+
+  return { indice, total, conPII, conPixel };
 }
 
-// True si el contacto del carrito ya figura en una compra reciente del índice
-// (coincidencia por email o teléfono).
-function carritoYaCompro(carrito, indice) {
-  const email = normalizarEmail(carrito.cliente_email);
-  if (email && indice.emails.has(email)) return true;
+// ─── Segunda fuente: nuestra propia tabla de pedidos ─────────────────────────
+// Shopify censura el PII, pero `pedidos` guarda el email y el teléfono reales
+// del comprador. Sirve de red de seguridad: si el índice de Shopify no encontró
+// la compra (por ejemplo porque el pixel no llegó a capturar ese checkout),
+// buscamos igual un pedido nuestro reciente con el mismo contacto.
+const VENTANA_PEDIDOS_LOCALES_HORAS = 24;
 
-  const tel = normalizarTelefono(carrito.cliente_telefono);
-  if (tel && indice.telefonos.has(tel)) return true;
+// Postgres devuelve las columnas `timestamp` sin zona horaria; siempre las
+// guardamos en UTC, así que se lo indicamos explícitamente al parsear.
+function parseFechaDB(valor) {
+  if (!valor) return NaN;
+  const s = String(valor);
+  const tieneZona = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(s);
+  return new Date(tieneZona ? s : `${s}Z`).getTime();
+}
 
-  return false;
+// Índice Map<clave, timestamp> de los pedidos propios de las últimas `horas`.
+async function construirIndicePedidosLocales(horas = VENTANA_PEDIDOS_LOCALES_HORAS) {
+  const desde = new Date(Date.now() - horas * HORA_MS).toISOString();
+
+  const { data, error } = await supabase
+    .from('pedidos')
+    .select('numero_pedido, cliente_email, cliente_telefono, created_at')
+    .gte('created_at', desde);
+
+  // FAIL-CLOSED: es una de las fuentes que decide si alguien ya compró.
+  if (error) throw new Error(`No se pudieron leer los pedidos locales: ${error.message}`);
+
+  const indice = new Map();
+  for (const p of data || []) {
+    const ts = parseFechaDB(p.created_at) || Date.now();
+    const claves = clavesContacto({ emails: [p.cliente_email], telefonos: [p.cliente_telefono] });
+    for (const clave of claves) {
+      if ((indice.get(clave) || 0) < ts) indice.set(clave, ts);
+    }
+  }
+
+  return { indice, total: (data || []).length };
+}
+
+// Si el contacto ya compró, devuelve { clave, ts, fuente }; si no, null.
+// `abandonadoEn` (ISO o ms) descarta compras anteriores al abandono del carrito.
+// Primero mira las órdenes de Shopify; si ahí no hay match, cae a los pedidos
+// de nuestra DB de las últimas VENTANA_PEDIDOS_LOCALES_HORAS horas.
+function buscarCompra(compras, claves, abandonadoEn) {
+  const abandonoMs = abandonadoEn ? new Date(abandonadoEn).getTime() : NaN;
+
+  const fuentes = [
+    { nombre: 'shopify', indice: compras?.indice },
+    { nombre: 'pedidos', indice: compras?.indiceLocal },
+  ];
+
+  for (const { nombre, indice } of fuentes) {
+    if (!indice) continue;
+    for (const clave of claves) {
+      const ts = indice.get(clave);
+      if (ts === undefined) continue;
+      if (Number.isFinite(abandonoMs) && ts < abandonoMs - MARGEN_COMPRA_MS) continue; // compra vieja
+      return { clave, ts, fuente: nombre };
+    }
+  }
+
+  return null;
+}
+
+// Claves de un carrito, tomando datos del checkout de Shopify y/o de la fila en DB.
+function clavesDeCarrito({ token, customerId, email, telefono }) {
+  return clavesContacto({ token, customerId, emails: [email], telefonos: [telefono] });
+}
+
+// ─── Columna opcional shopify_customer_id ────────────────────────────────────
+// Se agrega con sql/add_shopify_customer_id_to_abandoned_carts.sql. Mientras no
+// esté aplicada, degradamos al cruce por token/email/teléfono en vez de romper.
+let soportaCustomerId = true;
+
+function esColumnaFaltante(error) {
+  return !!error && (error.code === '42703' || /shopify_customer_id/i.test(error.message || ''));
+}
+
+// Upsert de un carrito que tolera que la columna shopify_customer_id no exista.
+async function upsertCarrito(fila, select = '*') {
+  const conCustomer = { ...fila };
+  if (!soportaCustomerId) delete conCustomer.shopify_customer_id;
+
+  let { data, error } = await supabase
+    .from('abandoned_carts')
+    .upsert(conCustomer, { onConflict: 'shopify_checkout_id' })
+    .select(select)
+    .single();
+
+  if (error && esColumnaFaltante(error) && soportaCustomerId) {
+    soportaCustomerId = false;
+    console.warn('[AbandonedCart] ⚠️ Falta la columna shopify_customer_id (correr sql/add_shopify_customer_id_to_abandoned_carts.sql); sigo sin ella');
+    const { shopify_customer_id, ...sinCustomer } = fila;
+    ({ data, error } = await supabase
+      .from('abandoned_carts')
+      .upsert(sinCustomer, { onConflict: 'shopify_checkout_id' })
+      .select(select)
+      .single());
+  }
+
+  return { data, error };
+}
+
+/**
+ * Prepara la verificación de compras, con dos fuentes independientes:
+ *   1. Órdenes recientes de Shopify + contactos capturados por el pixel.
+ *   2. Nuestra tabla `pedidos` de las últimas 24h (fallback: ahí el email y el
+ *      teléfono no vienen censurados).
+ *
+ * Lanza si Shopify o Supabase no responden: quien envía mensajes DEBE poder
+ * distinguir "no compró" de "no pude verificar".
+ */
+async function construirVerificacionCompras(horas = VENTANA_ORDENES_HORAS) {
+  const ordenes = await shopifyService.obtenerOrdenesRecientes(horas);
+  const contactosPorToken = await cargarContactosPorToken(ordenes.map(o => o.checkout_token));
+  const compras = construirIndiceCompras(ordenes, contactosPorToken);
+
+  const local = await construirIndicePedidosLocales();
+  compras.indiceLocal = local.indice;
+  compras.totalPedidosLocales = local.total;
+
+  const porTipo = (indice, p) => [...indice.keys()].filter(k => k.startsWith(p)).length;
+  console.log(
+    `[AbandonedCart] 🧾 ${compras.total} órdenes ${horas}h → claves: ` +
+    `${porTipo(compras.indice, 'token:')} token · ${porTipo(compras.indice, 'cust:')} cliente · ` +
+    `${porTipo(compras.indice, 'mail:')} email · ${porTipo(compras.indice, 'tel:')} tel ` +
+    `(pixel: ${compras.conPixel}/${compras.total}, PII de Shopify: ${compras.conPII}/${compras.total})`
+  );
+  console.log(
+    `[AbandonedCart] 🗂 Fallback pedidos propios ${VENTANA_PEDIDOS_LOCALES_HORAS}h: ${local.total} pedidos → ` +
+    `${porTipo(local.indice, 'mail:')} email · ${porTipo(local.indice, 'tel:')} tel`
+  );
+
+  return compras;
+}
+
+/**
+ * Marca como recuperados los carritos que ya están en la DB, no figuran como
+ * recuperados y cuyo contacto SÍ aparece en una compra reciente.
+ *
+ * Es imprescindible además del chequeo por checkout: /checkouts.json solo
+ * devuelve los checkouts todavía abiertos, así que un carrito que se convirtió
+ * en orden desaparece de Shopify y quedaría para siempre en la cola de envío.
+ */
+async function reconciliarRecuperadosDB(compras) {
+  const desde = new Date(Date.now() - VENTANA_ORDENES_HORAS * HORA_MS).toISOString();
+
+  let columnas = 'id, shopify_checkout_id, cliente_email, cliente_telefono, abandoned_at';
+  if (soportaCustomerId) columnas += ', shopify_customer_id';
+
+  let { data: carritos, error } = await supabase
+    .from('abandoned_carts')
+    .select(columnas)
+    .not('recovered', 'is', true)
+    .gte('abandoned_at', desde);
+
+  if (error && esColumnaFaltante(error) && soportaCustomerId) {
+    soportaCustomerId = false;
+    ({ data: carritos, error } = await supabase
+      .from('abandoned_carts')
+      .select('id, shopify_checkout_id, cliente_email, cliente_telefono, abandoned_at')
+      .not('recovered', 'is', true)
+      .gte('abandoned_at', desde));
+  }
+
+  if (error) throw new Error(`No se pudo reconciliar carritos recuperados: ${error.message}`);
+
+  const idsRecuperados = [];
+  for (const c of carritos || []) {
+    const claves = clavesDeCarrito({
+      customerId: c.shopify_customer_id,
+      email:      c.cliente_email,
+      telefono:   c.cliente_telefono,
+    });
+    const compra = buscarCompra(compras, claves, c.abandoned_at);
+    if (compra) {
+      idsRecuperados.push(c.id);
+      console.log(`[AbandonedCart] ✅ Ya compró (${compra.fuente}/${compra.clave}) → carrito ${c.shopify_checkout_id} marcado recuperado`);
+    }
+  }
+
+  if (idsRecuperados.length > 0) {
+    const { error: updErr } = await supabase
+      .from('abandoned_carts')
+      .update({ recovered: true })
+      .in('id', idsRecuperados);
+    if (updErr) throw new Error(`No se pudo marcar recuperados: ${updErr.message}`);
+  }
+
+  console.log(`[AbandonedCart] 🔄 Reconciliación DB: ${idsRecuperados.length}/${(carritos || []).length} carritos marcados como recuperados`);
+  return idsRecuperados.length;
 }
 
 /**
@@ -310,23 +563,20 @@ async function procesarCarritosAbandonados() {
   }
   console.log(`[AbandonedCart] 🛒 ${checkouts.length} carritos recibidos de Shopify`);
 
-  // Órdenes recientes (un solo fetch): sirven para detectar carritos recuperados
-  // por checkout_token (72h) y, además, por CONTACTO —email/teléfono— de compras
-  // hechas en las últimas 24h, aunque el token no coincida.
+  // Índice de compras recientes (token / cliente / email / teléfono) y limpieza
+  // de los carritos que ya están en la DB y ya compraron.
   //
-  // FAIL-CLOSED: si Shopify no responde no podemos garantizar que el cliente NO
-  // haya comprado, así que NO enviamos ningún mensaje este ciclo y devolvemos
-  // `verificacionFallida` para que el llamador reintente en unos minutos.
-  let ordenesRecientes;
+  // FAIL-CLOSED: si Shopify o Supabase no responden no podemos garantizar que el
+  // cliente NO haya comprado, así que NO enviamos ningún mensaje este ciclo y
+  // devolvemos `verificacionFallida` para que el llamador reintente en unos minutos.
+  let compras;
   try {
-    ordenesRecientes = await shopifyService.obtenerOrdenesRecientes(72);
+    compras = await construirVerificacionCompras();
+    await reconciliarRecuperadosDB(compras);
   } catch (err) {
-    console.error(`[AbandonedCart] ⛔ No pude verificar órdenes recientes; NO envío este ciclo: ${err.message}`);
+    console.error(`[AbandonedCart] ⛔ No pude verificar compras recientes; NO envío este ciclo: ${err.message}`);
     return { procesados: checkouts.length, enviados: 0, error: err.message, verificacionFallida: true };
   }
-  const tokensRecuperados = new Set(ordenesRecientes.map(o => o.checkout_token).filter(Boolean));
-  const indiceCompras = construirIndiceCompras(ordenesRecientes, VENTANA_RECUPERADO_CONTACTO_HORAS);
-  console.log(`[AbandonedCart] 🧾 ${tokensRecuperados.size} órdenes 72h · compras <${VENTANA_RECUPERADO_CONTACTO_HORAS}h → ${indiceCompras.emails.size} emails / ${indiceCompras.telefonos.size} tels`);
 
   let enviados = 0;
 
@@ -345,25 +595,19 @@ async function procesarCarritosAbandonados() {
     }
 
     // 2. Upsert en Supabase
-    const { data: carrito, error: upsertErr } = await supabase
-      .from('abandoned_carts')
-      .upsert(
-        {
-          shopify_checkout_id:    String(checkout.id),
-          abandoned_checkout_url: checkout.abandoned_checkout_url,
-          cliente_nombre:         nombreCliente,
-          cliente_email:          emailCliente,
-          cliente_telefono:       telefono,
-          total_price:            parseFloat(checkout.total_price || 0),
-          currency:               checkout.currency || 'UYU',
-          line_items:             checkout.line_items || [],
-          abandoned_at:           checkout.updated_at,
-          last_checked_at:        new Date().toISOString(),
-        },
-        { onConflict: 'shopify_checkout_id' }
-      )
-      .select()
-      .single();
+    const { data: carrito, error: upsertErr } = await upsertCarrito({
+      shopify_checkout_id:    String(checkout.id),
+      shopify_customer_id:    customerId ? String(customerId) : null,
+      abandoned_checkout_url: checkout.abandoned_checkout_url,
+      cliente_nombre:         nombreCliente,
+      cliente_email:          emailCliente,
+      cliente_telefono:       telefono,
+      total_price:            parseFloat(checkout.total_price || 0),
+      currency:               checkout.currency || 'UYU',
+      line_items:             checkout.line_items || [],
+      abandoned_at:           checkout.updated_at,
+      last_checked_at:        new Date().toISOString(),
+    });
 
     if (upsertErr) {
       console.error(`[AbandonedCart] ❌ Upsert error ${checkout.id}:`, upsertErr.message);
@@ -372,21 +616,22 @@ async function procesarCarritosAbandonados() {
 
     if (carrito.recovered) continue;
 
-    // 2.b Validar que el carrito NO se haya recuperado (orden creada con ese token)
-    if (tokensRecuperados.has(checkout.token)) {
-      console.log(`[AbandonedCart] ✅ Carrito recuperado (orden existe) → ${checkout.id} — marcado y omitido`);
-      await supabase
-        .from('abandoned_carts')
-        .update({ recovered: true })
-        .eq('shopify_checkout_id', String(checkout.id));
-      continue;
-    }
+    // 2.b Antes de mandar CUALQUIER mensaje: si este checkout ya se convirtió en
+    // orden, o si el mismo cliente/contacto compró después de abandonar (aunque
+    // haya sido con otro checkout), lo damos por recuperado y no le escribimos.
+    const compra = buscarCompra(
+      compras,
+      clavesDeCarrito({
+        token:      checkout.token,
+        customerId,
+        email:      emailCliente,
+        telefono,
+      }),
+      checkout.updated_at
+    );
 
-    // 2.c Antes de mandar CUALQUIER mensaje: si este cliente ya compró en las
-    // últimas 24h (mismo email o teléfono) aunque haya sido con otro checkout,
-    // lo damos por recuperado y no le escribimos.
-    if (carritoYaCompro(carrito, indiceCompras)) {
-      console.log(`[AbandonedCart] ✅ Cliente compró <${VENTANA_RECUPERADO_CONTACTO_HORAS}h (match por contacto) → ${checkout.id} — marcado recuperado`);
+    if (compra) {
+      console.log(`[AbandonedCart] ✅ Ya compró (${compra.fuente}/${compra.clave}) → ${checkout.id} — marcado recuperado, no se le escribe`);
       await supabase
         .from('abandoned_carts')
         .update({ recovered: true })
@@ -462,11 +707,13 @@ async function sincronizarDesdeShopify() {
   const checkouts = await shopifyService.obtenerCarritosAbandonados();
   console.log(`[AbandonedCart] ${checkouts.length} checkouts recibidos de Shopify`);
 
-  // Órdenes recientes (un solo fetch): recuperados por token (72h) y por contacto
-  // —email/teléfono/nombre+apellido— de compras de las últimas 24h.
-  const ordenesRecientes = await shopifyService.obtenerOrdenesRecientes(72);
-  const tokensRecuperados = new Set(ordenesRecientes.map(o => o.checkout_token).filter(Boolean));
-  const indiceCompras = construirIndiceCompras(ordenesRecientes, VENTANA_RECUPERADO_CONTACTO_HORAS);
+  // Índice de compras recientes (token / cliente / email / teléfono). Si falla,
+  // se propaga: sin verificación no se puede armar una cola de envío confiable.
+  const compras = await construirVerificacionCompras();
+
+  // Los carritos que ya compraron dejan de aparecer en /checkouts.json, así que
+  // hay que reconciliarlos contra la DB además de contra los checkouts abiertos.
+  const reconciliadosDB = await reconciliarRecuperadosDB(compras);
 
   let nuevos = 0;
   let actualizados = 0;
@@ -486,19 +733,26 @@ async function sincronizarDesdeShopify() {
     // Cruzar con lo capturado por el pixel (donde sí está el teléfono real)
     const contactoCapturado = await buscarContactoCapturado(checkout);
     const { telefono, email, nombre } = resolverContacto(checkout, cliente, contactoCapturado);
-    // Recuperado si coincide el token de la orden O si el contacto ya compró <24h
-    const recuperado = tokensRecuperados.has(checkout.token)
-      || carritoYaCompro({ cliente_email: email, cliente_telefono: telefono }, indiceCompras);
+
+    // Recuperado si el checkout se volvió orden, o si el mismo cliente/contacto
+    // compró después de haber abandonado este carrito.
+    const compra = buscarCompra(
+      compras,
+      clavesDeCarrito({ token: checkout.token, customerId, email, telefono }),
+      checkout.updated_at
+    );
+    const recuperado = !!compra;
 
     if (telefono) conTelefono++; else sinTelefono++;
     if (recuperado) recuperados++;
 
-    console.log(`[Sync] checkout:${checkout.id} tel:${telefono || 'sin_telefono'} recuperado:${recuperado} (pixel:${contactoCapturado ? 'sí' : 'no'})`);
+    console.log(`[Sync] checkout:${checkout.id} tel:${telefono || 'sin_telefono'} recuperado:${recuperado}${compra ? ` (${compra.fuente}/${compra.clave})` : ''} (pixel:${contactoCapturado ? 'sí' : 'no'})`);
 
     // Guardamos TODOS los carritos (con y sin teléfono) para verlos en el panel.
     // Los que no tienen teléfono quedan visibles pero no mensajeables.
     const fila = {
       shopify_checkout_id:    String(checkout.id),
+      shopify_customer_id:    customerId ? String(customerId) : null,
       abandoned_checkout_url: checkout.abandoned_checkout_url,
       cliente_nombre:         nombre,
       cliente_email:          email,
@@ -512,11 +766,7 @@ async function sincronizarDesdeShopify() {
     // Solo seteamos recovered cuando lo detectamos, para no "des-recuperar" nada
     if (recuperado) fila.recovered = true;
 
-    const { error, data } = await supabase
-      .from('abandoned_carts')
-      .upsert(fila, { onConflict: 'shopify_checkout_id' })
-      .select('id, created_at, updated_at')
-      .single();
+    const { error, data } = await upsertCarrito(fila, 'id, created_at, updated_at');
 
     if (!error) {
       const isNew = data.created_at === data.updated_at;
@@ -526,8 +776,8 @@ async function sincronizarDesdeShopify() {
     }
   }
 
-  console.log(`[AbandonedCart] Sync: ${nuevos} nuevos, ${actualizados} actualizados | ${conTelefono} con tel, ${sinTelefono} sin tel, ${recuperados} recuperados`);
-  return { total: checkouts.length, nuevos, actualizados, conTelefono, sinTelefono, recuperados };
+  console.log(`[AbandonedCart] Sync: ${nuevos} nuevos, ${actualizados} actualizados | ${conTelefono} con tel, ${sinTelefono} sin tel, ${recuperados} recuperados (+${reconciliadosDB} reconciliados en DB)`);
+  return { total: checkouts.length, nuevos, actualizados, conTelefono, sinTelefono, recuperados, reconciliadosDB };
 }
 
 // Envía un mensaje de prueba de un paso del flujo a un carrito (por UUID de DB), ignorando restricción horaria
@@ -544,6 +794,8 @@ async function probarMensaje(cartId, pasoNum) {
 
   if (error || !carrito) throw new Error('Carrito no encontrado');
   if (!carrito.cliente_telefono) throw new Error('El carrito no tiene teléfono registrado');
+  // Última barrera antes de mandar: nunca escribirle a quien ya compró.
+  if (carrito.recovered) throw new Error('El carrito ya fue recuperado (el cliente compró): no se envía');
 
   const templateName = paso.template;
   const nombre  = primerNombre(carrito.cliente_nombre);
@@ -718,4 +970,11 @@ async function enviarLinkAPendientes({ limite } = {}) {
   return { enCola: enCola.length, duplicados, intentados: objetivos.length, enviados, errores };
 }
 
-module.exports = { procesarCarritosAbandonados, marcarComoRecuperado, sincronizarDesdeShopify, probarMensaje, crearCarritoManual, obtenerCarritosDB, obtenerFlujo, obtenerFlujoConfig, guardarFlujoConfig, guardarCheckoutCapturado, revisarYEncolar, enviarLinkAPendientes };
+module.exports = {
+  procesarCarritosAbandonados, marcarComoRecuperado, sincronizarDesdeShopify, probarMensaje,
+  crearCarritoManual, obtenerCarritosDB, obtenerFlujo, obtenerFlujoConfig, guardarFlujoConfig,
+  guardarCheckoutCapturado, revisarYEncolar, enviarLinkAPendientes,
+  // Expuestas para diagnóstico/tests del cruce carrito ↔ compra
+  construirVerificacionCompras, construirIndicePedidosLocales, reconciliarRecuperadosDB,
+  buscarCompra, clavesDeCarrito,
+};

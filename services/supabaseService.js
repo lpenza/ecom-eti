@@ -783,6 +783,37 @@ class SupabaseService {
     return data || [];
   }
 
+  // Pickups despachados todavía sin fulfillment. `soloSinProgramar` deja fuera los
+  // que ya tienen hora agendada para no pisar una programación en curso.
+  async obtenerPickupsDespachados({ soloSinProgramar = false } = {}) {
+    let query = supabase
+      .from('pedidos')
+      .select('*')
+      .eq('estado', 'despachado')
+      .eq('tipo_envio', 'pickup_local');
+
+    if (soloSinProgramar) query = query.is('fulfillment_pickup_programado_at', null);
+
+    const { data, error } = await query.order('created_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Pickups agendados cuya hora ya venció: los que el cron tiene que despachar.
+  async obtenerPickupsProgramadosVencidos() {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .eq('estado', 'despachado')
+      .eq('tipo_envio', 'pickup_local')
+      .not('fulfillment_pickup_programado_at', 'is', null)
+      .lte('fulfillment_pickup_programado_at', new Date().toISOString())
+      .order('fulfillment_pickup_programado_at', { ascending: true });
+
+    if (error) throw error;
+    return data || [];
+  }
+
   // Buscar pedidos que están en "Etiqueta Generada" pero AÚN NO despachados.
   // Se usa en la vista de cadetería para poder llevarse un pedido sin despacho.
   async buscarPedidosEtiquetaGenerada(q) {
@@ -1733,6 +1764,79 @@ class SupabaseService {
       .limit(limit);
     if (error) throw error;
     return data || [];
+  }
+
+  // Pedidos que ya tienen etiqueta UES y todavía están en el local esperando que
+  // UES pase a retirarlos. Es la cantidad que dispara (o no) el levante automático:
+  // el tracking de UES arranca con "UES"; el de MarcoPostal no.
+  async obtenerPedidosUesPendientesDeLevante() {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('id, numero_pedido, estado, departamento, numero_seguimiento_ues, created_at')
+      .eq('etiqueta_generada', true)
+      .not('numero_seguimiento_ues', 'is', null)
+      .in('estado', ['pendiente', 'etiqueta_generada', 'despachado'])
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+    // El prefijo se filtra acá (y no con ilike) para tolerar espacios sueltos,
+    // igual que el resto del código que distingue UES de MarcoPostal.
+    return (data || []).filter((p) => /^ues/i.test(String(p.numero_seguimiento_ues || '').trim()));
+  }
+
+  // ── Notificaciones del sistema ───────────────────────────────────────────────
+
+  // Crear una notificación para el panel lateral. Best-effort desde los crons:
+  // si la tabla todavía no existe, el llamador loguea y sigue.
+  async crearNotificacion({ tipo, nivel = 'info', titulo, mensaje = '', data = null }) {
+    const { data: creada, error } = await supabase
+      .from('notificaciones_sistema')
+      .insert({
+        tipo,
+        nivel,
+        titulo,
+        mensaje,
+        data,
+        created_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return creada;
+  }
+
+  // Notificaciones para el panel: siempre todas las no leídas + un resto de leídas
+  // recientes como historial.
+  async obtenerNotificaciones({ limit = 50 } = {}) {
+    const { data, error } = await supabase
+      .from('notificaciones_sistema')
+      .select('*')
+      .order('leida', { ascending: true })
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    return data || [];
+  }
+
+  async marcarNotificacionLeida(id, usuarioEmail = null) {
+    const { data, error } = await supabase
+      .from('notificaciones_sistema')
+      .update({ leida: true, leida_at: new Date().toISOString(), leida_por: usuarioEmail })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async marcarTodasNotificacionesLeidas(usuarioEmail = null) {
+    const { data, error } = await supabase
+      .from('notificaciones_sistema')
+      .update({ leida: true, leida_at: new Date().toISOString(), leida_por: usuarioEmail })
+      .eq('leida', false)
+      .select('id');
+    if (error) throw error;
+    return (data || []).length;
   }
 
   // ── Pedidos admin ────────────────────────────────────────────────────────────

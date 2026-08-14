@@ -555,7 +555,9 @@ function PedidoRow({
               </>
             )}
 
-            {(pedido.es_envio_express || pedido.es_reenvio) && !fulfillmentPreview && onGenerarEtiquetaMP && (
+            {/* Generar etiqueta MP solo si todavía no hay una: en Despachados los
+                Recibilo Hoy ya la tienen y el botón no corresponde. */}
+            {(pedido.es_envio_express || pedido.es_reenvio) && !pedido.etiqueta_generada && !fulfillmentPreview && onGenerarEtiquetaMP && (
               <button
                 className="btn btn-primary btn-sm"
                 onClick={() => onGenerarEtiquetaMP(pedido.id)}

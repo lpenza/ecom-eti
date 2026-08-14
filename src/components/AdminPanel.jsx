@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { formatFechaHoraCompletaUy, hoyIsoUy } from '../utils/fechas';
 
 const API = '/api';
@@ -15,6 +15,18 @@ function fetchAdmin(url, options = {}) {
 // (UTC) después de las 21:00 UY el filtro arrancaba con la fecha del día siguiente.
 const hoy = hoyIsoUy();
 const inicioMes = `${hoy.slice(0, 7)}-01`;
+
+// Texto legible del cron del levante automático ("30 12 * * 1,3,5" → "lun/mié/vie a las 12:30").
+const DIAS_CRON = ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'];
+function describirCron(expr) {
+  const partes = String(expr || '').trim().split(/\s+/);
+  if (partes.length < 5) return expr || '—';
+  const [min, hora, , , dow] = partes;
+  const dias = dow === '*'
+    ? 'todos los días'
+    : dow.split(',').map((d) => DIAS_CRON[Number(d) % 7] ?? d).join('/');
+  return `${dias} a las ${String(hora).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
 
 const nuevoUsuarioVacio = { nombre: '', email: '', password: '', role: 'user' };
 const nuevoProductoVacio = { nombre: '', descripcion: '', sku: '', precio: '', activo: true };
@@ -98,6 +110,13 @@ export default function AdminPanel() {
   const [levanteLoading, setLevanteLoading] = useState(false);
   const [levantes, setLevantes] = useState([]);
   const [levanteExiste, setLevanteExiste] = useState(false);
+  // Observaciones del levante: se precargan con el default del backend y quedan
+  // editables. Una vez que el usuario las toca, no se vuelven a pisar.
+  const [levanteObservaciones, setLevanteObservaciones] = useState('');
+  const [levanteObsDefault, setLevanteObsDefault] = useState('');
+  const levanteObsEditado = useRef(false);
+  // Estado del levante automático (cron lun/mié/vie 12:30 UY).
+  const [levanteAuto, setLevanteAuto] = useState(null);
   const [uesAuth, setUesAuth] = useState(false);
   const [uesLoginLoading, setUesLoginLoading] = useState(false);
 
@@ -148,8 +167,19 @@ export default function AdminPanel() {
         if (res.success) {
           setLevantes(res.levantes || []);
           setLevanteExiste(!!res.existe);
+          if (res.observacionesDefault) {
+            setLevanteObsDefault(res.observacionesDefault);
+            if (!levanteObsEditado.current) setLevanteObservaciones(res.observacionesDefault);
+          }
         }
       })
+      .catch(() => {});
+  }, []);
+
+  // Config del levante automático + cuántos pedidos UES esperan retiro ahora mismo.
+  const cargarLevanteAuto = useCallback(() => {
+    fetchAdmin('/ues/levante-automatico')
+      .then((res) => { if (res.success) setLevanteAuto(res); })
       .catch(() => {});
   }, []);
 
@@ -157,8 +187,9 @@ export default function AdminPanel() {
     if (tab === 'levantes') {
       verificarUesAuth();
       cargarLevantes(levanteFecha);
+      cargarLevanteAuto();
     }
-  }, [tab, verificarUesAuth, cargarLevantes, levanteFecha]);
+  }, [tab, verificarUesAuth, cargarLevantes, cargarLevanteAuto, levanteFecha]);
 
   const handleLoginUesLevante = async () => {
     setUesLoginLoading(true);
@@ -186,7 +217,7 @@ export default function AdminPanel() {
     try {
       const res = await fetchAdmin('/ues/levante', {
         method: 'POST',
-        body: JSON.stringify({ fecha: levanteFecha }),
+        body: JSON.stringify({ fecha: levanteFecha, observaciones: levanteObservaciones }),
       });
       if (res.success) {
         mostrarToast('✅ Levante solicitado a UES', 'ok');
@@ -1412,7 +1443,7 @@ export default function AdminPanel() {
             </button>
           )}
 
-          <div className="admin-nuevo-fields" style={{ marginBottom: 16 }}>
+          <div className="admin-nuevo-fields" style={{ marginBottom: 12 }}>
             <div className="admin-field">
               <label>Fecha del levante</label>
               <input
@@ -1421,6 +1452,41 @@ export default function AdminPanel() {
                 onChange={(e) => setLevanteFecha(e.target.value)}
               />
             </div>
+          </div>
+
+          <div className="admin-field" style={{ marginBottom: 16, maxWidth: 560 }}>
+            <label>Observaciones para el chofer</label>
+            <textarea
+              rows={3}
+              value={levanteObservaciones}
+              placeholder={levanteObsDefault}
+              onChange={(e) => {
+                levanteObsEditado.current = true;
+                setLevanteObservaciones(e.target.value);
+              }}
+            />
+            {levanteObsDefault && levanteObservaciones.trim() !== levanteObsDefault && (
+              <button
+                type="button"
+                style={{
+                  alignSelf: 'flex-start',
+                  marginTop: 4,
+                  background: 'none',
+                  border: 'none',
+                  padding: 0,
+                  color: '#0f3460',
+                  fontSize: '0.8rem',
+                  textDecoration: 'underline',
+                  cursor: 'pointer',
+                }}
+                onClick={() => {
+                  levanteObsEditado.current = false;
+                  setLevanteObservaciones(levanteObsDefault);
+                }}
+              >
+                Restaurar texto por defecto
+              </button>
+            )}
           </div>
 
           <button
@@ -1441,6 +1507,29 @@ export default function AdminPanel() {
             <p className="admin-section-desc" style={{ marginTop: 12 }}>
               Iniciá sesión en UES para poder solicitar el levante.
             </p>
+          )}
+
+          {/* ── Levante automático ── */}
+          {levanteAuto && (
+            <div className="admin-section-header-row" style={{ marginTop: 28, display: 'block' }}>
+              <h2 className="admin-section-title" style={{ margin: 0 }}>Levante automático</h2>
+              <p className="admin-section-desc" style={{ marginTop: 6 }}>
+                {levanteAuto.habilitado ? (
+                  <>
+                    Corre <strong>{describirCron(levanteAuto.cron)}</strong> (hora de Uruguay) y sólo
+                    pide el levante si hay <strong>{levanteAuto.minimo} o más</strong> pedidos UES
+                    pendientes de armado/despacho. Se pida o no, queda avisado en el panel de
+                    notificaciones.
+                  </>
+                ) : (
+                  <>El levante automático está desactivado (<code>LEVANTE_AUTO_ENABLED=false</code>).</>
+                )}
+              </p>
+              <p className="admin-section-desc" style={{ marginTop: 4 }}>
+                Ahora mismo hay <strong>{levanteAuto.pendientes}</strong> pedido(s) UES esperando
+                retiro{levanteAuto.yaSolicitado ? ` y el levante del ${levanteAuto.fecha} ya fue solicitado.` : '.'}
+              </p>
+            </div>
           )}
 
           {/* ── Registro de levantes ── */}

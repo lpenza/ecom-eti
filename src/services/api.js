@@ -599,6 +599,16 @@ export async function obtenerPedidosDespachados() {
 }
 
 /**
+ * Cancelar la programación de los pickups diferidos (sin ids: todos los agendados).
+ */
+export async function cancelarPickupsProgramados(pedidoIds = null) {
+  return await fetchAPI('/pickups-programados/cancelar', {
+    method: 'POST',
+    body: JSON.stringify({ pedidoIds }),
+  });
+}
+
+/**
  * Marcar/desmarcar un pedido despachado como retirado por la cadetería.
  * Guarda fecha/hora (UY) y quién marcó en la BD; al desmarcar limpia el registro.
  */
@@ -821,4 +831,27 @@ export async function guardarParametrosFacturacion(parametros) {
     method: 'PUT',
     body: JSON.stringify({ parametros }),
   });
+}
+
+// ── Notificaciones del panel lateral ────────────────────────────────────────
+
+export async function obtenerNotificaciones(limit = 50) {
+  return await fetchAPI(`/notificaciones?limit=${limit}`);
+}
+
+export async function marcarNotificacionLeida(id) {
+  return await fetchAPI(`/notificaciones/${id}/leida`, { method: 'POST' });
+}
+
+export async function marcarTodasNotificacionesLeidas() {
+  return await fetchAPI('/notificaciones/leer-todas', { method: 'POST' });
+}
+
+// Estado del levante automático (lun/mié/vie 12:30 UY) y disparo manual.
+export async function obtenerEstadoLevanteAutomatico() {
+  return await fetchAPI('/ues/levante-automatico');
+}
+
+export async function ejecutarLevanteAutomatico() {
+  return await fetchAPI('/ues/levante-automatico/ejecutar', { method: 'POST' });
 }

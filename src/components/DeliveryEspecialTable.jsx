@@ -1,6 +1,5 @@
 import React, { useState, useCallback } from 'react';
 import { buscarEtiquetaDrive, guardarLinkDriveEnPedido, mergePedidosPDF, asociarGuiaMarcoPostal } from '../services/api';
-import MarcoPostalPreviewModal from './modals/MarcoPostalPreviewModal';
 import { formatFechaCortaUy } from '../utils/fechas';
 
 const DRIVE_FOLDER_URL = 'https://drive.google.com/drive/folders/1lp7dpwdCg49nvqbGhW0efvXGV49q2lWQ';
@@ -64,15 +63,12 @@ export default function DeliveryEspecialTable({
   onProcesar,
   onProcesarBulk,
   onActualizar,
-  onGenerarEtiquetaMP,
   mostrarToast,
 }) {
   const [driveState, setDriveState]       = useState({});
   const [previewPedidoId, setPreviewPedidoId] = useState(null);
   const [selectedIds, setSelectedIds]     = useState(new Set());
   const [bulkLoading, setBulkLoading]     = useState(false);
-  const [bulkLoadingText, setBulkLoadingText] = useState('');
-  const [mpModalPedido, setMpModalPedido] = useState(null);
   // Input manual para asociar un guiaId existente a un pedido sin etiqueta.
   // Mapa: { pedidoId: { open: bool, guiaId: '', loading: bool } }
   const [asociarState, setAsociarState]   = useState({});
@@ -82,8 +78,10 @@ export default function DeliveryEspecialTable({
   const esReenvio = tipo === 'reenvio';
   const esPickup  = tipo === 'pickup_local';
   const esRecibilo = tipo === 'recibilo_hoy';
-  // Pickup y Recibilo Hoy generan etiquetas MarcoPostal (delivery MV / retiro en oficina)
-  const conMarcoPostal = esPickup || tipo === 'recibilo_hoy';
+  // Pickup y Recibilo Hoy usan etiquetas MarcoPostal (retiro en oficina / delivery MV).
+  // Se generan en lote desde "Validar Pedidos"; acá sólo se ven, se asocian a mano
+  // si la guía ya existe en MP, y se despachan.
+  const conMarcoPostal = esPickup || esRecibilo;
 
   const pedidosOrdenados = groupByTracking(
     [...pedidos].sort((a, b) => {
@@ -234,93 +232,6 @@ export default function DeliveryEspecialTable({
     }
   }, [pedidosOrdenados, selectedIds, tipo, mostrarToast]);
 
-  // ── Generar etiquetas MarcoPostal en bulk (pickup y recibilo hoy) ──────────
-  const handleGenerarEtiquetasMPBulk = useCallback(async () => {
-    if (!conMarcoPostal || !onGenerarEtiquetaMP) return;
-    const pedidosSel = pedidosOrdenados.filter((p) => selectedIds.has(p.id));
-    if (pedidosSel.length === 0) return;
-
-    const pendientes = pedidosSel.filter((p) => !p.link_etiqueta_drive);
-    const yaGenerados = pedidosSel.filter((p) => p.link_etiqueta_drive);
-    let exitosos = 0;
-    let fallidos = 0;
-    // Coleccionamos los labelUrl en orden: primero los ya generados, después los nuevos.
-    const linksParaCombinar = yaGenerados.map((p) => p.link_etiqueta_drive);
-
-    setBulkLoading(true);
-    setBulkLoadingText(
-      pendientes.length > 0
-        ? `Generando ${pendientes.length} etiqueta(s) MP...`
-        : 'Combinando PDFs...'
-    );
-
-    try {
-      // 1) Generar las que falten, capturando labelUrl de cada respuesta
-      for (let i = 0; i < pendientes.length; i += 1) {
-        const p = pendientes[i];
-        setBulkLoadingText(`Generando etiqueta ${i + 1}/${pendientes.length} — #${p.numero_pedido}...`);
-        try {
-          const res = await onGenerarEtiquetaMP(p.id);
-          if (res?.success && res?.labelUrl) {
-            linksParaCombinar.push(res.labelUrl);
-            exitosos += 1;
-          } else {
-            fallidos += 1;
-            console.error(`Error generando MP para pedido ${p.id}:`, res?.error);
-          }
-        } catch (err) {
-          fallidos += 1;
-          console.error(`Excepción generando MP para pedido ${p.id}:`, err);
-        }
-      }
-
-      // 2) Refrescar la lista para reflejar nuevos tracking/estado en la tabla
-      try { await onActualizar?.(); } catch (_) {}
-
-      if (linksParaCombinar.length === 0) {
-        mostrarToast?.(
-          fallidos > 0 ? `⚠️ Todas fallaron (${fallidos})` : 'No hay etiquetas para combinar',
-          'warning'
-        );
-        return;
-      }
-
-      // 3) Combinar PDFs en uno solo
-      setBulkLoadingText(`Combinando ${linksParaCombinar.length} etiqueta(s) en un PDF...`);
-      const blob = await mergePedidosPDF(linksParaCombinar);
-      const url = URL.createObjectURL(blob);
-
-      // 4) Abrir en nueva pestaña — el browser muestra el PDF con su botón Imprimir nativo
-      const win = window.open(url, '_blank');
-      if (!win) {
-        // Popup bloqueado → forzar descarga
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `etiquetas-${tipo}-${new Date().toISOString().slice(0, 10)}.pdf`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        mostrarToast?.('🔒 Popups bloqueados. Descargué el PDF en vez de abrirlo.', 'warning');
-      }
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-
-      const msgPartes = [];
-      if (yaGenerados.length > 0) msgPartes.push(`${yaGenerados.length} ya existían`);
-      if (exitosos > 0) msgPartes.push(`${exitosos} nuevas`);
-      if (fallidos > 0) msgPartes.push(`${fallidos} con error`);
-      mostrarToast?.(
-        `📄 PDF combinado con ${linksParaCombinar.length} etiqueta(s). ${msgPartes.join(' · ')}`,
-        fallidos > 0 ? 'warning' : 'success'
-      );
-      setSelectedIds(new Set());
-    } catch (err) {
-      mostrarToast?.(`Error en bulk MP: ${err.message}`, 'error');
-    } finally {
-      setBulkLoading(false);
-      setBulkLoadingText('');
-    }
-  }, [tipo, onGenerarEtiquetaMP, pedidosOrdenados, selectedIds, onActualizar, mostrarToast]);
-
   // ── Marcar despachados (bulk) ───────────────────────────────────────────────
   const handleDespacharBulk = useCallback(async () => {
     const ids = [...selectedIds]; // selectedIds ya contiene IDs reales expandidos
@@ -397,19 +308,7 @@ export default function DeliveryEspecialTable({
       {someSelected && (
         <div className="de-bulk-bar">
           <span className="de-bulk-count">{selectedIds.size} seleccionado{selectedIds.size !== 1 ? 's' : ''}</span>
-          {bulkLoading && bulkLoadingText && (
-            <span style={{ fontSize: 12, color: '#555', marginLeft: 8 }}>{bulkLoadingText}</span>
-          )}
           <div className="de-bulk-actions">
-            {conMarcoPostal && onGenerarEtiquetaMP && (
-              <button
-                className="btn btn-primary btn-sm"
-                onClick={handleGenerarEtiquetasMPBulk}
-                disabled={bulkLoading}
-                title="Generar etiquetas MP para los seleccionados que falten + combinar e imprimir">
-                {bulkLoading ? '⏳ Procesando…' : '📮 Generar e imprimir MP'}
-              </button>
-            )}
             <button
               className="btn btn-primary btn-sm"
               onClick={handleDescargarPDFsBulk}
@@ -469,7 +368,7 @@ export default function DeliveryEspecialTable({
                 {esReenvio && <th>Motivo / Producto</th>}
                 <th>Estado</th>
                 <th>Fecha</th>
-                <th>{tipo === 'pickup_local' ? 'Etiqueta' : 'Etiqueta Drive'}</th>
+                <th>{conMarcoPostal ? 'Etiqueta' : 'Etiqueta Drive'}</th>
                 <th>Acciones</th>
               </tr>
             </thead>
@@ -536,14 +435,14 @@ export default function DeliveryEspecialTable({
                             ⬇️ PDF
                           </a>
                         </div>
-                      ) : tipo === 'pickup_local' ? (
+                      ) : conMarcoPostal ? (
                         (() => {
                           const as = asociarState[pedido.id] || {};
                           if (!as.open) {
                             return (
                               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                                 <span style={{ color: '#999', fontSize: 12 }}>
-                                  Generá con "Etiqueta MP" →
+                                  Generá desde "Validar Pedidos" ↑
                                 </span>
                                 <button
                                   className="btn btn-secondary btn-sm"
@@ -681,15 +580,6 @@ export default function DeliveryEspecialTable({
 
                     {/* Acciones individuales */}
                     <td className="reclamo-actions">
-                      {conMarcoPostal && (
-                        <button
-                          className="btn btn-primary btn-sm"
-                          title="Previsualizar y generar etiqueta Marco Postal"
-                          onClick={() => setMpModalPedido({ id: pedido.id, numero: pedido.numero_pedido })}
-                        >
-                          📮 Etiqueta MP
-                        </button>
-                      )}
                       <button className={`btn btn-sm ${isDespachado ? 'btn-secondary' : 'btn-primary'}`}
                         disabled={isDespachado || (esRecibilo && !pedido.numero_seguimiento_ues)}
                         title={
@@ -722,18 +612,6 @@ export default function DeliveryEspecialTable({
             </tbody>
           </table>
         </div>
-      )}
-
-      {mpModalPedido && (
-        <MarcoPostalPreviewModal
-          pedidoId={mpModalPedido.id}
-          numeroPedido={mpModalPedido.numero}
-          onClose={() => setMpModalPedido(null)}
-          onGenerada={async () => {
-            mostrarToast?.('✅ Etiqueta generada', 'success');
-            try { await onActualizar?.(); } catch (_) {}
-          }}
-        />
       )}
     </div>
   );

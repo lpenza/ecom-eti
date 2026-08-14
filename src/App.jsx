@@ -4,9 +4,12 @@ import Toolbar from './components/Toolbar';
 import PedidosTable from './components/PedidosTable';
 import DatosPreviewModal from './components/modals/DatosPreviewModal';
 import MarcoPostalPreviewModal from './components/modals/MarcoPostalPreviewModal';
+import ValidarEtiquetasMPModal from './components/modals/ValidarEtiquetasMPModal';
 import PDFPreviewModal from './components/modals/PDFPreviewModal';
 import LoadingModal from './components/modals/LoadingModal';
 import Toast from './components/Toast';
+import NotificacionesPanel from './components/NotificacionesPanel';
+import { NotificacionesProvider } from './context/NotificacionesContext';
 import FollowUpPanel from './components/FollowUpPanel';
 import TemplateManagerPanel from './components/TemplateManagerPanel';
 import LoginPage from './components/LoginPage';
@@ -44,12 +47,12 @@ import {
   obtenerPedidosReenvio,
   crearReenvio,
   buscarPedidos,
-  reprocesarPedidoShopify,
   generarGuiaMarcoPostalWeb,
   obtenerStockPlannerSSO,
   marcarRetiroCadeteria,
   buscarEtiquetasCadeteria,
   registrarEntregaSinDespacho,
+  cancelarPickupsProgramados,
 } from './services/api';
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
 import ArmadorPanel from './components/ArmadorPanel';
@@ -57,7 +60,7 @@ import StockNcPanel from './components/StockNcPanel';
 import FacturacionPanel from './components/FacturacionPanel';
 import AtencionPanel from './components/AtencionPanel';
 import CadeteriaPanel from './components/CadeteriaPanel';
-import { formatFechaUy } from './utils/fechas';
+import { formatFechaUy, formatUy } from './utils/fechas';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
 
@@ -147,7 +150,7 @@ function AppContent({ user, logout }) {
   const { theme, toggleTheme } = useTheme();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [tableFilter, setTableFilter] = useState(esAdmin ? 'porValidar' : 'etiquetasGeneradas');
-  const [despachadosCanalFilter, setDespachadosCanalFilter] = useState(null); // null | 'whatsapp' | 'email'
+  const [despachadosCourierFilter, setDespachadosCourierFilter] = useState(null); // null | 'marcopostal' | 'marcopostal_pickup' | 'ues'
   const [activeView, setActiveView] = useState('pedidos'); // pedidos | especiales | followup | feedback | plantillas | bot | admin | misArmados
   const [notifChannelFilter, setNotifChannelFilter] = useState(null); // null | 'email' | 'whatsapp' | 'noChannel'
   const [channelPriority, setChannelPriority] = useState('email'); // 'email' | 'whatsapp'
@@ -155,13 +158,6 @@ function AppContent({ user, logout }) {
   const [reclamoPedidoId, setReclamoPedidoId] = useState('');
   const [reclamoBusqueda, setReclamoBusqueda] = useState('');
   const [reclamoNotas, setReclamoNotas] = useState('');
-  // ⚠️ TEMPORAL: panel para reprocesar pedidos que no entraron por webhook
-  // Cuando ya no se necesite, cambiar REPROCESS_ENABLED a false
-  const REPROCESS_ENABLED = true;
-  const [reprocessOrderNumber, setReprocessOrderNumber] = useState('');
-  const [reprocessLoading, setReprocessLoading] = useState(false);
-  const [reprocessDone, setReprocessDone] = useState(false);
-
   const [pedidosFinalizados, setPedidosFinalizados] = useState([]);
   const [pedidosFinalizadosLoaded, setPedidosFinalizadosLoaded] = useState(false);
   const [previewMode, setPreviewMode] = useState('normal'); // 'normal' | 'reclamo'
@@ -176,6 +172,8 @@ function AppContent({ user, logout }) {
   const [pickupList,    setPickupList]    = useState([]);
   const [recibiloList,  setRecibiloList]  = useState([]);
   const [reenvioList,   setReenvioList]   = useState([]);
+  // Validación en lote de etiquetas MarcoPostal: { tipo, pedidos }
+  const [validarMpModal, setValidarMpModal] = useState(null);
   const [reenvioModal,  setReenvioModal]  = useState(null);
   const [reenvioForm,   setReenvioForm]   = useState({
     cliente_nombre: '', cliente_email: '', cliente_telefono: '',
@@ -269,6 +267,40 @@ function AppContent({ user, logout }) {
     }
   };
 
+  // Grupo de despacho del pedido. Los de UES vienen con seguimiento prefijado "UES";
+  // el resto va por MarcoPostal, separando los pickup (su fulfillment se manda en
+  // diferido, después del de MarcoPostal) del resto (normales y Recibilo Hoy).
+  const getCourierPedido = (p) => {
+    if (/^ues/i.test(String(p?.numero_seguimiento_ues || '').trim())) return 'ues';
+    if (p?.tipo_envio === 'pickup_local') return 'marcopostal_pickup';
+    return 'marcopostal';
+  };
+
+  // Cada pedido cae en un solo grupo, así que los contadores de los chips
+  // suman siempre el total de la lista.
+  const despachadosPorGrupo = pedidosDespachadosList.reduce((acc, p) => {
+    const grupo = getCourierPedido(p);
+    acc[grupo] = (acc[grupo] || 0) + 1;
+    return acc;
+  }, {});
+
+  const pedidosDespachadosFiltrados = despachadosCourierFilter
+    ? pedidosDespachadosList.filter((p) => getCourierPedido(p) === despachadosCourierFilter)
+    : pedidosDespachadosList;
+
+  // Pickups agendados por el diferido: el cron los despacha al vencer la hora.
+  const pickupsProgramados = pedidosDespachadosList.filter(
+    (p) => getCourierPedido(p) === 'marcopostal_pickup' && p.fulfillment_pickup_programado_at
+  );
+  const proximoPickupProgramado = pickupsProgramados
+    .map((p) => p.fulfillment_pickup_programado_at)
+    .sort()[0] || null;
+
+  // El fulfillment solo sale para pedidos que la cadetería ya retiró. Los pickup no
+  // pasan por cadetería: el backend les hace "listo para retirar" en vez de un envío.
+  const requiereRetiroCadeteria = (p) => p?.tipo_envio !== 'pickup_local';
+  const puedeEnviarFulfillment = (p) => !requiereRetiroCadeteria(p) || Boolean(p?.retirado_cadeteria_at);
+
   const notifPreview = fulfillmentPreviewIds !== null ? (() => {
     const enPreview = pedidos.filter((p) => fulfillmentPreviewIds.includes(p.id));
     return {
@@ -312,6 +344,20 @@ function AppContent({ user, logout }) {
     },
   };
 
+  // "Validar Pedidos" cambia de destino según el panel abierto. Pick-UP y Recibilo
+  // generan por MarcoPostal, así que no dependen del login de UES.
+  const contextoValidar = (() => {
+    if (tableFilter === 'pickup') {
+      const sinEtiqueta = pickupList.filter((p) => !p.link_etiqueta_drive).length;
+      return { label: `1) ✅ Validar Pick-UP (${sinEtiqueta})`, habilitados: pickupList.length, requiereUes: false };
+    }
+    if (tableFilter === 'recibilo') {
+      const sinEtiqueta = recibiloList.filter((p) => !p.link_etiqueta_drive).length;
+      return { label: `1) ✅ Validar Recibilo Hoy (${sinEtiqueta})`, habilitados: recibiloList.length, requiereUes: false };
+    }
+    return { label: '1) ✅ Validar Pedidos', habilitados: pedidosPendientes.length, requiereUes: true };
+  })();
+
   const pedidosFiltradosPorCard = (() => {
     if (tableFilter === 'pendientesContacto') return pedidosPendientesContacto;
     if (tableFilter === 'etiquetasGeneradas') {
@@ -319,11 +365,7 @@ function AppContent({ user, logout }) {
     }
     if (tableFilter === 'pendientesFulfillment') return pedidosListosFulfillment;
     if (tableFilter === 'revisionManual') return pedidosRevisionManual;
-    if (tableFilter === 'despachados') {
-      if (despachadosCanalFilter === 'whatsapp') return pedidosDespachadosList.filter((p) => getCanalNotificacion(p) === 'whatsapp');
-      if (despachadosCanalFilter === 'email') return pedidosDespachadosList.filter((p) => getCanalNotificacion(p) === 'email');
-      return pedidosDespachadosList;
-    }
+    if (tableFilter === 'despachados') return pedidosDespachadosFiltrados;
     if (tableFilter === 'enviados') {
       const q = searchEnviados.trim().toLowerCase();
       if (!q) return pedidosEnviadosList;
@@ -1209,33 +1251,6 @@ function AppContent({ user, logout }) {
     }
   };
 
-  // ⚠️ TEMPORAL: reprocesar pedido que no entró por webhook
-  const handleReprocesarPedido = async () => {
-    const num = reprocessOrderNumber.trim();
-    if (!num) {
-      mostrarToast('Ingresa el número de pedido', 'warning');
-      return;
-    }
-    const confirmado = window.confirm(`Reprocesar pedido #${num} desde Shopify y crearlo en la base de datos?`);
-    if (!confirmado) return;
-
-    setReprocessLoading(true);
-    try {
-      const resultado = await reprocesarPedidoShopify(num);
-      if (resultado.success) {
-        mostrarToast(`✅ Pedido #${num} creado exitosamente`, 'success');
-        setReprocessDone(true);
-        cargarPedidos();
-      } else {
-        mostrarToast(resultado.error || `Error al reprocesar pedido #${num}`, 'error');
-      }
-    } catch (error) {
-      mostrarToast(error.message || `Error al reprocesar pedido #${num}`, 'error');
-    } finally {
-      setReprocessLoading(false);
-    }
-  };
-
   const handleDescartarEtiqueta = async (pedidoId) => {
     const pedido = pedidos.find((p) => p.id === pedidoId);
     const numeroPedido = pedido?.numero_pedido || pedidoId;
@@ -1299,6 +1314,79 @@ function AppContent({ user, logout }) {
       mostrarToast(`Error: ${err.message}`, 'error');
     } finally {
       setReenvioCreating(false);
+    }
+  };
+
+  // Genera en lote las etiquetas MarcoPostal validadas en ValidarEtiquetasMPModal.
+  // Cada pedido va por su propio request: el backend rutea pickup_local → guía PickUp
+  // (servicio 9) y recibilo_hoy → guía delivery, con los overrides editados.
+  const handleConfirmarEtiquetasMP = async (items) => {
+    if (!Array.isArray(items) || items.length === 0) return;
+    const tipo = validarMpModal?.tipo;
+    setValidarMpModal(null);
+
+    const total = items.length;
+    const pdfUrls = [];
+    const errores = [];
+    let procesados = 0;
+
+    setLoadingText(`Generando ${total} etiqueta(s) MarcoPostal...`);
+    setLoading(true);
+
+    try {
+      for (const item of items) {
+        procesados += 1;
+        setLoadingText(`Generando etiqueta ${procesados}/${total} — #${item.numeroPedido}...`);
+        try {
+          const r = await generarGuiaMarcoPostalWeb(item.pedidoId, item.overrides || null);
+          const guiaId = r?.data?.guiaId;
+          if (!r?.success || !guiaId) {
+            errores.push(`#${item.numeroPedido}: ${r?.error || 'MarcoPostal no devolvió número de guía'}`);
+            continue;
+          }
+          // Si el render del PDF falló en el backend, el endpoint smart lo regenera al pedirlo.
+          pdfUrls.push(r.data.pdfUrl || `/api/marcopostal/etiqueta-web/${encodeURIComponent(guiaId)}`);
+        } catch (err) {
+          errores.push(`#${item.numeroPedido}: ${err.message}`);
+        }
+      }
+
+      if (pdfUrls.length > 1) {
+        setLoadingText(`Combinando ${pdfUrls.length} etiqueta(s) en un PDF...`);
+        try {
+          const combinado = await combinarPdfsEtiquetas(pdfUrls);
+          if (combinado?.success && combinado?.pdfUrl) {
+            setPdfUrl(combinado.pdfUrl);
+          } else {
+            mostrarToast('No se pudo combinar el PDF. Muestro la primera etiqueta.', 'warning');
+            setPdfUrl(pdfUrls[0]);
+          }
+        } catch (_) {
+          mostrarToast('No se pudo combinar el PDF. Muestro la primera etiqueta.', 'warning');
+          setPdfUrl(pdfUrls[0]);
+        }
+        setShowPDFModal(true);
+      } else if (pdfUrls.length === 1) {
+        setPdfUrl(pdfUrls[0]);
+        setShowPDFModal(true);
+      }
+
+      if (errores.length === 0) {
+        mostrarToast(`✅ ${pdfUrls.length}/${total} etiquetas generadas correctamente`, 'success');
+      } else {
+        console.error('Errores generando etiquetas MarcoPostal:', errores);
+        mostrarToast(
+          `⚠️ ${pdfUrls.length}/${total} generadas · ${errores.length} con error: ${errores.slice(0, 2).join(' | ')}`,
+          'warning'
+        );
+      }
+    } finally {
+      setLoadingText('Actualizando lista de pedidos...');
+      try {
+        if (tipo === 'pickup_local') await cargarPedidosPickup();
+        else await cargarPedidosRecibilo();
+      } catch (_) {}
+      setLoading(false);
     }
   };
 
@@ -1642,6 +1730,19 @@ function AppContent({ user, logout }) {
 
   // Handler para validación masiva previa a generar
   const handleValidarSeleccionados = async () => {
+    // Pick-UP y Recibilo Hoy tienen su propio lote: mismo botón, otro modal y otro
+    // request (el backend elige guía PickUp o delivery según tipo_envio).
+    if (tableFilter === 'pickup' || tableFilter === 'recibilo') {
+      const esPickup = tableFilter === 'pickup';
+      const lista = esPickup ? pickupList : recibiloList;
+      if (lista.length === 0) {
+        mostrarToast(`⚠️ No hay pedidos ${esPickup ? 'Pick-UP' : 'Recibilo Hoy'} pendientes`, 'warning');
+        return;
+      }
+      setValidarMpModal({ tipo: esPickup ? 'pickup_local' : 'recibilo_hoy', pedidos: lista });
+      return;
+    }
+
     const enPendientesContacto = tableFilter === 'pendientesContacto';
 
     if (enPendientesContacto) {
@@ -2006,6 +2107,7 @@ function AppContent({ user, logout }) {
   };
 
   return (
+    <NotificacionesProvider activo={esAdmin}>
     <div className="app app-shell">
       {/* Barra superior solo visible en mobile: hamburguesa + marca + tema */}
       <div className="mobile-topbar">
@@ -2236,7 +2338,9 @@ function AppContent({ user, logout }) {
             onNotifChannelFilter={setNotifChannelFilter}
             channelPriority={channelPriority}
             onChannelPriorityChange={setChannelPriority}
-            pendingCount={pedidosPendientes.length}
+            pendingCount={contextoValidar.habilitados}
+            validarLabel={contextoValidar.label}
+            validarRequiereUes={contextoValidar.requiereUes}
             uesAuthenticated={uesAuthenticated}
             activeTrackingTemplate={templatesWhatsapp.find(t => t.id === activeTrackingTemplateId)}
             templates={templatesWhatsapp}
@@ -2354,23 +2458,62 @@ function AppContent({ user, logout }) {
 
           {esAdmin && tableFilter === 'despachados' && (
             <div className="section-action-bar despachados-filter-bar">
-              <span className="despachados-filter-label">Filtrar canal:</span>
+              {/* Courier: permite mandar los seguimientos de a un grupo */}
+              <span className="despachados-filter-label">Filtrar courier:</span>
               <div className="notif-preview-chips">
-              <button
-                type="button"
-                className={`notif-chip notif-chip-wpp ${despachadosCanalFilter === 'whatsapp' ? 'notif-chip-active' : ''}`}
-                onClick={() => setDespachadosCanalFilter(despachadosCanalFilter === 'whatsapp' ? null : 'whatsapp')}
-              >
-                💬 WhatsApp ({pedidosDespachadosList.filter((p) => getCanalNotificacion(p) === 'whatsapp').length})
-              </button>
-              <button
-                type="button"
-                className={`notif-chip notif-chip-email ${despachadosCanalFilter === 'email' ? 'notif-chip-active' : ''}`}
-                onClick={() => setDespachadosCanalFilter(despachadosCanalFilter === 'email' ? null : 'email')}
-              >
-                🏪 Shopify automático ({pedidosDespachadosList.filter((p) => getCanalNotificacion(p) === 'email').length})
-              </button>
+                <button
+                  type="button"
+                  className={`notif-chip notif-chip-mp ${despachadosCourierFilter === 'marcopostal' ? 'notif-chip-active' : ''}`}
+                  onClick={() => setDespachadosCourierFilter(despachadosCourierFilter === 'marcopostal' ? null : 'marcopostal')}
+                  title="MarcoPostal: pedidos normales y Recibilo Hoy (sin seguimiento UES y sin retiro en local)"
+                >
+                  🛵 MarcoPostal ({despachadosPorGrupo.marcopostal || 0})
+                </button>
+                <button
+                  type="button"
+                  className={`notif-chip notif-chip-mp-pickup ${despachadosCourierFilter === 'marcopostal_pickup' ? 'notif-chip-active' : ''}`}
+                  onClick={() => setDespachadosCourierFilter(despachadosCourierFilter === 'marcopostal_pickup' ? null : 'marcopostal_pickup')}
+                  title="MarcoPostal Pick-UP: retiro en local, su fulfillment se manda en diferido"
+                >
+                  🏬 MarcoPostal (pickup) ({despachadosPorGrupo.marcopostal_pickup || 0})
+                </button>
+                <button
+                  type="button"
+                  className={`notif-chip notif-chip-ues ${despachadosCourierFilter === 'ues' ? 'notif-chip-active' : ''}`}
+                  onClick={() => setDespachadosCourierFilter(despachadosCourierFilter === 'ues' ? null : 'ues')}
+                  title="Envíos UES (seguimiento con prefijo UES)"
+                >
+                  🚚 UES ({despachadosPorGrupo.ues || 0})
+                </button>
               </div>
+              {/* Pickups agendados por el diferido posterior al fulfillment MarcoPostal */}
+              {pickupsProgramados.length > 0 && (
+                <>
+                  <span
+                    className="cadeteria-guard-hint cadeteria-guard-hint-pending"
+                    title="Se despachan solos al vencer la espera posterior al fulfillment de MarcoPostal"
+                  >
+                    ⏱ {pickupsProgramados.length} pickup(s) programados · sale{' '}
+                    {formatUy(proximoPickupProgramado, { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                  <button
+                    className="btn btn-outline-danger btn-sm"
+                    onClick={async () => {
+                      try {
+                        const r = await cancelarPickupsProgramados();
+                        if (!r?.success) { mostrarToast(r?.error || 'Error al cancelar', 'error'); return; }
+                        mostrarToast(`⏹ Programación cancelada (${r.cancelados})`, 'success');
+                        cargarPedidosDespachados();
+                      } catch (err) {
+                        mostrarToast(`Error al cancelar: ${err.message}`, 'error');
+                      }
+                    }}
+                    title="Cancelar la programación: los pickup vuelven a despacharse a mano"
+                  >
+                    ⏹ Cancelar programación
+                  </button>
+                </>
+              )}
             </div>
           )}
 
@@ -2379,20 +2522,24 @@ function AppContent({ user, logout }) {
               <span>
                 {selectedPedidos.length > 0
                   ? `Seleccionados: ${selectedPedidos.length}`
-                  : `${pedidosFiltradosPorCard.length} pedido(s)${despachadosCanalFilter ? ' filtrados' : ' despachados'}`}
+                  : `${pedidosFiltradosPorCard.length} pedido(s)${despachadosCourierFilter ? ' filtrados' : ' despachados'}`}
               </span>
-              {/* Estado del retiro por cadetería (requisito para poder despachar el fulfillment) */}
+              {/* Estado del retiro por cadetería (requisito para poder despachar el fulfillment).
+                   Los pickup no cuentan: no pasan por cadetería. */}
               {(() => {
-                const total = pedidosFiltradosPorCard.length;
-                const retirados = pedidosFiltradosPorCard.filter((p) => Boolean(p.retirado_cadeteria_at)).length;
+                const conCadeteria = pedidosFiltradosPorCard.filter(requiereRetiroCadeteria);
+                const total = conCadeteria.length;
+                const retirados = conCadeteria.filter((p) => Boolean(p.retirado_cadeteria_at)).length;
+                const pickups = pedidosFiltradosPorCard.length - total;
                 const faltan = total - retirados;
                 return (
                   <span
                     className={faltan > 0 ? 'cadeteria-guard-hint cadeteria-guard-hint-pending' : 'cadeteria-guard-hint'}
-                    title="El fulfillment solo se envía para pedidos retirados por cadetería"
+                    title="El fulfillment solo se envía para pedidos retirados por cadetería (los pickup no requieren retiro)"
                   >
                     🚚 {retirados}/{total} retirados por cadetería
                     {faltan > 0 ? ` · ${faltan} pendiente(s)` : ''}
+                    {pickups > 0 ? ` · ${pickups} pickup(s)` : ''}
                   </span>
                 );
               })()}
@@ -2407,10 +2554,10 @@ function AppContent({ user, logout }) {
                   if (ids.length === 0) { mostrarToast('No hay pedidos para procesar', 'warning'); return; }
 
                   // Requisito: no se puede enviar el fulfillment hasta que la cadetería
-                  // haya marcado el pedido como retirado.
-                  const retiradoPorId = new Map(pedidosFiltradosPorCard.map((p) => [p.id, Boolean(p.retirado_cadeteria_at)]));
-                  const idsRetirados = ids.filter((id) => retiradoPorId.get(id));
-                  const idsBloqueados = ids.filter((id) => !retiradoPorId.get(id));
+                  // haya marcado el pedido como retirado (excepto los pickup).
+                  const elegiblePorId = new Map(pedidosFiltradosPorCard.map((p) => [p.id, puedeEnviarFulfillment(p)]));
+                  const idsRetirados = ids.filter((id) => elegiblePorId.get(id));
+                  const idsBloqueados = ids.filter((id) => !elegiblePorId.get(id));
 
                   if (idsRetirados.length === 0) {
                     mostrarToast('⛔ No se puede enviar el fulfillment: ningún pedido fue retirado por cadetería aún', 'warning');
@@ -2431,6 +2578,12 @@ function AppContent({ user, logout }) {
                   } else {
                     mostrarToast(`✅ ${resultado.successCount} fulfillment(s) enviados`, 'success');
                   }
+                  // Los pickup no salen ahora: quedan agendados y los manda el cron.
+                  const programados = resultado.pickupsProgramados?.programados || 0;
+                  if (programados > 0) {
+                    const hora = formatUy(resultado.pickupsProgramados.programadoPara, { hour: '2-digit', minute: '2-digit' });
+                    mostrarToast(`⏱ ${programados} pickup(s) programados — se despachan solos ~${hora}`, 'success');
+                  }
                   limpiarSeleccion();
                   cargarPedidosDespachados();
                   cargarPedidosEnviados();
@@ -2440,15 +2593,15 @@ function AppContent({ user, logout }) {
                   const target = selectedPedidos.length > 0
                     ? pedidosFiltradosPorCard.filter((p) => selectedPedidos.includes(p.id))
                     : pedidosFiltradosPorCard;
-                  return target.filter((p) => Boolean(p.retirado_cadeteria_at)).length === 0;
+                  return target.filter(puedeEnviarFulfillment).length === 0;
                 })()}
-                title="Solo se envía el fulfillment de los pedidos retirados por cadetería"
+                title="Solo se envía el fulfillment de los pedidos retirados por cadetería (los pickup van siempre)"
               >
                 {(() => {
                   const target = selectedPedidos.length > 0
                     ? pedidosFiltradosPorCard.filter((p) => selectedPedidos.includes(p.id))
                     : pedidosFiltradosPorCard;
-                  const elegibles = target.filter((p) => Boolean(p.retirado_cadeteria_at)).length;
+                  const elegibles = target.filter(puedeEnviarFulfillment).length;
                   return `📨 Enviar Fulfillment (${elegibles})`;
                 })()}
               </button>
@@ -2601,7 +2754,6 @@ function AppContent({ user, logout }) {
                 onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'pickup_local')}
                 onMarcarDespachadosBulk={(ids) => handleMarcarDespachadosBulkEspecial(ids, 'pickup_local')}
                 onActualizar={cargarPedidosPickup}
-                onGenerarEtiquetaMP={handleGenerarEtiquetaMP}
                 mostrarToast={mostrarToast}
               />
             </div>
@@ -2616,39 +2768,8 @@ function AppContent({ user, logout }) {
                 onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'recibilo_hoy')}
                 onMarcarDespachadosBulk={(ids) => handleMarcarDespachadosBulkEspecial(ids, 'recibilo_hoy')}
                 onActualizar={cargarPedidosRecibilo}
-                onGenerarEtiquetaMP={handleGenerarEtiquetaMP}
                 mostrarToast={mostrarToast}
               />
-            </div>
-          )}
-
-          {/* ⚠️ TEMPORAL: Panel para reprocesar pedidos que no entraron por webhook.
-               Cuando ya no se necesite, cambiar REPROCESS_ENABLED = false arriba */}
-          {esAdmin && REPROCESS_ENABLED && (
-            <div className="reprocess-box">
-              <span style={{ fontWeight: 600, fontSize: 13 }}>⚠️ Reprocesar pedido Shopify</span>
-              <input
-                type="text"
-                placeholder="Número de pedido (ej: 1234)"
-                value={reprocessOrderNumber}
-                onChange={(e) => setReprocessOrderNumber(e.target.value)}
-                disabled={reprocessLoading || reprocessDone}
-              />
-              <button
-                onClick={handleReprocesarPedido}
-                disabled={reprocessLoading || reprocessDone || !reprocessOrderNumber.trim()}
-                style={{ padding: '4px 12px', borderRadius: 4, background: reprocessDone ? '#28a745' : '#ffc107', border: 'none', fontWeight: 600, fontSize: 13, cursor: reprocessLoading || reprocessDone ? 'default' : 'pointer' }}
-              >
-                {reprocessLoading ? 'Procesando...' : reprocessDone ? '✅ Listo' : 'Crear en BD'}
-              </button>
-              {reprocessDone && (
-                <button
-                  onClick={() => { setReprocessDone(false); setReprocessOrderNumber(''); }}
-                  style={{ padding: '4px 10px', borderRadius: 4, background: '#6c757d', color: '#fff', border: 'none', fontSize: 12, cursor: 'pointer' }}
-                >
-                  Otro pedido
-                </button>
-              )}
             </div>
           )}
 
@@ -3040,6 +3161,16 @@ function AppContent({ user, logout }) {
         />
       )}
 
+      {/* Validación en lote de etiquetas MarcoPostal (Pick-UP / Recibilo Hoy) */}
+      {validarMpModal && (
+        <ValidarEtiquetasMPModal
+          pedidos={validarMpModal.pedidos}
+          tipo={validarMpModal.tipo}
+          onClose={() => setValidarMpModal(null)}
+          onConfirm={handleConfirmarEtiquetasMP}
+        />
+      )}
+
       {/* Modal de vista previa de PDF */}
       {showPDFModal && (
         <PDFPreviewModal
@@ -3146,7 +3277,13 @@ function AppContent({ user, logout }) {
       {/* Toast de notificaciones */}
       {toast.show && <Toast message={toast.message} type={toast.type} />}
       </main>
+
+      {/* Columna fija de procesos automáticos (levantes UES / pickups diferidos).
+          Va como hermana de <main> para que ocupe todo el alto y empuje el
+          contenido en vez de taparlo. */}
+      {esAdmin && <NotificacionesPanel />}
     </div>
+    </NotificacionesProvider>
   );
 }
 

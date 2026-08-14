@@ -1798,6 +1798,27 @@ body {
   border: 1px solid #f3deb0;
 }
 
+/* Chips de courier (Despachados): mismo color-coding que Facturación */
+.notif-chip-mp {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  border: 1px solid currentColor;
+}
+
+/* Pickup usa el color de marca: la barra de filtros ya es verde y el chip
+   quedaría sin contraste con el color-coding de éxito. */
+.notif-chip-mp-pickup {
+  background: var(--brand-primary-soft);
+  color: var(--brand-primary);
+  border: 1px solid currentColor;
+}
+
+.notif-chip-ues {
+  background: var(--info-bg);
+  color: var(--info-text);
+  border: 1px solid currentColor;
+}
+
 /* Channel priority control */
 .channel-priority-control {
   display: flex;
@@ -5869,7 +5890,8 @@ body {
 }
 
 .admin-field input,
-.admin-field select {
+.admin-field select,
+.admin-field textarea {
   padding: 0.45rem 0.65rem;
   border: 1px solid #cbd5e1;
   border-radius: 6px;
@@ -5878,8 +5900,15 @@ body {
   transition: border-color 0.15s;
 }
 
+.admin-field textarea {
+  font-family: inherit;
+  resize: vertical;
+  min-height: 60px;
+}
+
 .admin-field input:focus,
-.admin-field select:focus {
+.admin-field select:focus,
+.admin-field textarea:focus {
   border-color: #0f3460;
   box-shadow: 0 0 0 2px rgba(15,52,96,0.1);
 }
@@ -7765,29 +7794,6 @@ body {
   color: #1a1015;
 }
 
-/* Caja temporal "Reprocesar pedido Shopify" (estilos migrados desde inline) */
-.reprocess-box {
-  margin: 12px 16px;
-  padding: 12px 16px;
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-text);
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  color: var(--warning-text);
-}
-.reprocess-box input {
-  padding: 4px 8px;
-  border-radius: 4px;
-  border: 1px solid var(--brand-border-strong);
-  background: var(--brand-surface);
-  color: var(--brand-text);
-  font-size: 13px;
-  width: 200px;
-}
-
 /* ═══════════════════════════════════════════════════════════════════════════
    Barra superior mobile + drawer de navegación
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -8387,3 +8393,459 @@ body {
 }
 
 .fact-levante-input .fact-input-num { width: 64px; }
+
+/* ── Modal validar etiquetas MarcoPostal en lote (Pick-UP / Recibilo Hoy) ──── */
+.mpb-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.75rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--brand-border);
+}
+
+.mpb-check-all {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.mpb-hint {
+  font-size: 0.78rem;
+  color: var(--brand-text-soft);
+  flex: 1 1 260px;
+}
+
+.mpb-empty {
+  padding: 1.5rem 0;
+  text-align: center;
+  color: var(--brand-text-soft);
+}
+
+.mpb-lote {
+  padding: 0.7rem 0.9rem;
+  margin-bottom: 0.9rem;
+  background: var(--info-bg, #eff6ff);
+  border: 1px solid #93c5fd;
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+
+.mpb-lote-fields {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.5rem;
+}
+
+.mpb-card {
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 0.7rem;
+  border: 1px solid var(--brand-border);
+  border-radius: 8px;
+  background: var(--brand-surface);
+  opacity: 0.6;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+
+.mpb-card-sel {
+  opacity: 1;
+  border-color: #93c5fd;
+  background: var(--info-bg, #eff6ff);
+}
+
+.mpb-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
+.mpb-card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.mpb-card-cliente {
+  color: var(--brand-text-soft);
+}
+
+.mpb-card-badges {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.mpb-badge {
+  font-size: 0.72rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: var(--brand-surface-hover, #f3f4f6);
+  border: 1px solid var(--brand-border);
+  color: var(--brand-text-soft);
+  white-space: nowrap;
+}
+
+.mpb-badge-ok {
+  background: var(--success-bg);
+  border-color: #86efac;
+  color: var(--success-text);
+}
+
+.mpb-badge-warn {
+  background: var(--warning-bg, #fffbe6);
+  border-color: #f0c060;
+  color: var(--warning-text, #7a3e00);
+}
+
+.mpb-badge-err {
+  background: var(--danger-bg);
+  border-color: #fca5a5;
+  color: var(--danger-text);
+}
+
+.mpb-direccion-original {
+  margin: 0 0 0.5rem;
+  font-size: 0.76rem;
+  color: var(--brand-text-soft);
+}
+
+.mpb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.5rem;
+}
+
+.mpb-field {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.75rem;
+}
+
+.mpb-field > span {
+  color: var(--brand-text-soft);
+  margin-bottom: 0.15rem;
+}
+
+.mpb-input {
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--brand-border);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  background: var(--brand-surface);
+  color: var(--brand-text);
+  width: 100%;
+}
+
+.mpb-input-highlight {
+  background: var(--warning-bg, #fffbe6);
+}
+
+/* ── Panel de notificaciones (levantes automáticos y pickups diferidos) ──────
+   Fijo a la derecha de todo. Se puede ocultar sólo cuando no queda ninguna sin
+   leer: mientras haya pendientes el botón de cerrar queda deshabilitado y, si
+   llega una nueva con el panel cerrado, se vuelve a abrir solo. */
+/* Botón del header, al lado de "UES Conectado". En reposo es neutro; con
+   notificaciones sin leer se enciende y late para llamar la atención. */
+.notif-header-btn {
+  background: var(--brand-secondary);
+  color: var(--brand-text);
+  border: 1px solid var(--brand-border);
+}
+
+.notif-header-btn-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.notif-header-btn-alerta {
+  background: var(--brand-primary);
+  color: #fff;
+  border-color: var(--brand-primary);
+  animation: notif-latido 1.8s ease-in-out infinite;
+}
+
+.notif-header-btn-count {
+  min-width: 21px;
+  height: 21px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: #fff;
+  color: var(--brand-primary);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 21px;
+  text-align: center;
+}
+
+@keyframes notif-latido {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(123, 47, 77, 0.45); }
+  50%      { box-shadow: 0 0 0 8px rgba(123, 47, 77, 0); }
+}
+
+/* Respeta a quien pide menos movimiento: queda encendido pero sin latir. */
+@media (prefers-reduced-motion: reduce) {
+  .notif-header-btn-alerta {
+    animation: none;
+    box-shadow: 0 0 0 3px rgba(123, 47, 77, 0.3);
+  }
+}
+
+.notif-launcher {
+  position: fixed;
+  top: 96px;
+  right: 0;
+  z-index: 900;
+  border: 1px solid var(--border-soft);
+  border-right: none;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--text-strong);
+  box-shadow: var(--brand-shadow-soft);
+  padding: 11px 13px;
+  font-size: 19px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.notif-launcher:hover {
+  background: var(--brand-secondary);
+}
+
+/* Columna fija a la derecha del shell: hermana de <main>, así empuja el
+   contenido en vez de flotar por encima. */
+.notif-panel {
+  flex: 0 0 340px;
+  width: 340px;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-card);
+  border-left: 1px solid var(--border-soft);
+  box-shadow: -6px 0 20px rgba(109, 53, 78, 0.07);
+  overflow: hidden;
+}
+
+/* Con pendientes el borde se marca para que no pase desapercibido. */
+.notif-panel-alerta {
+  border-left: 3px solid var(--brand-primary);
+}
+
+.notif-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 13px 16px;
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.notif-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--brand-heading);
+}
+
+.notif-badge {
+  min-width: 21px;
+  height: 21px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: var(--brand-primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 21px;
+  text-align: center;
+}
+
+.notif-panel-close {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.notif-panel-close:hover:not(:disabled) {
+  background: var(--brand-secondary);
+  color: var(--text-strong);
+}
+
+.notif-panel-close:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.notif-panel-error {
+  padding: 10px 16px;
+  background: var(--danger-bg);
+  color: var(--danger-text);
+  font-size: 13px;
+}
+
+.notif-list {
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Separadores "Sin leer" / "Historial" dentro de la lista. */
+.notif-group {
+  margin: 4px 2px 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.notif-group:first-child {
+  margin-top: 0;
+}
+
+.notif-empty {
+  padding: 22px 8px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.notif-item {
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--brand-accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  padding: 12px 14px;
+}
+
+.notif-item-ok    { border-left-color: var(--success-text); }
+.notif-item-error { border-left-color: var(--danger-text); }
+.notif-item-warning { border-left-color: var(--warning-text); }
+.notif-item-info  { border-left-color: var(--info-text); }
+
+.notif-item-leida {
+  opacity: 0.55;
+  background: transparent;
+}
+
+.notif-item-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.notif-item-icon {
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.notif-item-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+  line-height: 1.35;
+}
+
+.notif-item-msg {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.notif-item-foot {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.notif-item-marcar {
+  border: 1px solid var(--brand-primary);
+  background: var(--brand-primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.notif-item-marcar:hover {
+  background: var(--brand-primary-hover);
+}
+
+.notif-item-leida-tag {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.notif-panel-footer {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--surface-muted);
+}
+
+.notif-marcar-todas {
+  width: 100%;
+  border: 1px solid var(--border-strong);
+  background: var(--brand-secondary);
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.notif-marcar-todas:hover:not(:disabled) {
+  background: var(--brand-secondary-hover);
+}
+
+.notif-marcar-todas:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@media (max-width: 900px) {
+  /* En pantallas chicas no hay lugar para una columna: pasa a overlay. */
+  .notif-panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: auto;
+    z-index: 900;
+    flex: none;
+    width: min(340px, 88vw);
+    height: 100vh;
+  }
+}

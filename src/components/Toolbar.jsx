@@ -1,6 +1,6 @@
 import React from 'react';
 
-function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillment, onCancelarFulfillment, fulfillmentPreviewCount, fulfillmentPreviewTotalCount, fulfillmentReadyCount, notifPreview, notifChannelFilter, onNotifChannelFilter, channelPriority, onChannelPriorityChange, pendingCount, uesAuthenticated, activeTrackingTemplate, templates, onTrackingTemplateChange }) {
+function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillment, onCancelarFulfillment, fulfillmentPreviewCount, fulfillmentPreviewTotalCount, fulfillmentReadyCount, notifPreview, notifChannelFilter, onNotifChannelFilter, channelPriority, onChannelPriorityChange, pendingCount, uesAuthenticated, validarLabel = '1) ✅ Validar Pedidos', validarRequiereUes = true, activeTrackingTemplate, templates, onTrackingTemplateChange }) {
 
   const handleChipClick = (canal) => {
     onNotifChannelFilter?.(notifChannelFilter === canal ? null : canal);
@@ -11,9 +11,9 @@ function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillme
       <button
         className="btn btn-success"
         onClick={onValidar}
-        disabled={pendingCount === 0 || !uesAuthenticated}
+        disabled={pendingCount === 0 || (validarRequiereUes && !uesAuthenticated)}
       >
-        1) ✅ Validar Pedidos
+        {validarLabel}
       </button>
 
       {fulfillmentPreviewCount !== null ? (

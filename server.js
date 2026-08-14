@@ -66,6 +66,19 @@ const { procesarCarritosAbandonados, sincronizarDesdeShopify, probarMensaje, cre
 const emailService = require('./services/emailService');
 const logService = require('./services/logService');
 
+// ── Notificaciones del panel lateral ─────────────────────────────────────────
+// Best-effort: una notificación nunca puede tumbar el proceso que la genera
+// (cron de levantes, despacho de pickups). Si la tabla todavía no existe
+// (falta correr sql/create_notificaciones_sistema.sql) sólo queda el log.
+async function notificar({ tipo, nivel = 'info', titulo, mensaje = '', data = null }) {
+  try {
+    return await supabaseService.crearNotificacion({ tipo, nivel, titulo, mensaje, data });
+  } catch (err) {
+    logService.warning(`No se pudo registrar la notificación "${titulo}": ${err.message}`);
+    return null;
+  }
+}
+
 // ── Auth Middleware ──────────────────────────────────────────────────────────
 function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -1842,15 +1855,56 @@ app.get('/api/ues/levantes', requireAuth, async (req, res) => {
     const existe = fecha
       ? levantes.some((l) => l.fecha_levante === fecha)
       : false;
-    res.json({ success: true, levantes, existe });
+    res.json({
+      success: true,
+      levantes,
+      existe,
+      observacionesDefault: uesService.observacionesLevantePorDefecto,
+    });
   } catch (error) {
     logService.error('Error al listar levantes UES', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
 
+// Solicitar un levante en UES y dejarlo registrado. Lo comparten el endpoint
+// manual y el cron automático. Lanza si UES rechaza el levante; el registro en
+// la base es best-effort (si falla, el levante ya existe en UES igual).
+async function solicitarLevanteUes({ fecha, observaciones = '', usuario = null }) {
+  const fechaLevante = fecha || new Date().toISOString().slice(0, 10);
+  const observacionesLevante = String(observaciones ?? '').trim();
+
+  const resultado = await uesService.crearLevante(fechaLevante, observacionesLevante);
+
+  let registro = null;
+  try {
+    registro = await supabaseService.registrarLevante({
+      fecha_levante: fechaLevante,
+      numero_levante: resultado?.id ?? resultado?.levante_id ?? null,
+      respuesta_ues: resultado ?? null,
+      usuario_id: usuario?.id ?? null,
+      usuario_email: usuario?.email ?? null,
+      usuario_nombre: usuario?.nombre ?? null,
+    });
+  } catch (regErr) {
+    logService.warning('Levante creado en UES pero no se pudo registrar en la base', {
+      fecha: fechaLevante,
+      error: regErr.message,
+    });
+  }
+
+  logService.info(`Levante solicitado en UES (${usuario?.email || 'automático'})`, {
+    fecha: fechaLevante,
+    observaciones: observacionesLevante || uesService.observacionesLevantePorDefecto,
+    resultado,
+  });
+
+  return { fechaLevante, resultado, registro };
+}
+
 // Solicitar un levante (que UES pase a retirar paquetes).
-// Sólo varía la fecha; el resto del payload es fijo (origen/contacto del remitente).
+// Sólo varían la fecha y las observaciones; el resto del payload es fijo
+// (origen/contacto del remitente).
 app.post('/api/ues/levante', requireAuth, async (req, res) => {
   try {
     if (!uesService.token) {
@@ -1860,7 +1914,7 @@ app.post('/api/ues/levante', requireAuth, async (req, res) => {
       });
     }
 
-    const { fecha } = req.body || {};
+    const { fecha, observaciones } = req.body || {};
     const fechaLevante = fecha || new Date().toISOString().slice(0, 10);
 
     // Un levante por día: si ya existe, no volver a solicitarlo.
@@ -1871,31 +1925,148 @@ app.post('/api/ues/levante', requireAuth, async (req, res) => {
       });
     }
 
-    const resultado = await uesService.crearLevante(fechaLevante);
+    const { resultado, registro } = await solicitarLevanteUes({
+      fecha: fechaLevante,
+      observaciones,
+      usuario: req.user,
+    });
 
-    // Registrar el levante (best-effort: si falla el guardado, el levante ya se
-    // creó en UES, así que avisamos pero no lo damos por fallido).
-    let registro = null;
-    try {
-      registro = await supabaseService.registrarLevante({
-        fecha_levante: fechaLevante,
-        numero_levante: resultado?.id ?? resultado?.levante_id ?? null,
-        respuesta_ues: resultado ?? null,
-        usuario_id: req.user?.id ?? null,
-        usuario_email: req.user?.email ?? null,
-        usuario_nombre: req.user?.nombre ?? null,
-      });
-    } catch (regErr) {
-      logService.warning('Levante creado en UES pero no se pudo registrar en la base', {
+    // Va al panel igual que el automático, para que el historial de levantes del
+    // día quede completo sin importar de dónde salió la solicitud.
+    const quien = req.user?.nombre || req.user?.email || 'un usuario';
+    await notificar({
+      tipo: 'levante_manual',
+      nivel: 'ok',
+      titulo: 'Levante solicitado a mano',
+      mensaje: `${quien} pidió el levante del ${fechaLevante} a UES.`,
+      data: {
         fecha: fechaLevante,
-        error: regErr.message,
-      });
-    }
+        numeroLevante: resultado?.id ?? resultado?.levante_id ?? null,
+        usuario: req.user?.email ?? null,
+      },
+    });
 
-    logService.info(`Levante solicitado en UES (${req.user?.email})`, { fecha: fechaLevante, resultado });
     res.json({ success: true, data: resultado, registro });
   } catch (error) {
     logService.error('Error al solicitar levante UES', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ── Levante automático ───────────────────────────────────────────────────────
+// Lunes, miércoles y viernes 12:30 hora uruguaya. Sólo se pide el levante si hay
+// al menos LEVANTE_AUTO_MIN_PEDIDOS pedidos con etiqueta UES todavía en el local.
+// Se haya pedido o no, queda una notificación en el panel lateral.
+const LEVANTE_AUTO_ENABLED = String(process.env.LEVANTE_AUTO_ENABLED || 'true').toLowerCase() !== 'false';
+const LEVANTE_AUTO_MIN_PEDIDOS = Number(process.env.LEVANTE_AUTO_MIN_PEDIDOS || 3);
+const LEVANTE_AUTO_CRON = process.env.LEVANTE_AUTO_CRON || '30 12 * * 1,3,5';
+const LEVANTE_AUTO_TZ = process.env.LEVANTE_AUTO_TZ || 'America/Montevideo';
+
+// El server puede correr en UTC (Railway): la fecha del levante siempre es la de
+// Uruguay. 'en-CA' formatea como YYYY-MM-DD, que es lo que espera UES.
+function fechaHoyUruguay() {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: LEVANTE_AUTO_TZ }).format(new Date());
+}
+
+// HH:mm en hora uruguaya, para los textos de las notificaciones.
+function formatHoraUruguay(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('es-UY', {
+    timeZone: LEVANTE_AUTO_TZ,
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(d);
+}
+
+async function ejecutarLevanteAutomatico() {
+  const fecha = fechaHoyUruguay();
+
+  const pendientes = await supabaseService.obtenerPedidosUesPendientesDeLevante();
+  const cantidad = pendientes.length;
+  const numeros = pendientes.map((p) => p.numero_pedido).filter(Boolean);
+  const base = { fecha, cantidad, minimo: LEVANTE_AUTO_MIN_PEDIDOS, pedidos: numeros };
+
+  // Un levante por día: si ya se pidió a mano, el automático no insiste.
+  if (await supabaseService.existeLevanteEnFecha(fecha)) {
+    logService.info(`[cron] Levante automático omitido: ya hay uno registrado para el ${fecha}`);
+    await notificar({
+      tipo: 'levante_auto',
+      nivel: 'info',
+      titulo: 'Levante automático omitido',
+      mensaje: `Ya había un levante registrado para el ${fecha}, no se pidió otro.`,
+      data: base,
+    });
+    return { solicitado: false, motivo: 'ya_existe', cantidad };
+  }
+
+  if (cantidad < LEVANTE_AUTO_MIN_PEDIDOS) {
+    logService.info(`[cron] Levante automático omitido: ${cantidad} pedido(s) UES pendientes (mínimo ${LEVANTE_AUTO_MIN_PEDIDOS})`);
+    await notificar({
+      tipo: 'levante_auto',
+      nivel: 'info',
+      titulo: 'No se solicitó levante',
+      mensaje: `Sólo hay ${cantidad} pedido(s) UES pendientes de armado/despacho y el mínimo es ${LEVANTE_AUTO_MIN_PEDIDOS}.`,
+      data: base,
+    });
+    return { solicitado: false, motivo: 'sin_minimo', cantidad };
+  }
+
+  try {
+    // La sesión UES se cae sola cada tanto; el cron corre sin nadie logueado.
+    if (!uesService.token) await uesService.autenticarManual();
+
+    const { resultado } = await solicitarLevanteUes({ fecha });
+    const numeroLevante = resultado?.id ?? resultado?.levante_id ?? null;
+
+    await notificar({
+      tipo: 'levante_auto',
+      nivel: 'ok',
+      titulo: 'Levante solicitado a UES',
+      mensaje: `Se pidió el levante del ${fecha} por ${cantidad} pedido(s) UES pendientes.`,
+      data: { ...base, numeroLevante },
+    });
+    return { solicitado: true, cantidad, numeroLevante };
+  } catch (error) {
+    logService.error('[cron] Error solicitando el levante automático', error);
+    await notificar({
+      tipo: 'levante_auto',
+      nivel: 'error',
+      titulo: 'Falló el levante automático',
+      mensaje: `Había ${cantidad} pedido(s) UES pendientes pero UES rechazó la solicitud: ${error.message}. Pedilo a mano desde Administración → Levantes.`,
+      data: { ...base, error: error.message },
+    });
+    return { solicitado: false, motivo: 'error', cantidad, error: error.message };
+  }
+}
+
+// Estado del levante automático + disparo manual (para probarlo sin esperar al cron).
+app.get('/api/ues/levante-automatico', requireAuth, async (req, res) => {
+  try {
+    const fecha = fechaHoyUruguay();
+    const pendientes = await supabaseService.obtenerPedidosUesPendientesDeLevante();
+    res.json({
+      success: true,
+      habilitado: LEVANTE_AUTO_ENABLED,
+      cron: LEVANTE_AUTO_CRON,
+      timezone: LEVANTE_AUTO_TZ,
+      minimo: LEVANTE_AUTO_MIN_PEDIDOS,
+      fecha,
+      pendientes: pendientes.length,
+      yaSolicitado: await supabaseService.existeLevanteEnFecha(fecha),
+    });
+  } catch (error) {
+    logService.error('Error consultando el levante automático', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/ues/levante-automatico/ejecutar', requireAuth, async (req, res) => {
+  try {
+    const resultado = await ejecutarLevanteAutomatico();
+    res.json({ success: true, ...resultado });
+  } catch (error) {
+    logService.error('Error ejecutando el levante automático a mano', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -2557,6 +2728,155 @@ app.post('/api/sincronizar-shopify', async (req, res) => {
   }
 });
 
+// Minutos de espera entre el fulfillment de MarcoPostal y el de los pickup.
+const PICKUP_FULFILLMENT_DELAY_MIN = Number(process.env.PICKUP_FULFILLMENT_DELAY_MIN || 30);
+
+// `fulfillment_pickup_programado_at` es una columna nueva (ver
+// sql/add_fulfillment_pickup_programado_at.sql). Si la migración todavía no corrió,
+// el update se reintenta sin ese campo en vez de romper el despacho.
+async function actualizarPedidoConProgramacion(pedidoId, datos) {
+  try {
+    return await supabaseService.actualizarPedido(pedidoId, datos);
+  } catch (err) {
+    if (!/fulfillment_pickup_programado_at/i.test(String(err?.message || ''))) throw err;
+    logService.warning(
+      'Falta la columna fulfillment_pickup_programado_at — corré sql/add_fulfillment_pickup_programado_at.sql'
+    );
+    const { fulfillment_pickup_programado_at: _omitido, ...resto } = datos;
+    return await supabaseService.actualizarPedido(pedidoId, resto);
+  }
+}
+
+// Despacho de un pickup: no lleva fulfillment con tracking sino "listo para retirar"
+// (mueve el stock al punto Pick-UP y notifica). Se usa desde el fulfillment manual
+// y desde el cron de pickups programados.
+async function ejecutarFulfillmentPickup(pedido, shopifyOrderIdConocido = null) {
+  const shopifyOrderId = shopifyOrderIdConocido
+    || await shopifyService.obtenerIdPorNumeroPedido(pedido.numero_pedido);
+  if (!shopifyOrderId) {
+    throw new Error(`No se encontró la orden #${pedido.numero_pedido} en Shopify`);
+  }
+
+  const resultadoPickup = await shopifyService.marcarListoParaRetirar(shopifyOrderId);
+
+  await actualizarPedidoConProgramacion(pedido.id, {
+    estado: 'enviado',
+    notificacion_enviada_at: new Date().toISOString(),
+    fulfillment_pickup_programado_at: null,
+  });
+
+  const resumenTransfer = (resultadoPickup.transferencias || [])
+    .map((t) => `${t.inventoryItemId}x${t.cantidad}`)
+    .join(', ') || 'sin transferencias (ya cubierto)';
+  logService.info(
+    `✅ Pickup OK pedido #${pedido.numero_pedido} | shopifyOrderId=${shopifyOrderId} | ` +
+    `stock transferido: ${resumenTransfer} | retirado: ${resultadoPickup.retiradoOk ? 'OK' : 'FALLÓ'}`
+  );
+  if (!resultadoPickup.retiradoOk) {
+    logService.warning(
+      `⚠️ Pedido #${pedido.numero_pedido} quedó listo/notificado pero NO se pudo marcar retirado — ` +
+      `cerralo a mano en Shopify. Detalle: ${resultadoPickup.retiradoError}`
+    );
+  }
+
+  shopifyService.agregarTagAOrden(shopifyOrderId, 'LISTO_PARA_RETIRAR').catch((e) =>
+    logService.warning(`No se pudo agregar tag LISTO_PARA_RETIRAR a orden ${shopifyOrderId}: ${e.message}`)
+  );
+
+  return { shopifyOrderId, retiradoOk: resultadoPickup.retiradoOk };
+}
+
+// Agenda los pickup que siguen en Despachados para dentro de N minutos. Se dispara
+// cuando se manda el fulfillment de MarcoPostal: los pickup salen después, solos.
+async function programarPickupsDiferidos({ excluirIds = [] } = {}) {
+  if (!(PICKUP_FULFILLMENT_DELAY_MIN > 0)) return { programados: 0, programadoPara: null };
+
+  const pendientes = (await supabaseService.obtenerPickupsDespachados({ soloSinProgramar: true }))
+    .filter((p) => !excluirIds.includes(p.id) && p.numero_pedido && p.numero_seguimiento_ues);
+
+  if (pendientes.length === 0) return { programados: 0, programadoPara: null };
+
+  const programadoPara = new Date(Date.now() + PICKUP_FULFILLMENT_DELAY_MIN * 60 * 1000).toISOString();
+  let programados = 0;
+  for (const pedido of pendientes) {
+    try {
+      await supabaseService.actualizarPedido(pedido.id, { fulfillment_pickup_programado_at: programadoPara });
+      programados += 1;
+    } catch (err) {
+      logService.warning(`No se pudo programar el pickup #${pedido.numero_pedido}: ${err.message}`);
+    }
+  }
+
+  logService.info(
+    `⏱ ${programados} pickup(s) programados para ${programadoPara} (+${PICKUP_FULFILLMENT_DELAY_MIN} min tras el fulfillment MarcoPostal)`
+  );
+
+  if (programados > 0) {
+    await notificar({
+      tipo: 'pickup_programado',
+      nivel: 'info',
+      titulo: `${programados} pickup(s) agendados`,
+      mensaje: `Salen solos dentro de ${PICKUP_FULFILLMENT_DELAY_MIN} minutos (${formatHoraUruguay(programadoPara)}).`,
+      data: {
+        programados,
+        programadoPara,
+        demoraMin: PICKUP_FULFILLMENT_DELAY_MIN,
+        pedidos: pendientes.map((p) => p.numero_pedido).filter(Boolean),
+      },
+    });
+  }
+
+  return { programados, programadoPara };
+}
+
+// Corre los pickups agendados cuya hora ya venció (invocado por el cron).
+async function despacharPickupsProgramados() {
+  const vencidos = await supabaseService.obtenerPickupsProgramadosVencidos();
+  if (vencidos.length === 0) return { total: 0, ok: 0, fail: 0 };
+
+  let ok = 0;
+  const despachados = [];
+  const fallidos = [];
+  for (const pedido of vencidos) {
+    try {
+      await ejecutarFulfillmentPickup(pedido);
+      despachados.push(pedido.numero_pedido);
+      ok += 1;
+    } catch (err) {
+      // Queda agendado: el próximo ciclo lo reintenta.
+      fallidos.push({ numeroPedido: pedido.numero_pedido, error: err.message });
+      logService.error(`❌ Pickup programado FALLÓ pedido #${pedido.numero_pedido}`, {
+        mensaje: err.message,
+      });
+    }
+  }
+
+  logService.info(`[cron] Pickups programados despachados: ${ok}/${vencidos.length}`);
+
+  if (ok > 0) {
+    await notificar({
+      tipo: 'pickup_despachado',
+      nivel: 'ok',
+      titulo: `${ok} pickup(s) despachados automáticamente`,
+      mensaje: `Quedaron listos para retirar: ${despachados.map((n) => `#${n}`).join(', ')}.`,
+      data: { total: vencidos.length, ok, pedidos: despachados },
+    });
+  }
+  if (fallidos.length > 0) {
+    await notificar({
+      tipo: 'pickup_despachado',
+      nivel: 'error',
+      titulo: `${fallidos.length} pickup(s) no se pudieron despachar`,
+      mensaje: `Siguen agendados y se reintentan solos. ${fallidos
+        .map((f) => `#${f.numeroPedido}: ${f.error}`)
+        .join(' | ')}`,
+      data: { total: vencidos.length, fallidos },
+    });
+  }
+
+  return { total: vencidos.length, ok, fail: vencidos.length - ok };
+}
+
 async function handleFulfillmentShopify(req, res) {
   try {
     const { pedidoIds } = req.body || {};
@@ -2593,30 +2913,7 @@ async function handleFulfillmentShopify(req, res) {
         const esPickup = pedido.tipo_envio === 'pickup_local';
 
         if (esPickup) {
-          const resultadoPickup = await shopifyService.marcarListoParaRetirar(shopifyOrderId);
-
-          await supabaseService.actualizarPedido(pedido.id, {
-            estado: 'enviado',
-            notificacion_enviada_at: new Date().toISOString(),
-          });
-
-          const resumenTransfer = (resultadoPickup.transferencias || [])
-            .map((t) => `${t.inventoryItemId}x${t.cantidad}`)
-            .join(', ') || 'sin transferencias (ya cubierto)';
-          logService.info(
-            `✅ Pickup OK pedido #${pedido.numero_pedido} | shopifyOrderId=${shopifyOrderId} | ` +
-            `stock transferido: ${resumenTransfer} | retirado: ${resultadoPickup.retiradoOk ? 'OK' : 'FALLÓ'}`
-          );
-          if (!resultadoPickup.retiradoOk) {
-            logService.warning(
-              `⚠️ Pedido #${pedido.numero_pedido} quedó listo/notificado pero NO se pudo marcar retirado — ` +
-              `cerralo a mano en Shopify. Detalle: ${resultadoPickup.retiradoError}`
-            );
-          }
-
-          shopifyService.agregarTagAOrden(shopifyOrderId, 'LISTO_PARA_RETIRAR').catch((e) =>
-            logService.warning(`No se pudo agregar tag LISTO_PARA_RETIRAR a orden ${shopifyOrderId}: ${e.message}`)
-          );
+          const resultadoPickup = await ejecutarFulfillmentPickup(pedido, shopifyOrderId);
 
           resultados.push({
             pedidoId: pedido.id,
@@ -2681,6 +2978,25 @@ async function handleFulfillmentShopify(req, res) {
     const successCount = resultados.filter((r) => r.success).length;
     const failCount = resultados.length - successCount;
 
+    // Si en esta tanda salió al menos un envío MarcoPostal (no pickup, no UES),
+    // los pickup que siguen en Despachados se agendan para +30 min y los despacha
+    // el cron. Así no hay que volver a entrar a mandarlos a mano.
+    const huboMarcoPostal = resultados.some((r) => {
+      if (!r.success || r.listoParaRetirar) return false;
+      return !/^ues/i.test(String(r.pedido?.numero_seguimiento_ues || '').trim());
+    });
+
+    let pickupsProgramados = null;
+    if (huboMarcoPostal) {
+      try {
+        pickupsProgramados = await programarPickupsDiferidos({
+          excluirIds: candidatos.map((p) => p.id),
+        });
+      } catch (err) {
+        logService.warning(`No se pudieron programar los pickups diferidos: ${err.message}`);
+      }
+    }
+
     // Identificar pedidos sin email para notificar por WhatsApp
     const pedidosSinEmail = resultados
       .filter(r => r.success && r.pedido && !(r.pedido.cliente_email || r.pedido.email))
@@ -2702,13 +3018,75 @@ async function handleFulfillmentShopify(req, res) {
       successCount,
       failCount,
       data: resultados,
-      pedidosSinEmail // Frontend abrirá WhatsApp solo para estos
+      pedidosSinEmail, // Frontend abrirá WhatsApp solo para estos
+      pickupsProgramados, // { programados, programadoPara } | null
     });
   } catch (error) {
     logService.error('Error en fulfillment Shopify', error);
     res.status(500).json({ success: false, error: error.message });
   }
 }
+
+// Cancelar la programación de los pickups diferidos (vuelven a despacho manual).
+// Sin pedidoIds cancela todos los que estén agendados.
+app.post('/api/pickups-programados/cancelar', requireAuth, async (req, res) => {
+  try {
+    const { pedidoIds } = req.body || {};
+    const agendados = (await supabaseService.obtenerPickupsDespachados())
+      .filter((p) => p.fulfillment_pickup_programado_at)
+      .filter((p) => !Array.isArray(pedidoIds) || pedidoIds.length === 0 || pedidoIds.includes(p.id));
+
+    for (const pedido of agendados) {
+      await supabaseService.actualizarPedido(pedido.id, { fulfillment_pickup_programado_at: null });
+    }
+
+    logService.info(`Programación de pickups cancelada: ${agendados.length} pedido(s)`);
+    res.json({ success: true, cancelados: agendados.length });
+  } catch (error) {
+    logService.error('Error cancelando pickups programados', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ── Notificaciones del panel lateral ─────────────────────────────────────────
+// Las genera el backend (levante automático, pickups diferidos) y las consume el
+// panel del front, que queda abierto hasta que se marcan como leídas.
+
+app.get('/api/notificaciones', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const notificaciones = await supabaseService.obtenerNotificaciones({ limit });
+    res.json({
+      success: true,
+      notificaciones,
+      noLeidas: notificaciones.filter((n) => !n.leida).length,
+    });
+  } catch (error) {
+    // Si falta la migración devolvemos vacío: el panel no tiene por qué romper la app.
+    logService.warning(`No se pudieron leer las notificaciones: ${error.message}`);
+    res.json({ success: true, notificaciones: [], noLeidas: 0, warning: error.message });
+  }
+});
+
+app.post('/api/notificaciones/:id/leida', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const notificacion = await supabaseService.marcarNotificacionLeida(req.params.id, req.user?.email || null);
+    res.json({ success: true, notificacion });
+  } catch (error) {
+    logService.error('Error marcando notificación como leída', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/notificaciones/leer-todas', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const marcadas = await supabaseService.marcarTodasNotificacionesLeidas(req.user?.email || null);
+    res.json({ success: true, marcadas });
+  } catch (error) {
+    logService.error('Error marcando todas las notificaciones como leídas', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 // Ejecutar fulfillment en Shopify para pedidos con etiqueta generada
 app.post('/api/fulfillment-shopify', handleFulfillmentShopify);
@@ -2898,9 +3276,10 @@ app.post('/api/marcar-procesados-bulk', requireAuth, async (req, res) => {
       pedidoIds.map(async (pedidoId) => {
         try {
           // Reutilizamos los campos de trazabilidad existentes para que aparezca en "Mis Pedidos Armados".
-          await supabaseService.actualizarPedido(pedidoId, {
+          await actualizarPedidoConProgramacion(pedidoId, {
             estado: 'enviado',
             notificacion_enviada_at: new Date().toISOString(),
+            fulfillment_pickup_programado_at: null,
           });
           return { pedidoId, success: true };
         } catch (err) {
@@ -2948,7 +3327,7 @@ app.post('/api/revertir-a-etiqueta-generada-bulk', requireAuth, async (req, res)
 
           // Conserva numero_seguimiento_ues y link_etiqueta_drive; limpia todo lo
           // que lo movió a despachado/procesado para que reaparezca en Etiquetas Generadas.
-          await supabaseService.actualizarPedido(pedidoId, {
+          await actualizarPedidoConProgramacion(pedidoId, {
             estado: 'pendiente',
             etiqueta_generada: true,
             notificacion_enviada_at: null,
@@ -2956,6 +3335,7 @@ app.post('/api/revertir-a-etiqueta-generada-bulk', requireAuth, async (req, res)
             armado_at: null,
             retirado_cadeteria_at: null,
             retirado_cadeteria_por: null,
+            fulfillment_pickup_programado_at: null,
           });
 
           return { pedidoId, numeroPedido: pedido.numero_pedido, success: true };
@@ -5601,6 +5981,33 @@ app.listen(PORT, async () => {
     }
   };
   cron.schedule('*/30 * * * *', ejecutarCicloCarritos);
+
+  // Cron: pickups diferidos. Cada 5 minutos despacha los que ya cumplieron la espera
+  // posterior al fulfillment de MarcoPostal (PICKUP_FULFILLMENT_DELAY_MIN, default 30).
+  if (PICKUP_FULFILLMENT_DELAY_MIN > 0) {
+    cron.schedule('*/5 * * * *', async () => {
+      try {
+        await despacharPickupsProgramados();
+      } catch (err) {
+        logService.error('[cron] Error despachando pickups programados', err);
+      }
+    });
+    console.log(`🏬 Cron pickups diferidos activo (cada 5 min, espera ${PICKUP_FULFILLMENT_DELAY_MIN} min)`);
+  }
+
+  // Cron: levante automático de UES (lun/mié/vie 12:30 hora uruguaya por defecto).
+  // Sólo se pide si hay al menos LEVANTE_AUTO_MIN_PEDIDOS pedidos UES esperando
+  // retiro; en ambos casos deja notificación en el panel lateral.
+  if (LEVANTE_AUTO_ENABLED) {
+    cron.schedule(LEVANTE_AUTO_CRON, async () => {
+      try {
+        await ejecutarLevanteAutomatico();
+      } catch (err) {
+        logService.error('[cron] Error en el levante automático', err);
+      }
+    }, { timezone: LEVANTE_AUTO_TZ });
+    console.log(`📦 Cron levante automático activo (${LEVANTE_AUTO_CRON} ${LEVANTE_AUTO_TZ}, mínimo ${LEVANTE_AUTO_MIN_PEDIDOS} pedidos)`);
+  }
 
   // Cron: sincronizar stock de colores NC desde Shopify hacia productos.stock (cada 2 horas).
   // Configurable con STOCK_SKU_SYNC_CRON; se puede desactivar con STOCK_SKU_SYNC_ENABLED=false.
