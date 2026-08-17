@@ -9,6 +9,7 @@ import PDFPreviewModal from './components/modals/PDFPreviewModal';
 import LoadingModal from './components/modals/LoadingModal';
 import Toast from './components/Toast';
 import NotificacionesPanel from './components/NotificacionesPanel';
+import NotificacionesBoton from './components/NotificacionesBoton';
 import { NotificacionesProvider } from './context/NotificacionesContext';
 import FollowUpPanel from './components/FollowUpPanel';
 import TemplateManagerPanel from './components/TemplateManagerPanel';
@@ -2140,6 +2141,10 @@ function AppContent({ user, logout }) {
           <div className="side-nav-logo">VELINNE</div>
           <div className="side-nav-subtitle">BEAUTY</div>
         </div>
+
+        {/* Fuera del <nav>: no navega a ninguna vista, sólo abre el panel (y en
+            mobile no tiene sentido que cierre el drawer al tocarlo). */}
+        {esAdmin && <NotificacionesBoton />}
 
         <nav
           className="side-nav-menu"

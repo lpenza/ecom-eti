@@ -4803,7 +4803,9 @@ body {
   color: #475569;
 }
 
-.admin-reporte-filtros input[type="date"] {
+.admin-reporte-filtros input[type="date"],
+.admin-reporte-filtros input[type="text"],
+.admin-reporte-filtros select {
   padding: 0.35rem 0.6rem;
   border: 1px solid #cbd5e1;
   border-radius: 6px;
@@ -8555,27 +8557,33 @@ body {
    Fijo a la derecha de todo. Se puede ocultar sólo cuando no queda ninguna sin
    leer: mientras haya pendientes el botón de cerrar queda deshabilitado y, si
    llega una nueva con el panel cerrado, se vuelve a abrir solo. */
-/* Botón del header, al lado de "UES Conectado". En reposo es neutro; con
-   notificaciones sin leer se enciende y late para llamar la atención. */
-.notif-header-btn {
+/* Botón del nav lateral, arriba de la navegación. Hereda .side-nav-item; en
+   reposo se distingue con un borde suave y con notificaciones sin leer se
+   enciende y late para llamar la atención. */
+.notif-nav-btn {
+  width: 100%;
+  margin-bottom: 0.6rem;
+  border-color: var(--brand-border);
   background: var(--brand-secondary);
   color: var(--brand-text);
-  border: 1px solid var(--brand-border);
+  font-weight: 600;
 }
 
-.notif-header-btn-icon {
-  font-size: 1rem;
-  line-height: 1;
-}
-
-.notif-header-btn-alerta {
+.notif-nav-btn-alerta {
   background: var(--brand-primary);
-  color: #fff;
   border-color: var(--brand-primary);
+  color: #fff;
   animation: notif-latido 1.8s ease-in-out infinite;
 }
 
-.notif-header-btn-count {
+/* Gana al :hover genérico de .side-nav-item, que lo apagaría. */
+.notif-nav-btn-alerta:hover {
+  background: var(--brand-primary-hover);
+  color: #fff;
+}
+
+.notif-nav-count {
+  margin-left: auto;
   min-width: 21px;
   height: 21px;
   padding: 0 6px;
@@ -8595,31 +8603,10 @@ body {
 
 /* Respeta a quien pide menos movimiento: queda encendido pero sin latir. */
 @media (prefers-reduced-motion: reduce) {
-  .notif-header-btn-alerta {
+  .notif-nav-btn-alerta {
     animation: none;
     box-shadow: 0 0 0 3px rgba(123, 47, 77, 0.3);
   }
-}
-
-.notif-launcher {
-  position: fixed;
-  top: 96px;
-  right: 0;
-  z-index: 900;
-  border: 1px solid var(--border-soft);
-  border-right: none;
-  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-  background: var(--surface-card);
-  color: var(--text-strong);
-  box-shadow: var(--brand-shadow-soft);
-  padding: 11px 13px;
-  font-size: 19px;
-  cursor: pointer;
-  transition: background 0.15s ease;
-}
-
-.notif-launcher:hover {
-  background: var(--brand-secondary);
 }
 
 /* Columna fija a la derecha del shell: hermana de <main>, así empuja el

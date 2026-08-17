@@ -35,7 +35,6 @@ function NotificacionesPanel() {
     error,
     marcando,
     mostrarPanel,
-    botonEnHeader,
     cambiarOculto,
     marcarLeida,
     marcarTodas,
@@ -66,23 +65,8 @@ function NotificacionesPanel() {
     </article>
   );
 
-  if (cargando) return null;
-
-  if (!mostrarPanel) {
-    // En las vistas sin header (Administración, Carritos…) queda un botón
-    // flotante para poder abrirlo igual.
-    if (botonEnHeader) return null;
-    return (
-      <button
-        type="button"
-        className="notif-launcher"
-        onClick={() => cambiarOculto(false)}
-        title="Ver notificaciones"
-      >
-        🔔
-      </button>
-    );
-  }
+  // Plegado se reabre desde el botón 🔔 del nav lateral.
+  if (cargando || !mostrarPanel) return null;
 
   return (
     <aside className={`notif-panel${hayNoLeidas ? ' notif-panel-alerta' : ''}`}>

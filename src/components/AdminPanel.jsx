@@ -67,6 +67,14 @@ export default function AdminPanel() {
   const [creando, setCreando] = useState(false);
   const [errorCrear, setErrorCrear] = useState('');
 
+  // ── Pedidos armados (detalle por pedido) ──
+  const [armados, setArmados] = useState([]);
+  const [loadingArmados, setLoadingArmados] = useState(false);
+  const [armadosDesde, setArmadosDesde] = useState(inicioMes);
+  const [armadosHasta, setArmadosHasta] = useState(hoy);
+  const [armadosUsuario, setArmadosUsuario] = useState(''); // '' = todos
+  const [armadosBusqueda, setArmadosBusqueda] = useState('');
+
   // ── Productos ──
   const [productos, setProductos] = useState([]);
   const [loadingProductos, setLoadingProductos] = useState(false);
@@ -151,6 +159,55 @@ export default function AdminPanel() {
   }, [desde, hasta]);
 
   useEffect(() => { cargarReporte(); }, [cargarReporte]);
+
+  // ── Detalle de pedidos armados: arranca en el mes actual y se filtra por fecha ──
+  const cargarArmados = useCallback(() => {
+    setLoadingArmados(true);
+    const qs = new URLSearchParams();
+    if (armadosDesde) qs.set('desde', armadosDesde);
+    if (armadosHasta) qs.set('hasta', armadosHasta);
+    if (armadosUsuario) qs.set('usuario', armadosUsuario);
+    fetchAdmin(`/admin/pedidos-armados?${qs.toString()}`)
+      .then((res) => {
+        if (res.success) setArmados(res.pedidos || []);
+        else mostrarToast(res.error || 'Error cargando los pedidos armados', 'error');
+      })
+      .catch(() => mostrarToast('Error cargando los pedidos armados', 'error'))
+      .finally(() => setLoadingArmados(false));
+  }, [armadosDesde, armadosHasta, armadosUsuario]);
+
+  useEffect(() => {
+    if (tab === 'armados') cargarArmados();
+  }, [tab, cargarArmados]);
+
+  // Exportar el detalle filtrado (lo que se ve en pantalla) a CSV.
+  function exportarArmadosCsv(filas) {
+    if (filas.length === 0) {
+      mostrarToast('No hay pedidos para exportar', 'error');
+      return;
+    }
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const contenido = [
+      ['N° Pedido', 'Cliente', 'Armado por', 'Fecha de armado', 'Estado', 'Tipo de envío'],
+      ...filas.map((p) => [
+        p.numero_pedido ?? '',
+        p.cliente_nombre ?? '',
+        p.despachado_por_nombre ?? '',
+        formatFechaHoraCompletaUy(p.armado_at, ''),
+        p.estado ?? '',
+        p.tipo_envio ?? '',
+      ]),
+    ];
+    const csv = '﻿' + contenido.map((f) => f.map(esc).join(';')).join('\n');
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `pedidos-armados-${armadosDesde}_a_${armadosHasta}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
 
   // ── Levantes: estado de sesión UES ──
   const verificarUesAuth = useCallback(() => {
@@ -563,6 +620,9 @@ export default function AdminPanel() {
         <button className={`admin-tab${tab === 'usuarios' ? ' admin-tab-active' : ''}`} onClick={() => setTab('usuarios')}>
           Usuarios
         </button>
+        <button className={`admin-tab${tab === 'armados' ? ' admin-tab-active' : ''}`} onClick={() => setTab('armados')}>
+          Pedidos armados
+        </button>
         <button className={`admin-tab${tab === 'productos' ? ' admin-tab-active' : ''}`} onClick={() => setTab('productos')}>
           Productos
         </button>
@@ -733,6 +793,125 @@ export default function AdminPanel() {
           </section>
         </>
       )}
+
+      {/* ══════════════ TAB PEDIDOS ARMADOS ══════════════ */}
+      {tab === 'armados' && (() => {
+        // El backend ya filtró por fecha/usuario; la búsqueda se aplica en pantalla.
+        const q = armadosBusqueda.trim().toLowerCase();
+        const filas = q
+          ? armados.filter((p) => (
+            String(p.numero_pedido || '').toLowerCase().includes(q)
+            || String(p.cliente_nombre || '').toLowerCase().includes(q)
+          ))
+          : armados;
+
+        // Cuántos armó cada usuario dentro de lo que se está viendo.
+        const porUsuario = {};
+        for (const p of filas) {
+          const nombre = p.despachado_por_nombre || '—';
+          porUsuario[nombre] = (porUsuario[nombre] || 0) + 1;
+        }
+        const ranking = Object.entries(porUsuario).sort((a, b) => b[1] - a[1]);
+
+        return (
+          <section className="admin-section">
+            <div className="admin-section-header-row">
+              <h2 className="admin-section-title" style={{ margin: 0 }}>Pedidos armados por usuario</h2>
+              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                <button className="btn btn-secondary btn-sm" onClick={() => exportarArmadosCsv(filas)} disabled={filas.length === 0}>
+                  ⬇️ CSV
+                </button>
+                <button className="btn btn-secondary btn-sm" onClick={cargarArmados} disabled={loadingArmados}>
+                  {loadingArmados ? 'Cargando...' : '🔄 Actualizar'}
+                </button>
+              </div>
+            </div>
+            <p className="admin-section-desc">
+              Detalle pedido por pedido de lo que armó cada usuario, con su fecha de armado.
+              Por defecto muestra el mes actual; podés cambiar el rango con los filtros.
+            </p>
+
+            <div className="admin-reporte-filtros">
+              <label>
+                Desde
+                <input type="date" value={armadosDesde} onChange={(e) => setArmadosDesde(e.target.value)} />
+              </label>
+              <label>
+                Hasta
+                <input type="date" value={armadosHasta} onChange={(e) => setArmadosHasta(e.target.value)} />
+              </label>
+              <label>
+                Usuario
+                <select value={armadosUsuario} onChange={(e) => setArmadosUsuario(e.target.value)}>
+                  <option value="">Todos</option>
+                  {usuarios.map((u) => (
+                    <option key={u.id} value={u.nombre}>{u.nombre}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Buscar
+                <input
+                  type="text"
+                  placeholder="N° de pedido o cliente…"
+                  value={armadosBusqueda}
+                  onChange={(e) => setArmadosBusqueda(e.target.value)}
+                />
+              </label>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={() => { setArmadosDesde(inicioMes); setArmadosHasta(hoy); setArmadosUsuario(''); setArmadosBusqueda(''); }}
+              >
+                Mes actual
+              </button>
+            </div>
+
+            {!loadingArmados && filas.length > 0 && (
+              <p className="admin-section-desc" style={{ marginTop: 4 }}>
+                <strong>{filas.length}</strong> pedido(s) armado(s)
+                {ranking.length > 0 && ' · '}
+                {ranking.map(([nombre, cant]) => `${nombre}: ${cant}`).join(' · ')}
+              </p>
+            )}
+
+            {loadingArmados && <p className="admin-rep-empty">Cargando...</p>}
+
+            {!loadingArmados && filas.length === 0 && (
+              <p className="admin-rep-empty">No hay pedidos armados en el período seleccionado.</p>
+            )}
+
+            {!loadingArmados && filas.length > 0 && (
+              <table className="admin-reporte-table admin-pedidos-table">
+                <thead>
+                  <tr>
+                    <th>N° Pedido</th>
+                    <th>Cliente</th>
+                    <th>Armado por</th>
+                    <th>Fecha de armado</th>
+                    <th>Estado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filas.map((p) => (
+                    <tr key={p.id}>
+                      <td><strong>#{p.numero_pedido || '—'}</strong></td>
+                      <td>
+                        <span className="admin-rep-nombre">{p.cliente_nombre || '—'}</span>
+                        <span className="admin-rep-email">{p.cliente_email || '—'}</span>
+                      </td>
+                      <td>{p.despachado_por_nombre || '—'}</td>
+                      <td>{formatFechaHoraCompletaUy(p.armado_at)}</td>
+                      <td>
+                        <span className={`admin-badge admin-badge-estado-${p.estado}`}>{p.estado}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+        );
+      })()}
 
       {/* ══════════════ TAB PRODUCTOS ══════════════ */}
       {tab === 'productos' && (

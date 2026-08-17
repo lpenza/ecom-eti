@@ -1,21 +1,12 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { useNotificaciones } from '../context/NotificacionesContext';
 
 /**
- * Botón de notificaciones del header (al lado de "UES Conectado"). Abre y cierra
- * el panel lateral, y se ilumina mientras haya notificaciones sin leer.
+ * Botón de notificaciones del nav lateral. Está en todas las vistas, abre y
+ * cierra el panel, y se ilumina mientras haya notificaciones sin leer.
  */
 function NotificacionesBoton() {
   const notif = useNotificaciones();
-  const registrar = notif?.setBotonEnHeader;
-
-  // Mientras este botón esté montado, el panel no dibuja su propio launcher.
-  useEffect(() => {
-    if (!registrar) return undefined;
-    registrar(true);
-    return () => registrar(false);
-  }, [registrar]);
-
   if (!notif) return null;
 
   const { noLeidas, hayNoLeidas, mostrarPanel, alternarPanel } = notif;
@@ -23,7 +14,7 @@ function NotificacionesBoton() {
   return (
     <button
       type="button"
-      className={`btn header-btn notif-header-btn${hayNoLeidas ? ' notif-header-btn-alerta' : ''}`}
+      className={`side-nav-item notif-nav-btn${hayNoLeidas ? ' notif-nav-btn-alerta' : ''}`}
       onClick={alternarPanel}
       aria-pressed={mostrarPanel}
       title={
@@ -32,9 +23,9 @@ function NotificacionesBoton() {
           : mostrarPanel ? 'Ocultar notificaciones' : 'Ver notificaciones'
       }
     >
-      <span className="notif-header-btn-icon">🔔</span>
+      <span className="side-nav-icon">🔔</span>
       Notificaciones
-      {hayNoLeidas && <span className="notif-header-btn-count">{noLeidas.length}</span>}
+      {hayNoLeidas && <span className="notif-nav-count">{noLeidas.length}</span>}
     </button>
   );
 }

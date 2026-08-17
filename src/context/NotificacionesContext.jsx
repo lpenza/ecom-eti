@@ -26,10 +26,6 @@ export function NotificacionesProvider({ children, activo = true }) {
   const [marcando, setMarcando] = useState(false);
   // La preferencia de ocultarlo sobrevive al refresh; las no leídas la pisan.
   const [oculto, setOculto] = useState(() => localStorage.getItem(STORAGE_OCULTO) === '1');
-  // El panel sólo muestra su propio botón flotante en las vistas donde no hay
-  // header (el header sólo se renderiza en Pedidos).
-  const [botonEnHeader, setBotonEnHeader] = useState(false);
-
   const noLeidas = notificaciones.filter((n) => !n.leida);
   const leidas = notificaciones.filter((n) => n.leida);
   const hayNoLeidas = noLeidas.length > 0;
@@ -104,8 +100,6 @@ export function NotificacionesProvider({ children, activo = true }) {
     error,
     marcando,
     mostrarPanel,
-    botonEnHeader,
-    setBotonEnHeader,
     cambiarOculto,
     alternarPanel,
     marcarLeida,

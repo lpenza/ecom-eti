@@ -294,6 +294,24 @@ app.get('/api/admin/reporte', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// Detalle: todos los pedidos armados por los usuarios en un rango de fechas.
+// Filtros: ?desde=YYYY-MM-DD&hasta=YYYY-MM-DD&usuario=<nombre>
+app.get('/api/admin/pedidos-armados', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { desde, hasta, usuario, limit } = req.query || {};
+    const pedidos = await supabaseService.listarPedidosArmados({
+      desde: desde || null,
+      hasta: hasta || null,
+      usuario: usuario || null,
+      limit: limit || 5000,
+    });
+    res.json({ success: true, pedidos });
+  } catch (err) {
+    logService.error('Error en admin/pedidos-armados', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ── Productos (admin) ────────────────────────────────────────────────────────
 
 app.get('/api/admin/productos', requireAuth, requireAdmin, async (req, res) => {

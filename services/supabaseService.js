@@ -133,6 +133,26 @@ function buildCustomerKeyFromPedido(pedido = {}) {
   return `pedido:${pedido.id || 'unknown'}`;
 }
 
+// Límites de un rango "YYYY-MM-DD" interpretado en horario uruguayo (UTC-3 todo
+// el año). Sin el offset explícito los bordes salían en la zona del servidor
+// (UTC en Railway) y los pedidos armados después de las 21:00 UY caían en el día
+// siguiente del reporte.
+function rangoFechasUy(desde, hasta) {
+  return {
+    desdeDate: desde ? new Date(`${desde}T00:00:00-03:00`) : null,
+    hastaDate: hasta ? new Date(`${hasta}T23:59:59.999-03:00`) : null,
+  };
+}
+
+// ¿La fecha de armado cae dentro del rango pedido?
+function dentroDelRango(fechaProcesado, desdeDate, hastaDate) {
+  if (!fechaProcesado) return false;
+  const fecha = new Date(fechaProcesado);
+  if (desdeDate && fecha < desdeDate) return false;
+  if (hastaDate && fecha > hastaDate) return false;
+  return true;
+}
+
 class SupabaseService {
   isMissingRelationError(error, relationName) {
     const msg = String(error?.message || '').toLowerCase();
@@ -1490,17 +1510,11 @@ class SupabaseService {
     const { data, error } = await query;
     if (error) throw error;
 
-    const desdeDate = desde ? new Date(`${desde}T00:00:00`) : null;
-    const hastaDate = hasta ? new Date(`${hasta}T23:59:59`) : null;
+    const { desdeDate, hastaDate } = rangoFechasUy(desde, hasta);
 
-    const dataFiltrada = (data || []).filter((p) => {
-      const fechaProcesado = p.armado_at || p.notificacion_enviada_at || p.created_at;
-      if (!fechaProcesado) return false;
-      const fecha = new Date(fechaProcesado);
-      if (desdeDate && fecha < desdeDate) return false;
-      if (hastaDate && fecha > hastaDate) return false;
-      return true;
-    });
+    const dataFiltrada = (data || []).filter((p) => dentroDelRango(
+      p.armado_at || p.notificacion_enviada_at || p.created_at, desdeDate, hastaDate,
+    ));
 
     const porUsuario = {};
     for (const p of dataFiltrada) {
@@ -1537,16 +1551,11 @@ class SupabaseService {
       fecha_procesado: p.armado_at || p.notificacion_enviada_at || p.created_at || null,
     }));
 
-    const desdeDate = desde ? new Date(`${desde}T00:00:00`) : null;
-    const hastaDate = hasta ? new Date(`${hasta}T23:59:59`) : null;
+    const { desdeDate, hastaDate } = rangoFechasUy(desde, hasta);
 
-    const pedidosFiltrados = pedidosConFecha.filter((p) => {
-      if (!p.fecha_procesado) return false;
-      const fecha = new Date(p.fecha_procesado);
-      if (desdeDate && fecha < desdeDate) return false;
-      if (hastaDate && fecha > hastaDate) return false;
-      return true;
-    });
+    const pedidosFiltrados = pedidosConFecha.filter(
+      (p) => dentroDelRango(p.fecha_procesado, desdeDate, hastaDate),
+    );
 
     const { data: users } = await supabase
       .from('users')
@@ -1561,6 +1570,37 @@ class SupabaseService {
       monto_por_pedido: monto,
       total: monto * pedidos.length,
     };
+  }
+
+  // Todos los pedidos armados (de todos los usuarios) dentro de un rango, para el
+  // detalle del panel de administración. Mismo criterio de fecha que
+  // reportePedidosPorUsuario, así los totales de las dos pantallas coinciden.
+  async listarPedidosArmados({ desde = null, hasta = null, usuario = null, limit = 5000 } = {}) {
+    let query = supabase
+      .from('pedidos')
+      .select('id, numero_pedido, cliente_nombre, cliente_email, estado, tipo_envio, armado_at, notificacion_enviada_at, created_at, despachado_por_nombre')
+      .in('estado', ['despachado', 'enviado'])
+      .not('despachado_por_nombre', 'is', null)
+      .order('armado_at', { ascending: false, nullsFirst: false })
+      .limit(Math.min(Number(limit) || 5000, 20000));
+
+    if (usuario) query = query.eq('despachado_por_nombre', usuario);
+    // Un pedido nunca se arma antes de crearse: podar por created_at no descarta
+    // nada del rango y evita traer pedidos posteriores al período.
+    if (hasta) query = query.lte('created_at', `${hasta}T23:59:59.999-03:00`);
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const { desdeDate, hastaDate } = rangoFechasUy(desde, hasta);
+
+    return (data || [])
+      .map((p) => ({
+        ...p,
+        armado_at: p.armado_at || p.notificacion_enviada_at || p.created_at || null,
+      }))
+      .filter((p) => dentroDelRango(p.armado_at, desdeDate, hastaDate))
+      .sort((a, b) => new Date(b.armado_at) - new Date(a.armado_at));
   }
 
   // ── contact_motivations ─────────────────────────────────────────────────────

@@ -82,7 +82,10 @@
       "Bash(python -c ' *)",
       "Bash(node -e \"require\\('./services/supabaseService'\\)\")",
       "Bash(python -)",
-      "Bash(grep -n \"className=\\\\\"app-shell\\\\|className=\\\\\"app-main\\\\|<main\\\\|className={\\\\`app\" src/App.jsx)"
+      "Bash(grep -n \"className=\\\\\"app-shell\\\\|className=\\\\\"app-main\\\\|<main\\\\|className={\\\\`app\" src/App.jsx)",
+      "Bash(node -e \"require\\('./services/supabaseService.js'\\); console.log\\('supabaseService OK'\\)\")",
+      "Bash(node -e \"console.log\\(require\\('./package.json'\\).dependencies['@supabase/supabase-js']\\)\")",
+      "PowerShell(Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, OwningProcess, @{Name='Process';Expression={\\(Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue\\).ProcessName}})"
     ]
   }
 }
