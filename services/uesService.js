@@ -855,10 +855,7 @@ class UESService {
   // Observaciones por defecto del levante. El front las precarga en el input
   // editable, así que lo que ve el usuario es siempre lo que se termina enviando.
   get observacionesLevantePorDefecto() {
-    return (
-      process.env.UES_LEVANTE_OBSERVACIONES ||
-      'franja de 14 a 17hs, pasar despues de las 15. Antes no hay gente.'
-    );
+    return process.env.UES_LEVANTE_OBSERVACIONES || '';
   }
 
   // Construir payload para solicitar un levante (que UES pase a retirar paquetes).

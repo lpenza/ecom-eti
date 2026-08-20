@@ -2476,14 +2476,6 @@ function AppContent({ user, logout }) {
                 </button>
                 <button
                   type="button"
-                  className={`notif-chip notif-chip-mp-pickup ${despachadosCourierFilter === 'marcopostal_pickup' ? 'notif-chip-active' : ''}`}
-                  onClick={() => setDespachadosCourierFilter(despachadosCourierFilter === 'marcopostal_pickup' ? null : 'marcopostal_pickup')}
-                  title="MarcoPostal Pick-UP: retiro en local, su fulfillment se manda en diferido"
-                >
-                  🏬 MarcoPostal (pickup) ({despachadosPorGrupo.marcopostal_pickup || 0})
-                </button>
-                <button
-                  type="button"
                   className={`notif-chip notif-chip-ues ${despachadosCourierFilter === 'ues' ? 'notif-chip-active' : ''}`}
                   onClick={() => setDespachadosCourierFilter(despachadosCourierFilter === 'ues' ? null : 'ues')}
                   title="Envíos UES (seguimiento con prefijo UES)"
