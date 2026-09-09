@@ -63,6 +63,17 @@ MAIL_MADRE=info@velinneuy.com
 MAIL_ALIASES=info@velinneuy.com,ventas@velinneuy.com,consultas@velinneuy.com,facturacion@velinneuy.com
 MAIL_ALIASES_ATENCION=consultas@velinneuy.com
 
+# Servicio de fondo que notifica correos nuevos en el panel lateral.
+# EMAIL_WATCH_ENABLED=false para desactivarlo. EMAIL_WATCH_CRON: frecuencia
+# (6 campos = con segundos; default cada 15s). Con webhook, el cron es respaldo.
+# EMAIL_WATCH_ENABLED=true
+# EMAIL_WATCH_CRON=*/15 * * * * *
+
+# Webhook de Hostinger para aviso INSTANTÁNEO de correo nuevo (solo prod, URL pública).
+# EMAIL_WEBHOOK_KEY: key secreta compartida; va en la URL del webhook y el server la valida.
+# Registrar una vez: node scripts/register-webhook.js https://tu-app.up.railway.app
+# EMAIL_WEBHOOK_KEY=una_key_larga_al_azar
+
 # WhatsApp (elige proveedor: twilio o meta)
 WHATSAPP_PROVIDER=twilio
 

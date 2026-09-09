@@ -7,6 +7,7 @@ const ICONO_POR_TIPO = {
   levante_manual: '📦',
   pickup_programado: '⏱',
   pickup_despachado: '🏬',
+  email: '📧',
 };
 
 const ICONO_POR_NIVEL = {

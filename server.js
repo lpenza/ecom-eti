@@ -65,6 +65,8 @@ const { generarLinkWhatsApp } = require('./services/notificationService');
 const { procesarCarritosAbandonados, sincronizarDesdeShopify, probarMensaje, crearCarritoManual, obtenerCarritosDB, obtenerFlujoConfig, guardarFlujoConfig, guardarCheckoutCapturado, revisarYEncolar, enviarLinkAPendientes } = require('./services/abandonedCartService');
 const emailService = require('./services/emailService');
 const mailboxService = require('./services/mailboxService');
+const emailWatchService = require('./services/emailWatchService');
+const sseHub = require('./services/sseHub');
 const logService = require('./services/logService');
 
 // ── Notificaciones del panel lateral ─────────────────────────────────────────
@@ -77,6 +79,28 @@ async function notificar({ tipo, nivel = 'info', titulo, mensaje = '', data = nu
   } catch (err) {
     logService.warning(`No se pudo registrar la notificación "${titulo}": ${err.message}`);
     return null;
+  }
+}
+
+// Chequeo de correos nuevos compartido por el cron y el webhook. Guard para no
+// solapar corridas; si hay nuevos, empuja un aviso por SSE (los navegadores
+// refrescan al instante) además de dejar la notificación en el panel.
+let emailWatchEnCurso = false;
+async function ejecutarChequeoCorreos(origen = 'cron') {
+  if (emailWatchEnCurso) return { nuevos: 0, saltado: true };
+  emailWatchEnCurso = true;
+  try {
+    const r = await emailWatchService.revisarCorreosNuevos(notificar);
+    if (r.nuevos) {
+      logService.info(`[email-watch/${origen}] ${r.nuevos} correo(s) nuevo(s) notificado(s)`);
+      sseHub.broadcast('nuevo-correo', { nuevos: r.nuevos });
+    }
+    return r;
+  } catch (err) {
+    logService.error(`[email-watch/${origen}] error revisando correos`, err);
+    return { nuevos: 0, error: err.message };
+  } finally {
+    emailWatchEnCurso = false;
   }
 }
 
@@ -170,6 +194,60 @@ app.get('/api/emails', requireAuth, requireAtencion, async (req, res) => {
   }
 });
 
+// Stream SSE de avisos de correo nuevo (push instantáneo al navegador).
+// EventSource no permite cabeceras, así que el token va por query. Sólo emite
+// una señal "refrescá" (sin contenido del correo). Debe ir antes de /:uid.
+app.get('/api/emails/stream', (req, res) => {
+  try {
+    jwt.verify(String(req.query.token || ''), JWT_SECRET);
+  } catch {
+    return res.status(401).end();
+  }
+  res.set({
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  if (typeof res.flushHeaders === 'function') res.flushHeaders();
+  res.write(': conectado\n\n');
+  sseHub.addClient(res);
+  // Heartbeat para mantener viva la conexión a través de proxies.
+  const hb = setInterval(() => { try { res.write(': hb\n\n'); } catch { /* noop */ } }, 25000);
+  req.on('close', () => clearInterval(hb));
+});
+
+// Webhook de Hostinger: avisa apenas entra un correo. Auth por key en la URL
+// (la fijamos al registrar el webhook). Responde rápido y procesa en segundo plano.
+app.post('/api/emails/webhook', (req, res) => {
+  const key = process.env.EMAIL_WEBHOOK_KEY;
+  if (key && String(req.query.key || '') !== key) {
+    return res.status(401).json({ success: false });
+  }
+  res.json({ success: true });
+  ejecutarChequeoCorreos('webhook').catch(() => { /* ya logueado adentro */ });
+});
+
+// Firmas por alias: el admin las edita; atención sólo las lee para su alias.
+// Debe ir ANTES de /api/emails/:uid para que "firmas" no se interprete como un uid.
+app.get('/api/emails/firmas', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const { canSeeAll, aliases } = aliasesPermitidos(req.user);
+    const todas = await supabaseService.obtenerFirmasEmail();
+    // Atención sólo recibe la firma de su alias; el admin todas.
+    const firmas = {};
+    if (canSeeAll) {
+      Object.assign(firmas, todas);
+    } else {
+      aliases.forEach((a) => { if (todas[a] !== undefined) firmas[a] = todas[a]; });
+    }
+    res.json({ success: true, firmas });
+  } catch (error) {
+    logService.error('Error obteniendo firmas', { error: error.message });
+    res.status(500).json({ success: false, error: error.message || 'Error al leer las firmas' });
+  }
+});
+
 // Detalle de un correo (con control de acceso por alias).
 app.get('/api/emails/:uid', requireAuth, requireAtencion, async (req, res) => {
   try {
@@ -226,25 +304,6 @@ app.post('/api/emails/send', requireAuth, requireAtencion, async (req, res) => {
   } catch (error) {
     logService.error('Error enviando email', { error: error.message });
     res.status(500).json({ success: false, error: error.message || 'Error al enviar el correo' });
-  }
-});
-
-// Firmas por alias: el admin las edita; atención sólo las lee para su alias.
-app.get('/api/emails/firmas', requireAuth, requireAtencion, async (req, res) => {
-  try {
-    const { canSeeAll, aliases } = aliasesPermitidos(req.user);
-    const todas = await supabaseService.obtenerFirmasEmail();
-    // Atención sólo recibe la firma de su alias; el admin todas.
-    const firmas = {};
-    if (canSeeAll) {
-      Object.assign(firmas, todas);
-    } else {
-      aliases.forEach((a) => { if (todas[a] !== undefined) firmas[a] = todas[a]; });
-    }
-    res.json({ success: true, firmas });
-  } catch (error) {
-    logService.error('Error obteniendo firmas', { error: error.message });
-    res.status(500).json({ success: false, error: error.message || 'Error al leer las firmas' });
   }
 });
 
@@ -3383,10 +3442,19 @@ app.post('/api/pickups-programados/cancelar', requireAuth, async (req, res) => {
 // Las genera el backend (levante automático, pickups diferidos) y las consume el
 // panel del front, que queda abierto hasta que se marcan como leídas.
 
-app.get('/api/notificaciones', requireAuth, requireAdmin, async (req, res) => {
+app.get('/api/notificaciones', requireAuth, requireAtencion, async (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
-    const notificaciones = await supabaseService.obtenerNotificaciones({ limit });
+    let notificaciones = await supabaseService.obtenerNotificaciones({ limit });
+
+    // Atención sólo ve notificaciones de correo de su(s) alias; el admin ve todo.
+    if (req.user?.role === 'atencion') {
+      const permitidos = mailboxService.MAIL_ALIASES_ATENCION;
+      notificaciones = notificaciones.filter(
+        (n) => n.tipo === 'email' && n.data?.alias && permitidos.includes(n.data.alias)
+      );
+    }
+
     res.json({
       success: true,
       notificaciones,
@@ -3399,7 +3467,7 @@ app.get('/api/notificaciones', requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
-app.post('/api/notificaciones/:id/leida', requireAuth, requireAdmin, async (req, res) => {
+app.post('/api/notificaciones/:id/leida', requireAuth, requireAtencion, async (req, res) => {
   try {
     const notificacion = await supabaseService.marcarNotificacionLeida(req.params.id, req.user?.email || null);
     res.json({ success: true, notificacion });
@@ -3409,9 +3477,21 @@ app.post('/api/notificaciones/:id/leida', requireAuth, requireAdmin, async (req,
   }
 });
 
-app.post('/api/notificaciones/leer-todas', requireAuth, requireAdmin, async (req, res) => {
+app.post('/api/notificaciones/leer-todas', requireAuth, requireAtencion, async (req, res) => {
   try {
-    const marcadas = await supabaseService.marcarTodasNotificacionesLeidas(req.user?.email || null);
+    let marcadas;
+    if (req.user?.role === 'atencion') {
+      // Atención sólo puede marcar sus propias notificaciones (correo de su alias).
+      const permitidos = mailboxService.MAIL_ALIASES_ATENCION;
+      const todas = await supabaseService.obtenerNotificaciones({ limit: 200 });
+      const mias = todas.filter(
+        (n) => !n.leida && n.tipo === 'email' && n.data?.alias && permitidos.includes(n.data.alias)
+      );
+      await Promise.all(mias.map((n) => supabaseService.marcarNotificacionLeida(n.id, req.user?.email || null)));
+      marcadas = mias.length;
+    } else {
+      marcadas = await supabaseService.marcarTodasNotificacionesLeidas(req.user?.email || null);
+    }
     res.json({ success: true, marcadas });
   } catch (error) {
     logService.error('Error marcando todas las notificaciones como leídas', error);
@@ -6370,6 +6450,21 @@ app.listen(PORT, async () => {
       }
     });
     console.log(`🎨 Cron sync stock NC activo (${stockCron})`);
+  }
+
+  // Cron: vigilancia de correos nuevos. Revisa la bandeja y deja una notificación
+  // en el panel lateral cuando llega un correo (como el levante). Cada 2 min por
+  // defecto; se desactiva con EMAIL_WATCH_ENABLED=false o si no hay token de correo.
+  if (String(process.env.EMAIL_WATCH_ENABLED || 'true').toLowerCase() !== 'false'
+      && process.env.HOSTINGER_MAIL_TOKEN) {
+    // 6 campos = con segundos. Con webhook activo el cron queda como red de
+    // seguridad; sin webhook, es el detector principal. Default cada 15s.
+    const emailCron = process.env.EMAIL_WATCH_CRON || '*/15 * * * * *';
+    // Baseline al arrancar (no notifica correos previos).
+    emailWatchService.revisarCorreosNuevos(notificar)
+      .catch((err) => logService.warning(`[email-watch] baseline: ${err.message}`));
+    cron.schedule(emailCron, () => { ejecutarChequeoCorreos('cron'); });
+    console.log(`📧 Cron correos nuevos activo (${emailCron})`);
   }
 
   // Cron: refresh diario del cache de tendencias por color (ventana movil de 7 dias).

@@ -2141,7 +2141,7 @@ function AppContent({ user, logout }) {
   };
 
   return (
-    <NotificacionesProvider activo={esAdmin}>
+    <NotificacionesProvider activo={esAdmin || esAtencion}>
     <div className="app app-shell">
       {/* Barra superior solo visible en mobile: hamburguesa + marca + tema */}
       <div className="mobile-topbar">
@@ -2177,7 +2177,7 @@ function AppContent({ user, logout }) {
 
         {/* Fuera del <nav>: no navega a ninguna vista, sólo abre el panel (y en
             mobile no tiene sentido que cierre el drawer al tocarlo). */}
-        {esAdmin && <NotificacionesBoton />}
+        {(esAdmin || esAtencion) && <NotificacionesBoton />}
 
         <nav
           className="side-nav-menu"
@@ -3336,7 +3336,7 @@ function AppContent({ user, logout }) {
       {/* Columna fija de procesos automáticos (levantes UES / pickups diferidos).
           Va como hermana de <main> para que ocupe todo el alto y empuje el
           contenido en vez de taparlo. */}
-      {esAdmin && <NotificacionesPanel />}
+      {(esAdmin || esAtencion) && <NotificacionesPanel />}
     </div>
     </NotificacionesProvider>
   );

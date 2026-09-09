@@ -5,9 +5,9 @@ import {
   marcarTodasNotificacionesLeidas as apiMarcarTodas,
 } from '../services/api';
 
-// Cada cuánto se refresca la lista. El levante automático y los pickups diferidos
-// son procesos del backend: el front se entera por polling.
-const POLL_MS = 60 * 1000;
+// Cada cuánto se refresca la lista. El levante automático, los pickups diferidos
+// y los correos nuevos son procesos del backend: el front se entera por polling.
+const POLL_MS = 15 * 1000;
 const STORAGE_OCULTO = 'velinne_notif_oculto';
 
 const NotificacionesContext = createContext(null);
@@ -64,6 +64,30 @@ export function NotificacionesProvider({ children, activo = true }) {
     if (!activo) return undefined;
     const id = setInterval(cargar, POLL_MS);
     return () => clearInterval(id);
+  }, [cargar, activo]);
+
+  // Push instantáneo por SSE: cuando el backend detecta un correo nuevo, empuja
+  // un aviso y refrescamos al toque (sin esperar el polling). El polling queda
+  // como respaldo. EventSource reconecta solo si se corta.
+  useEffect(() => {
+    if (!activo) return undefined;
+    const token = localStorage.getItem('velinne_token');
+    if (!token) return undefined;
+
+    let es;
+    try {
+      es = new EventSource(`/api/emails/stream?token=${encodeURIComponent(token)}`);
+    } catch {
+      return undefined;
+    }
+    const onEvento = () => cargar();
+    es.addEventListener('nuevo-correo', onEvento);
+    es.onmessage = onEvento; // por si el evento llega sin nombre
+
+    return () => {
+      es.removeEventListener('nuevo-correo', onEvento);
+      es.close();
+    };
   }, [cargar, activo]);
 
   const marcarLeida = useCallback(async (id) => {
