@@ -186,6 +186,35 @@ body {
   transition: all 0.2s ease;
 }
 
+/* Resaltado del ítem EMAILS cuando hay correos nuevos sin ver. */
+.side-nav-item-alert {
+  background: var(--brand-primary-soft);
+  color: var(--brand-primary);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--brand-primary);
+  animation: sideNavPulse 1.8s ease-in-out infinite;
+}
+
+@keyframes sideNavPulse {
+  0%, 100% { box-shadow: inset 3px 0 0 var(--brand-primary); }
+  50% { box-shadow: inset 3px 0 0 var(--brand-primary), 0 0 0 3px var(--brand-primary-soft); }
+}
+
+.side-nav-count {
+  margin-left: auto;
+  background: var(--brand-primary);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .side-nav-item:hover {
   background: var(--brand-primary-soft);
   color: var(--brand-primary);

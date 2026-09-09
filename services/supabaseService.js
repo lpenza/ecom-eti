@@ -2134,6 +2134,23 @@ class SupabaseService {
     return creada;
   }
 
+  // ¿Ya existe una notificación de correo para este UID? Evita duplicados si el
+  // cron y el webhook (o dos corridas) detectan el mismo correo.
+  async existeNotificacionEmail(uid) {
+    try {
+      const { data, error } = await supabase
+        .from('notificaciones_sistema')
+        .select('id')
+        .eq('tipo', 'email')
+        .filter('data->>uid', 'eq', String(uid))
+        .limit(1);
+      if (error) return false; // en la duda, no bloquear la notificación
+      return (data || []).length > 0;
+    } catch {
+      return false;
+    }
+  }
+
   // Notificaciones para el panel: siempre todas las no leídas + un resto de leídas
   // recientes como historial.
   async obtenerNotificaciones({ limit = 50 } = {}) {

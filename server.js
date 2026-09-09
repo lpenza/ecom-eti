@@ -75,6 +75,11 @@ const logService = require('./services/logService');
 // (falta correr sql/create_notificaciones_sistema.sql) sólo queda el log.
 async function notificar({ tipo, nivel = 'info', titulo, mensaje = '', data = null }) {
   try {
+    // Anti-duplicado: una notificación de correo por UID (cron + webhook no repiten).
+    if (tipo === 'email' && data?.uid != null) {
+      const yaExiste = await supabaseService.existeNotificacionEmail(data.uid);
+      if (yaExiste) return null;
+    }
     return await supabaseService.crearNotificacion({ tipo, nivel, titulo, mensaje, data });
   } catch (err) {
     logService.warning(`No se pudo registrar la notificación "${titulo}": ${err.message}`);
@@ -6383,6 +6388,15 @@ app.listen(PORT, async () => {
   // Arranca cleanup diario de PDFs MarcoPostal (retención env-configurable, default 7 días)
   etiquetaPdfCleanup.startScheduler();
 
+  // Los crons hacen cambios de estado compartidos vía la base de datos. Si corren
+  // en dos instancias (local + Railway) contra la MISMA base, DUPLICAN las acciones
+  // (levante, notificaciones de correo, pickups, etc.). Por eso deben ejecutarse en
+  // UNA sola instancia: poné CRONS_ENABLED=false en las que no deban dispararlos
+  // (típicamente tu entorno local, dejando que Railway/prod sea el único que corre crons).
+  const cronsHabilitados = String(process.env.CRONS_ENABLED || 'true').toLowerCase() !== 'false';
+  if (!cronsHabilitados) console.log('⏸️  Crons deshabilitados en esta instancia (CRONS_ENABLED=false)');
+  if (cronsHabilitados) {
+
   // Cron: recuperación de carritos abandonados vía WhatsApp (cada 30 minutos).
   // Si el ciclo no pudo verificar en Shopify que el cliente NO haya comprado
   // (verificacionFallida), NO se envió nada y reintentamos a los 5 minutos en
@@ -6481,6 +6495,8 @@ app.listen(PORT, async () => {
       logService.error('[cron] Error refrescando color_trends_cache', err);
     }
   });
+
+  } // fin if (cronsHabilitados)
 
   // Inicializar plantillas por defecto al arrancar el servidor
   supabaseService.inicializarPlantillasDefecto().catch(err => {

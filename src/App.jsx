@@ -10,7 +10,7 @@ import LoadingModal from './components/modals/LoadingModal';
 import Toast from './components/Toast';
 import NotificacionesPanel from './components/NotificacionesPanel';
 import NotificacionesBoton from './components/NotificacionesBoton';
-import { NotificacionesProvider } from './context/NotificacionesContext';
+import { NotificacionesProvider, useNotificaciones } from './context/NotificacionesContext';
 // import FollowUpPanel from './components/FollowUpPanel'; // deshabilitado (no se usa)
 import TemplateManagerPanel from './components/TemplateManagerPanel';
 import LoginPage from './components/LoginPage';
@@ -89,6 +89,31 @@ function toStoredTemplateName(name, kind = 'whatsapp') {
   return clean.startsWith(HTML_TEMPLATE_PREFIX)
     ? clean.slice(HTML_TEMPLATE_PREFIX.length)
     : clean;
+}
+
+// Botón EMAILS del sidebar: se resalta y muestra un contador cuando hay correos
+// nuevos sin ver. Al entrar, marca esas notificaciones como leídas (apaga el aviso).
+function EmailsNavButton({ activo, onSelect }) {
+  const notif = useNotificaciones();
+  const emailNoLeidas = (notif?.noLeidas || []).filter((n) => n.tipo === 'email');
+  const count = emailNoLeidas.length;
+
+  const handleClick = () => {
+    onSelect();
+    emailNoLeidas.forEach((n) => notif?.marcarLeida?.(n.id));
+  };
+
+  return (
+    <button
+      type="button"
+      className={`side-nav-item ${activo ? 'side-nav-item-active' : ''} ${count > 0 ? 'side-nav-item-alert' : ''}`}
+      onClick={handleClick}
+    >
+      <span className="side-nav-icon">📧</span>
+      EMAILS
+      {count > 0 && <span className="side-nav-count">{count}</span>}
+    </button>
+  );
 }
 
 function App() {
@@ -2193,14 +2218,10 @@ function AppContent({ user, logout }) {
             Operativa Pedidos
           </button>
           {(esAdmin || esAtencion) && (
-            <button
-              type="button"
-              className={`side-nav-item ${activeView === 'emails' ? 'side-nav-item-active' : ''}`}
-              onClick={() => setActiveView('emails')}
-            >
-              <span className="side-nav-icon">📧</span>
-              EMAILS
-            </button>
+            <EmailsNavButton
+              activo={activeView === 'emails'}
+              onSelect={() => setActiveView('emails')}
+            />
           )}
           {!esAdmin && !esAtencion && (
             <button

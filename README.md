@@ -63,6 +63,11 @@ MAIL_MADRE=info@velinneuy.com
 MAIL_ALIASES=info@velinneuy.com,ventas@velinneuy.com,consultas@velinneuy.com,facturacion@velinneuy.com
 MAIL_ALIASES_ATENCION=consultas@velinneuy.com
 
+# Los crons (levante, pickups, stock, correos nuevos…) hacen cambios compartidos
+# vía la base. Deben correr en UNA sola instancia; si corren en local Y en Railway
+# a la vez, se DUPLICAN. Poné CRONS_ENABLED=false donde NO deban dispararse (local).
+# CRONS_ENABLED=true
+
 # Servicio de fondo que notifica correos nuevos en el panel lateral.
 # EMAIL_WATCH_ENABLED=false para desactivarlo. EMAIL_WATCH_CRON: frecuencia
 # (6 campos = con segundos; default cada 15s). Con webhook, el cron es respaldo.
