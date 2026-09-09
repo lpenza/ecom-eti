@@ -108,6 +108,17 @@ export async function enviarEmail(payload) {
   });
 }
 
+/** Descargar un adjunto de un correo (devuelve un Blob). */
+export async function descargarAdjunto(uid, attachmentId, folder = 'inbox') {
+  const params = new URLSearchParams({ folder });
+  const res = await fetch(
+    `${API_BASE}/emails/${encodeURIComponent(uid)}/attachments/${encodeURIComponent(attachmentId)}?${params.toString()}`,
+    { headers: { ...getAuthHeaders() } }
+  );
+  if (!res.ok) throw new Error('No se pudo descargar el adjunto');
+  return res.blob();
+}
+
 /** Firmas por alias (objeto { alias: html }). */
 export async function obtenerFirmasEmail() {
   return fetchAPI('/emails/firmas');

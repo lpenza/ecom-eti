@@ -142,7 +142,7 @@ class EmailService {
    * Permite fijar el remitente (alias) y las cabeceras de hilo para que las
    * respuestas queden enlazadas en el cliente del destinatario.
    */
-  async enviarCorreoRaw({ from, to, cc, subject, html, text, inReplyTo, references, replyTo }) {
+  async enviarCorreoRaw({ from, to, cc, subject, html, text, inReplyTo, references, replyTo, attachments }) {
     const transporter = this.getTransporter();
     const fromDefault = process.env.SMTP_FROM || process.env.SMTP_USER;
 
@@ -160,6 +160,7 @@ class EmailService {
       text: text || undefined,
       inReplyTo: inReplyTo || undefined,
       references: references || undefined,
+      attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
     };
 
     const info = await transporter.sendMail(mailOptions);

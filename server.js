@@ -273,15 +273,50 @@ app.get('/api/emails/:uid', requireAuth, requireAtencion, async (req, res) => {
   }
 });
 
+// Descargar un adjunto de un correo (con control de acceso por alias).
+app.get('/api/emails/:uid/attachments/:attachmentId', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const { canSeeAll, aliases } = aliasesPermitidos(req.user);
+    const att = await mailboxService.getAttachment({
+      uid: req.params.uid,
+      attachmentId: req.params.attachmentId,
+      tipo: tipoCarpeta(req),
+      restrictTo: canSeeAll ? null : aliases,
+    });
+    if (!att) return res.status(404).json({ success: false, error: 'Adjunto no encontrado' });
+    if (att.forbidden) return res.status(403).json({ success: false, error: 'No tenés acceso a este adjunto' });
+
+    res.set('Content-Type', att.contentType);
+    res.set('Content-Disposition', `attachment; filename="${String(att.filename).replace(/"/g, '')}"`);
+    res.send(att.buffer);
+  } catch (error) {
+    logService.error('Error descargando adjunto', { error: error.message });
+    res.status(500).json({ success: false, error: error.message || 'Error al descargar el adjunto' });
+  }
+});
+
 // Enviar correo (respuesta o nuevo). El remitente se valida contra el rol.
 app.post('/api/emails/send', requireAuth, requireAtencion, async (req, res) => {
   try {
     const { canSeeAll, aliases } = aliasesPermitidos(req.user);
-    const { to, cc, subject, html, text, inReplyTo, references } = req.body || {};
+    const { to, cc, subject, html, text, inReplyTo, references, attachments } = req.body || {};
 
     if (!to || !String(to).trim()) {
       return res.status(400).json({ success: false, error: 'Falta el destinatario' });
     }
+
+    // Adjuntos: llegan como [{ filename, content (base64), contentType }].
+    const adjuntos = Array.isArray(attachments)
+      ? attachments
+          .filter((a) => a && a.content && a.filename)
+          .slice(0, 15)
+          .map((a) => ({
+            filename: String(a.filename),
+            content: String(a.content),
+            encoding: 'base64',
+            contentType: a.contentType || undefined,
+          }))
+      : [];
 
     // Remitente: admin elige alias; atención queda fijada al suyo.
     let from = String(req.body.from || '').toLowerCase().trim();
@@ -302,6 +337,7 @@ app.post('/api/emails/send', requireAuth, requireAtencion, async (req, res) => {
       text,
       inReplyTo,
       references,
+      attachments: adjuntos,
     });
 
     logService.info(`Email enviado desde ${from} por ${req.user?.email}`, { to, subject });

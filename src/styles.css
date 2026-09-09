@@ -9168,6 +9168,66 @@ body {
   background: #fff;
 }
 
+/* Adjuntos (lector y compositor) */
+.emails-adjuntos {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 1.2rem;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-muted);
+}
+
+.emails-adjuntos-label {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-right: 0.2rem;
+}
+
+.emails-adjunto-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  color: var(--brand-primary);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.emails-adjunto-chip:hover { background: var(--brand-primary-soft); }
+.emails-adjunto-chip-editable { cursor: default; color: var(--text-strong); }
+.emails-adjunto-size { color: var(--text-muted); font-size: 0.75rem; }
+
+.emails-adjunto-quitar {
+  border: none;
+  background: transparent;
+  color: var(--danger-text);
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0 0.1rem;
+}
+
+.emails-adjuntar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.emails-adjuntar-btn {
+  align-self: flex-start;
+  cursor: pointer;
+}
+
+.emails-adjuntos-lista {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
 .emails-empty {
   padding: 2rem;
   text-align: center;

@@ -1,5 +1,32 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { obtenerEmailAliases, obtenerEmails, obtenerEmail, enviarEmail, obtenerFirmasEmail, guardarFirmaEmail } from '../services/api';
+import { obtenerEmailAliases, obtenerEmails, obtenerEmail, enviarEmail, obtenerFirmasEmail, guardarFirmaEmail, descargarAdjunto } from '../services/api';
+
+const MAX_ADJUNTOS_BYTES = 12 * 1024 * 1024; // ~12 MB (queda bajo el límite de 15mb del server)
+
+function formatBytes(n) {
+  const b = Number(n) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`;
+  return `${(b / 1024 / 1024).toFixed(1)} MB`;
+}
+
+// Lee un File del navegador a base64 (sin el prefijo data:).
+function leerArchivoBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const dataUrl = String(r.result || '');
+      resolve({
+        filename: file.name,
+        content: dataUrl.split(',')[1] || '',
+        contentType: file.type || 'application/octet-stream',
+        size: file.size,
+      });
+    };
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
 
 function formatFecha(iso) {
   if (!iso) return '';
@@ -207,6 +234,40 @@ export default function EmailsPanel({ mostrarToast }) {
     setFolder(nueva);
   };
 
+  // Descargar un adjunto de un correo abierto.
+  const descargarAdjuntoDe = async (att) => {
+    if (!seleccionado) return;
+    try {
+      const blob = await descargarAdjunto(seleccionado.uid, att.id, folder);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = att.filename || 'adjunto';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+    } catch (err) {
+      toastRef.current?.(err.message || 'No se pudo descargar el adjunto', 'error');
+    }
+  };
+
+  // Adjuntar archivos en el compositor.
+  const agregarAdjuntos = async (fileList) => {
+    const files = Array.from(fileList || []);
+    if (files.length === 0) return;
+    try {
+      const nuevos = await Promise.all(files.map(leerArchivoBase64));
+      setCompose((c) => (c ? { ...c, attachments: [...(c.attachments || []), ...nuevos] } : c));
+    } catch {
+      toastRef.current?.('No se pudieron leer algunos archivos', 'error');
+    }
+  };
+
+  const quitarAdjunto = (idx) => {
+    setCompose((c) => (c ? { ...c, attachments: (c.attachments || []).filter((_, i) => i !== idx) } : c));
+  };
+
   // Remitente por defecto para el compositor
   const remitentePorDefecto = aliasInfo.canSeeAll
     ? (aliasInfo.aliases[0] || '')
@@ -214,7 +275,7 @@ export default function EmailsPanel({ mostrarToast }) {
 
   const abrirNuevo = () => {
     setIncluirFirma(true);
-    setCompose({ from: remitentePorDefecto, to: '', cc: '', subject: '', body: '', inReplyTo: null, references: null });
+    setCompose({ from: remitentePorDefecto, to: '', cc: '', subject: '', body: '', inReplyTo: null, references: null, attachments: [] });
   };
 
   // ===== Editor de firmas (admin) =====
@@ -259,12 +320,19 @@ export default function EmailsPanel({ mostrarToast }) {
       body: citado,
       inReplyTo: msg.messageId || null,
       references: msg.references || msg.messageId || null,
+      attachments: [],
     });
   };
 
   const handleEnviar = async () => {
     if (!compose) return;
     if (!compose.to.trim()) { mostrarToast?.('Falta el destinatario', 'warning'); return; }
+    const adjuntos = compose.attachments || [];
+    const totalBytes = adjuntos.reduce((acc, a) => acc + (a.size || 0), 0);
+    if (totalBytes > MAX_ADJUNTOS_BYTES) {
+      mostrarToast?.(`Los adjuntos superan el máximo (${formatBytes(MAX_ADJUNTOS_BYTES)})`, 'warning');
+      return;
+    }
     setEnviando(true);
     try {
       const firmaHtml = incluirFirma ? firmaDe(compose.from) : '';
@@ -276,6 +344,7 @@ export default function EmailsPanel({ mostrarToast }) {
         subject: compose.subject.trim() || '(sin asunto)',
         html: textoAHtml(compose.body) + firmaHtml,
         text: compose.body + (firmaTxt ? `\n\n${firmaTxt}` : ''),
+        attachments: adjuntos.map((a) => ({ filename: a.filename, content: a.content, contentType: a.contentType })),
         inReplyTo: compose.inReplyTo || undefined,
         references: compose.references || undefined,
       };
@@ -406,6 +475,22 @@ export default function EmailsPanel({ mostrarToast }) {
                   ↩️ Responder
                 </button>
               </div>
+              {(seleccionado.attachments || []).length > 0 && (
+                <div className="emails-adjuntos">
+                  <span className="emails-adjuntos-label">📎 {seleccionado.attachments.length} adjunto(s):</span>
+                  {seleccionado.attachments.map((att) => (
+                    <button
+                      key={att.id}
+                      type="button"
+                      className="emails-adjunto-chip"
+                      onClick={() => descargarAdjuntoDe(att)}
+                      title={`Descargar ${att.filename}`}
+                    >
+                      ⬇ {att.filename} <span className="emails-adjunto-size">({formatBytes(att.size)})</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <iframe
                 title="Contenido del correo"
                 className="emails-reader-body"
@@ -479,6 +564,28 @@ export default function EmailsPanel({ mostrarToast }) {
                 </label>
                 {incluirFirma && (
                   <div className="emails-firma-preview" dangerouslySetInnerHTML={{ __html: firmaDe(compose.from) }} />
+                )}
+              </div>
+
+              <div className="emails-adjuntar">
+                <label className="emails-btn emails-adjuntar-btn">
+                  📎 Adjuntar archivos
+                  <input
+                    type="file"
+                    multiple
+                    hidden
+                    onChange={(e) => { agregarAdjuntos(e.target.files); e.target.value = ''; }}
+                  />
+                </label>
+                {(compose.attachments || []).length > 0 && (
+                  <div className="emails-adjuntos-lista">
+                    {compose.attachments.map((a, idx) => (
+                      <span key={idx} className="emails-adjunto-chip emails-adjunto-chip-editable">
+                        📄 {a.filename} <span className="emails-adjunto-size">({formatBytes(a.size)})</span>
+                        <button type="button" className="emails-adjunto-quitar" onClick={() => quitarAdjunto(idx)} title="Quitar">✕</button>
+                      </span>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>

@@ -292,6 +292,16 @@ async function getMessage({ uid, restrictTo = null, markSeen = true, tipo = 'inb
       ? (from && MAIL_ALIASES.includes(from.address) ? from.address : null)
       : detectAlias(to, cc);
 
+    // Adjuntos "reales" (no las imágenes inline embebidas en el HTML).
+    const attachments = (m.attachments || [])
+      .filter((a) => !a.inline)
+      .map((a) => ({
+        id: a.id,
+        filename: a.filename || 'adjunto',
+        contentType: a.contentType || 'application/octet-stream',
+        size: a.sizeBytes || 0,
+      }));
+
     return {
       uid: numericUid,
       from,
@@ -302,11 +312,52 @@ async function getMessage({ uid, restrictTo = null, markSeen = true, tipo = 'inb
       messageId: m.messageId || null,
       references: m.inReplyTo || m.messageId || null,
       alias,
+      attachments,
       html: body.html || null,
       text: body.text || '',
     };
   } catch (error) {
     if (error?.response) throw toApiError(error, 'Error al leer el correo');
+    throw error;
+  }
+}
+
+// Descarga un adjunto (bytes) de un mensaje, con control de acceso por alias.
+async function getAttachment({ uid, attachmentId, tipo = 'inbox', restrictTo = null } = {}) {
+  const numericUid = Number(uid);
+  if (!Number.isFinite(numericUid) || !attachmentId) return null;
+
+  const mb = await resolveMailboxId();
+  const c = client();
+  const folder = await resolveFolder(tipo);
+  const base = `/api/v1/mailboxes/${mb}/folders/${folder}/messages/${numericUid}`;
+
+  try {
+    // Meta para (a) validar acceso por alias y (b) tomar nombre/tipo del adjunto.
+    const metaR = await c.get(base).catch((e) => {
+      if (e?.response?.status === 404) return null;
+      throw e;
+    });
+    if (!metaR) return null;
+    const m = metaR.data?.data;
+    if (!m) return null;
+
+    if (Array.isArray(restrictTo) && restrictTo.length > 0) {
+      const from = normalizeAddress(m.from);
+      const campos = tipo === 'sent' ? [from] : [...normalizeAddressList(m.to), ...normalizeAddressList(m.cc)];
+      if (!matchesAnyAlias(campos, restrictTo)) return { forbidden: true };
+    }
+
+    const att = (m.attachments || []).find((a) => a.id === attachmentId);
+    const r = await c.get(`${base}/attachments/${encodeURIComponent(attachmentId)}`, { responseType: 'arraybuffer' });
+
+    return {
+      buffer: Buffer.from(r.data),
+      contentType: att?.contentType || r.headers['content-type'] || 'application/octet-stream',
+      filename: att?.filename || 'adjunto',
+    };
+  } catch (error) {
+    if (error?.response) throw toApiError(error, 'Error al descargar el adjunto');
     throw error;
   }
 }
@@ -332,6 +383,7 @@ async function getMessageSource({ uid, tipo = 'inbox' } = {}) {
 module.exports = {
   listMessages,
   getMessage,
+  getAttachment,
   getMessageSource,
   MAIL_MADRE,
   MAIL_ALIASES,
