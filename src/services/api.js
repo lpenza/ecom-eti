@@ -81,6 +81,46 @@ async function fetchAPI(url, options = {}) {
   }
 }
 
+// ==================== EMAILS (buzón de la empresa) ====================
+
+/** Alias que el usuario puede leer/usar como remitente. */
+export async function obtenerEmailAliases() {
+  return fetchAPI('/emails/aliases');
+}
+
+/** Lista la bandeja. folder: 'inbox' (recibidos) | 'sent' (enviados). */
+export async function obtenerEmails({ alias = 'all', limit = 30, folder = 'inbox' } = {}) {
+  const params = new URLSearchParams({ alias, limit: String(limit), folder });
+  return fetchAPI(`/emails?${params.toString()}`);
+}
+
+/** Detalle de un correo por UID. folder: 'inbox' | 'sent'. */
+export async function obtenerEmail(uid, folder = 'inbox') {
+  const params = new URLSearchParams({ folder });
+  return fetchAPI(`/emails/${encodeURIComponent(uid)}?${params.toString()}`);
+}
+
+/** Enviar un correo (respuesta o nuevo). */
+export async function enviarEmail(payload) {
+  return fetchAPI('/emails/send', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Firmas por alias (objeto { alias: html }). */
+export async function obtenerFirmasEmail() {
+  return fetchAPI('/emails/firmas');
+}
+
+/** Guardar la firma de un alias (solo admin). */
+export async function guardarFirmaEmail(alias, html) {
+  return fetchAPI(`/emails/firmas/${encodeURIComponent(alias)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ html }),
+  });
+}
+
 /**
  * Obtener todos los pedidos
  */

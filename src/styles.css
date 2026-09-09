@@ -8052,6 +8052,47 @@ body {
   .modal-footer { flex-wrap: wrap; }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   Ajustes responsive para uso desde el celular (pantallas utilizables)
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  /* Contenedores principales: menos padding para ganar ancho útil */
+  .header { padding: 1rem 1rem 0.9rem; }
+  .header-top { flex-wrap: wrap; gap: 0.6rem; }
+  .header-actions { width: 100%; }
+  .header-actions .btn { width: 100%; }
+  .main-content { padding: 1rem; }
+  .stocknc-panel { padding: 1rem; }
+
+  /* Tarjetas de estado: grilla de 2 columnas en vez de una columna muy alta */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+  }
+  .stat-card { padding: 0.75rem 0.6rem; }
+
+  /* Toolbar de operativa: controles y botones a ancho completo, apilados */
+  .toolbar .btn,
+  .toolbar .template-selector,
+  .toolbar .active-template-selector,
+  .toolbar .channel-priority-control { width: 100%; }
+  .toolbar .channel-priority-control { justify-content: space-between; }
+
+  /* Panel de administración: padding reducido y tablas con scroll propio
+     (las tablas de reporte no tienen wrapper, y .app-main recorta el overflow) */
+  .admin-panel { padding: 1rem; gap: 1.5rem; }
+  .admin-section { padding: 1rem; overflow-x: auto; }
+  .admin-reporte-table { min-width: 560px; }
+  .admin-user-card { flex-wrap: wrap; }
+  .admin-reporte-filtros { gap: 0.6rem; }
+}
+
+@media (max-width: 480px) {
+  /* En teléfonos angostos, una sola columna de tarjetas de estado */
+  .stats { grid-template-columns: 1fr; }
+}
+
 /* ── Control de Facturación (UES / MarcoPostal) ──────────────────────────────
    Panel de admin donde se sube el Excel mensual del courier. Reusa las variables
    de marca; los colores de severidad salen de las mismas de toasts/badges. */
@@ -8835,4 +8876,462 @@ body {
     width: min(340px, 88vw);
     height: 100vh;
   }
+}
+
+/* ── Panel de EMAILS ────────────────────────────────────────────────────────
+   Bandeja de la empresa (info@ + alias). Admin ve todo; atención sólo ventas@. */
+.emails-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 1.25rem 1.5rem 1.25rem;
+  gap: 1rem;
+}
+
+.emails-list-refreshing {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  background: var(--surface-muted);
+  border-bottom: 1px solid var(--border-soft);
+  text-align: center;
+}
+
+.emails-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.emails-title {
+  margin: 0;
+  color: var(--brand-heading);
+  font-size: 1.4rem;
+}
+
+.emails-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.emails-folder-tabs {
+  display: inline-flex;
+  background: var(--surface-muted);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  gap: 2px;
+}
+
+.emails-folder-tab {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0.38rem 0.7rem;
+  border-radius: calc(var(--radius-sm) - 2px);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.emails-folder-tab-active {
+  background: var(--brand-primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+.emails-alias-select,
+.emails-alias-badge {
+  padding: 0.45rem 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-card);
+  color: var(--text-strong);
+  font-size: 0.9rem;
+}
+
+.emails-alias-badge {
+  background: var(--brand-primary-soft);
+  color: var(--brand-primary);
+  font-weight: 600;
+}
+
+.emails-btn {
+  padding: 0.45rem 0.9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-card);
+  color: var(--text-strong);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.emails-btn:hover:not(:disabled) {
+  background: var(--brand-secondary);
+}
+
+.emails-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.emails-btn-primary {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  color: #fff;
+}
+
+.emails-btn-primary:hover:not(:disabled) {
+  background: var(--brand-primary-hover);
+}
+
+.emails-body {
+  display: flex;
+  gap: 1rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.emails-list {
+  flex: none;
+  width: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  box-shadow: var(--brand-shadow-soft);
+}
+
+.emails-list-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.7rem 0.9rem;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text-strong);
+  cursor: pointer;
+}
+
+.emails-list-item:hover {
+  background: var(--surface-muted);
+}
+
+.emails-list-item-active {
+  background: var(--brand-primary-soft);
+}
+
+.emails-list-item-unread .emails-list-from,
+.emails-list-item-unread .emails-list-subject {
+  font-weight: 700;
+}
+
+.emails-list-item-unread {
+  border-left: 3px solid var(--brand-primary);
+}
+
+.emails-list-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.emails-list-from {
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.emails-list-date {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.emails-list-subject-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+
+.emails-list-subject {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Flag del alias por el que entró el correo (ventas / info / ...). */
+.emails-alias-flag {
+  flex: none;
+  display: inline-block;
+  padding: 0.08rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.emails-reader-subject-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+
+.emails-reader-subject-row .emails-reader-subject {
+  margin: 0;
+}
+
+.emails-reader {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  box-shadow: var(--brand-shadow-soft);
+  overflow: hidden;
+}
+
+.emails-reader-head {
+  padding: 1rem 1.2rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.emails-reader-subject {
+  margin: 0 0 0.6rem;
+  color: var(--brand-heading);
+  font-size: 1.1rem;
+}
+
+.emails-reader-meta {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 0.75rem;
+}
+
+.emails-reader-meta strong {
+  color: var(--text-strong);
+}
+
+.emails-reader-body {
+  flex: 1;
+  width: 100%;
+  border: none;
+  background: #fff;
+}
+
+.emails-empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+/* Compositor (overlay) */
+.emails-compose-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1rem;
+}
+
+.emails-compose {
+  width: min(640px, 100%);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--brand-shadow);
+  overflow: hidden;
+}
+
+.emails-compose-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1.2rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.emails-compose-head h3 {
+  margin: 0;
+  color: var(--brand-heading);
+}
+
+.emails-compose-close {
+  border: none;
+  background: transparent;
+  font-size: 1.1rem;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.emails-compose-body {
+  padding: 1rem 1.2rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.emails-field {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+}
+
+.emails-field > span {
+  flex: none;
+  width: 56px;
+  color: var(--text-muted);
+}
+
+.emails-field input,
+.emails-field select {
+  flex: 1;
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-muted);
+  color: var(--text-strong);
+}
+
+.emails-compose-textarea {
+  min-height: 220px;
+  resize: vertical;
+  padding: 0.7rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-muted);
+  color: var(--text-strong);
+  font-family: inherit;
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.emails-compose-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  padding: 0.9rem 1.2rem;
+  border-top: 1px solid var(--border-soft);
+}
+
+/* Zona de firma en el compositor */
+.emails-firma-zona {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.8rem;
+  background: var(--surface-muted);
+}
+
+.emails-firma-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.emails-firma-preview {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-soft);
+  font-size: 0.85rem;
+}
+
+/* Editor de firmas (admin) */
+.emails-firmas-editor { width: min(720px, 100%); }
+
+.emails-firma-ayuda {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.emails-firma-editor-item {
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  padding: 0.7rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.emails-firma-editor-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 600;
+  color: var(--text-strong);
+  font-size: 0.9rem;
+}
+
+.emails-firma-editor-textarea {
+  min-height: 110px;
+  resize: vertical;
+  padding: 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-muted);
+  color: var(--text-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.emails-firma-editor-preview {
+  border-top: 1px dashed var(--border-soft);
+  padding-top: 0.5rem;
+}
+
+.emails-firma-editor-preview-label {
+  display: block;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+}
+
+@media (max-width: 820px) {
+  .emails-panel {
+    height: auto;
+    min-height: 100vh;
+    padding: 1rem 0.9rem 1.25rem;
+  }
+  .emails-body { flex-direction: column; }
+  .emails-list { width: 100%; max-height: 42vh; }
+  .emails-reader { min-height: 50vh; }
+  .emails-header-actions { width: 100%; }
+  .emails-alias-select { flex: 1; }
+  .emails-field { flex-wrap: wrap; }
+  .emails-field > span { width: auto; }
+  .emails-field input,
+  .emails-field select { flex: 1 1 100%; }
 }

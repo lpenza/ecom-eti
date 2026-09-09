@@ -11,17 +11,17 @@ import Toast from './components/Toast';
 import NotificacionesPanel from './components/NotificacionesPanel';
 import NotificacionesBoton from './components/NotificacionesBoton';
 import { NotificacionesProvider } from './context/NotificacionesContext';
-import FollowUpPanel from './components/FollowUpPanel';
+// import FollowUpPanel from './components/FollowUpPanel'; // deshabilitado (no se usa)
 import TemplateManagerPanel from './components/TemplateManagerPanel';
 import LoginPage from './components/LoginPage';
 import AdminPanel from './components/AdminPanel';
 import MisPedidosPanel from './components/MisPedidosPanel';
 import { useAuth } from './context/AuthContext';
 import { useTheme } from './context/ThemeContext';
-import BotControlPanel from './components/BotControlPanel';
+// import BotControlPanel from './components/BotControlPanel'; // deshabilitado (no se usa)
 import CarritosAbandonadosPanel from './components/CarritosAbandonadosPanel';
-import FeedbackDashboardPanel from './components/FeedbackDashboardPanel';
-import ColorTrendsPanel from './components/ColorTrendsPanel';
+// import FeedbackDashboardPanel from './components/FeedbackDashboardPanel'; // deshabilitado (no se usa)
+// import ColorTrendsPanel from './components/ColorTrendsPanel'; // deshabilitado (no se usa)
 import { usePedidos } from './hooks/usePedidos';
 import {
   generarLinkWhatsApp,
@@ -61,6 +61,7 @@ import StockNcPanel from './components/StockNcPanel';
 import FacturacionPanel from './components/FacturacionPanel';
 import AtencionPanel from './components/AtencionPanel';
 import CadeteriaPanel from './components/CadeteriaPanel';
+import EmailsPanel from './components/EmailsPanel';
 import { formatFechaUy, formatUy } from './utils/fechas';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
@@ -120,7 +121,6 @@ function AppContent({ user, logout }) {
     cargarPedidos,
     sincronizarShopify,
     ejecutarFulfillmentShopify,
-    notificarTrackingPedido,
     marcarPedidoNotificado,
     actualizarRevisionContacto,
     marcarRevisionContactoContactado,
@@ -277,25 +277,33 @@ function AppContent({ user, logout }) {
     return 'marcopostal';
   };
 
+  // Pickups agendados por el diferido: el cron los despacha al vencer la hora. Ya no
+  // están pendientes de acción, así que se sacan de la lista accionable (tabla + botón
+  // de fulfillment) y solo se resumen en el hint de "programados".
+  const pickupsProgramados = pedidosDespachadosList.filter(
+    (p) => getCourierPedido(p) === 'marcopostal_pickup' && p.fulfillment_pickup_programado_at
+  );
+  const idsPickupsProgramados = new Set(pickupsProgramados.map((p) => p.id));
+  const proximoPickupProgramado = pickupsProgramados
+    .map((p) => p.fulfillment_pickup_programado_at)
+    .sort()[0] || null;
+
+  // Lista accionable: despachados sin los pickup ya programados (salen solos).
+  const pedidosDespachadosActivos = pedidosDespachadosList.filter(
+    (p) => !idsPickupsProgramados.has(p.id)
+  );
+
   // Cada pedido cae en un solo grupo, así que los contadores de los chips
-  // suman siempre el total de la lista.
-  const despachadosPorGrupo = pedidosDespachadosList.reduce((acc, p) => {
+  // suman siempre el total de la lista accionable.
+  const despachadosPorGrupo = pedidosDespachadosActivos.reduce((acc, p) => {
     const grupo = getCourierPedido(p);
     acc[grupo] = (acc[grupo] || 0) + 1;
     return acc;
   }, {});
 
   const pedidosDespachadosFiltrados = despachadosCourierFilter
-    ? pedidosDespachadosList.filter((p) => getCourierPedido(p) === despachadosCourierFilter)
-    : pedidosDespachadosList;
-
-  // Pickups agendados por el diferido: el cron los despacha al vencer la hora.
-  const pickupsProgramados = pedidosDespachadosList.filter(
-    (p) => getCourierPedido(p) === 'marcopostal_pickup' && p.fulfillment_pickup_programado_at
-  );
-  const proximoPickupProgramado = pickupsProgramados
-    .map((p) => p.fulfillment_pickup_programado_at)
-    .sort()[0] || null;
+    ? pedidosDespachadosActivos.filter((p) => getCourierPedido(p) === despachadosCourierFilter)
+    : pedidosDespachadosActivos;
 
   // El fulfillment solo sale para pedidos que la cadetería ya retiró. Los pickup no
   // pasan por cadetería: el backend les hace "listo para retirar" en vez de un envío.
@@ -330,7 +338,7 @@ function AppContent({ user, logout }) {
     pendientesFulfillment: pedidosListosFulfillment.length,
     whatsappTracking: pedidosTrackingWhatsApp.length,
     revisionManual: pedidosRevisionManual.length,
-    despachados: pedidosDespachadosList.length,
+    despachados: pedidosDespachadosActivos.length,
     enviados: pedidosEnviadosList.length,
     pickup: pickupList.length,
     recibilo: recibiloList.length,
@@ -458,9 +466,12 @@ function AppContent({ user, logout }) {
     obtenerPlantillas()
       .then((plantillas) => {
         if (cancelled) return;
-        
-        // Mapear de formato DB a formato frontend (con tipo)
-        const plantillasMapeadas = plantillas.map(normalizeTemplateRecord);
+
+        // Mapear de formato DB a formato frontend (con tipo). Excluir las firmas
+        // de email ([FIRMA] <alias>), que se gestionan aparte en el panel EMAILS.
+        const plantillasMapeadas = plantillas
+          .filter((p) => !String(p?.name || '').startsWith('[FIRMA] '))
+          .map(normalizeTemplateRecord);
         const plantillasWpp = plantillasMapeadas.filter((p) => p.kind !== 'html');
         const plantillasHtmlCargadas = plantillasMapeadas.filter((p) => p.kind === 'html');
         
@@ -955,7 +966,9 @@ function AppContent({ user, logout }) {
     try {
       const plantillas = await obtenerPlantillas();
       console.log('📝 Plantillas recibidas desde API:', plantillas);
-      const plantillasMapeadas = plantillas.map(normalizeTemplateRecord);
+      const plantillasMapeadas = plantillas
+        .filter((p) => !String(p?.name || '').startsWith('[FIRMA] '))
+        .map(normalizeTemplateRecord);
       const plantillasWpp = plantillasMapeadas.filter((p) => p.kind !== 'html');
       const plantillasHtmlCargadas = plantillasMapeadas.filter((p) => p.kind === 'html');
       console.log('📝 Plantillas mapeadas:', plantillasMapeadas);
@@ -1255,6 +1268,7 @@ function AppContent({ user, logout }) {
   const handleDescartarEtiqueta = async (pedidoId) => {
     const pedido = pedidos.find((p) => p.id === pedidoId);
     const numeroPedido = pedido?.numero_pedido || pedidoId;
+    const tipoEnvio = pedido?.tipo_envio || null;
 
     const confirmado = window.confirm(`Descartar la etiqueta del pedido #${numeroPedido} y devolverlo a validacion?`);
     if (!confirmado) {
@@ -1268,6 +1282,22 @@ function AppContent({ user, logout }) {
     }
 
     mostrarToast(resultado.message || 'Etiqueta descartada. El pedido volvio a validacion.', 'success');
+
+    // Pick-UP / Recibilo Hoy: al descartar salen del array principal (quedan sin
+    // etiqueta) y vuelven a su propia vista de validación. Recargamos ambas fuentes
+    // y llevamos al operador a la vista correspondiente.
+    if (tipoEnvio === 'pickup_local' || tipoEnvio === 'recibilo_hoy') {
+      try { await cargarPedidos(); } catch (_) {}
+      if (tipoEnvio === 'pickup_local') {
+        try { await cargarPedidosPickup(); } catch (_) {}
+        setTableFilter('pickup');
+      } else {
+        try { await cargarPedidosRecibilo(); } catch (_) {}
+        setTableFilter('recibilo');
+      }
+      return;
+    }
+
     if (tableFilter !== 'porValidar') {
       setTableFilter('porValidar');
     }
@@ -1386,6 +1416,9 @@ function AppContent({ user, logout }) {
       try {
         if (tipo === 'pickup_local') await cargarPedidosPickup();
         else await cargarPedidosRecibilo();
+        // Los pedidos recién etiquetados salen de su vista y pasan a la card
+        // "Etiquetas Generadas" (array principal): refrescamos también esa fuente.
+        await cargarPedidos();
       } catch (_) {}
       setLoading(false);
     }
@@ -2159,6 +2192,16 @@ function AppContent({ user, logout }) {
             <span className="side-nav-icon">📦</span>
             Operativa Pedidos
           </button>
+          {(esAdmin || esAtencion) && (
+            <button
+              type="button"
+              className={`side-nav-item ${activeView === 'emails' ? 'side-nav-item-active' : ''}`}
+              onClick={() => setActiveView('emails')}
+            >
+              <span className="side-nav-icon">📧</span>
+              EMAILS
+            </button>
+          )}
           {!esAdmin && !esAtencion && (
             <button
               type="button"
@@ -2202,6 +2245,8 @@ function AppContent({ user, logout }) {
           )}
           {user.role === 'admin' && (
             <>
+              {/* Opciones deshabilitadas (no se usan): Etiquetas Especiales, Follow-Up Diario,
+                  Dashboard Feedback, Tendencias de Colores y Bot WhatsApp.
               <button
                 type="button"
                 className={`side-nav-item ${activeView === 'especiales' ? 'side-nav-item-active' : ''}`}
@@ -2234,6 +2279,7 @@ function AppContent({ user, logout }) {
                 <span className="side-nav-icon">🎨</span>
                 Tendencias de Colores
               </button>
+              */}
               <button
                 type="button"
                 className={`side-nav-item ${activeView === 'plantillas' ? 'side-nav-item-active' : ''}`}
@@ -2242,6 +2288,7 @@ function AppContent({ user, logout }) {
                 <span className="side-nav-icon">📝</span>
                 Plantillas
               </button>
+              {/* Bot WhatsApp deshabilitado (no se usa)
               <button
                 type="button"
                 className={`side-nav-item ${activeView === 'bot' ? 'side-nav-item-active' : ''}`}
@@ -2250,6 +2297,7 @@ function AppContent({ user, logout }) {
                 <span className="side-nav-icon">🤖</span>
                 Bot WhatsApp
               </button>
+              */}
               <button
                 type="button"
                 className={`side-nav-item ${activeView === 'carritos' ? 'side-nav-item-active' : ''}`}
@@ -2572,7 +2620,8 @@ function AppContent({ user, logout }) {
                     mostrarToast(`⚠️ Fulfillment: ${resultado.successCount}/${resultado.count} OK`, 'warning');
                   } else if (sinRetirar > 0) {
                     mostrarToast(`⚠️ ${resultado.successCount} OK, pero ${sinRetirar} pickup(s) no se cerraron como retirados — cerralos en Shopify`, 'warning');
-                  } else {
+                  } else if (resultado.successCount > 0) {
+                    // Los pickup no suman acá: se agendan y se avisan con el toast de programados.
                     mostrarToast(`✅ ${resultado.successCount} fulfillment(s) enviados`, 'success');
                   }
                   // Los pickup no salen ahora: quedan agendados y los manda el cron.
@@ -2750,7 +2799,7 @@ function AppContent({ user, logout }) {
                 tipo="pickup_local"
                 onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'pickup_local')}
                 onMarcarDespachadosBulk={(ids) => handleMarcarDespachadosBulkEspecial(ids, 'pickup_local')}
-                onActualizar={cargarPedidosPickup}
+                onActualizar={async () => { await cargarPedidosPickup(); await cargarPedidos(); }}
                 mostrarToast={mostrarToast}
               />
             </div>
@@ -2764,7 +2813,7 @@ function AppContent({ user, logout }) {
                 tipo="recibilo_hoy"
                 onMarcarDespachado={(id) => handleMarcarDespachadoEspecial(id, 'recibilo_hoy')}
                 onMarcarDespachadosBulk={(ids) => handleMarcarDespachadosBulkEspecial(ids, 'recibilo_hoy')}
-                onActualizar={cargarPedidosRecibilo}
+                onActualizar={async () => { await cargarPedidosRecibilo(); await cargarPedidos(); }}
                 mostrarToast={mostrarToast}
               />
             </div>
@@ -2897,6 +2946,8 @@ function AppContent({ user, logout }) {
         </div>
       )}
 
+      {/* Vistas deshabilitadas (no se usan): Etiquetas Especiales, Follow-Up Diario,
+          Dashboard Feedback y Tendencias de Colores.
       {activeView === 'especiales' && (
         <>
           <div className="module-panel module-panel-tight-top">
@@ -3068,6 +3119,7 @@ function AppContent({ user, logout }) {
       {activeView === 'colorTrends' && (
         <ColorTrendsPanel />
       )}
+      */}
 
       {activeView === 'plantillas' && (
         <TemplateManagerPanel
@@ -3086,9 +3138,11 @@ function AppContent({ user, logout }) {
         />
       )}
 
+      {/* Vista Bot WhatsApp deshabilitada (no se usa)
       {activeView === 'bot' && (
         <BotControlPanel mostrarToast={mostrarToast} />
       )}
+      */}
 
       {activeView === 'carritos' && (
         <CarritosAbandonadosPanel mostrarToast={mostrarToast} />
@@ -3118,6 +3172,10 @@ function AppContent({ user, logout }) {
           onBuscarEtiquetas={handleBuscarEtiquetasCadeteria}
           onEntregaSinDespacho={handleEntregaSinDespacho}
         />
+      )}
+
+      {activeView === 'emails' && (esAdmin || esAtencion) && (
+        <EmailsPanel mostrarToast={mostrarToast} />
       )}
 
       {activeView === 'pedidos' && esAtencion && (

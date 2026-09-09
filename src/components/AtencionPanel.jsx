@@ -181,6 +181,11 @@ export default function AtencionPanel({ mostrarToast }) {
                   const est = derivarEstado(pedido);
                   const det = detalles[pedido.id] || {};
                   const tipoLabel = TIPO_ENVIO_LABELS[pedido.tipo_envio] || '📦 Estándar';
+                  // Pick-UP: el cliente retira en el local (Montevideo), así que el
+                  // departamento siempre es Montevideo sin importar la dirección cargada.
+                  const departamento = pedido.tipo_envio === 'pickup_local'
+                    ? 'Montevideo'
+                    : (pedido.departamento || '—');
                   return (
                     <React.Fragment key={pedido.id}>
                       <tr>
@@ -191,7 +196,7 @@ export default function AtencionPanel({ mostrarToast }) {
                           {pedido.cliente_email ? <><br />{pedido.cliente_email}</> : null}
                         </td>
                         <td>{fmtFecha(pedido.created_at)}</td>
-                        <td>{pedido.departamento || '—'}</td>
+                        <td>{departamento}</td>
                         <td style={{ fontSize: 12 }}>{tipoLabel}</td>
                         <td>
                           <span

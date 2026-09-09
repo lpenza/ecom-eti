@@ -30,6 +30,8 @@ function describirCron(expr) {
 
 const nuevoUsuarioVacio = { nombre: '', email: '', password: '', role: 'user' };
 const nuevoProductoVacio = { nombre: '', descripcion: '', sku: '', precio: '', activo: true };
+const nuevoKitVacio = { nombre: '', patron_shopify: '', colores_esperados: '', activo: true, contenido_fijo: [] };
+const nuevoCarrierVacio = { patron_shopify: '', tipo: 'color', activo: true };
 
 const ESTADOS_PEDIDO = ['pendiente', 'etiqueta_generada', 'despachado', 'enviado', 'cancelado'];
 const TIPOS_ENVIO = ['estandar', 'pickup_local', 'recibilo_hoy'];
@@ -84,6 +86,20 @@ export default function AdminPanel() {
   const [editandoProducto, setEditandoProducto] = useState(null); // id del producto en edición
   const [editProductoForm, setEditProductoForm] = useState({});
   const [guardandoProducto, setGuardandoProducto] = useState({});
+
+  // ── Kits especiales (desglose de armado) ──
+  const [kits, setKits] = useState([]);
+  const [carriers, setCarriers] = useState([]);
+  const [loadingKits, setLoadingKits] = useState(false);
+  const [nuevoKit, setNuevoKit] = useState(nuevoKitVacio);
+  const [creandoKit, setCreandoKit] = useState(false);
+  const [errorKit, setErrorKit] = useState('');
+  const [editandoKit, setEditandoKit] = useState(null);
+  const [editKitForm, setEditKitForm] = useState({});
+  const [guardandoKit, setGuardandoKit] = useState({});
+  const [nuevoCarrier, setNuevoCarrier] = useState(nuevoCarrierVacio);
+  const [creandoCarrier, setCreandoCarrier] = useState(false);
+  const [errorCarrier, setErrorCarrier] = useState('');
 
   // ── Pedidos ──
   const [pedidosBusqueda, setPedidosBusqueda] = useState('');
@@ -396,6 +412,168 @@ export default function AdminPanel() {
     }
   }
 
+  // ── Carga de kits ──
+  const cargarKits = useCallback(() => {
+    setLoadingKits(true);
+    fetchAdmin('/admin/kits')
+      .then((res) => { if (res.success) { setKits(res.kits || []); setCarriers(res.carriers || []); } })
+      .catch(() => mostrarToast('Error cargando kits', 'error'))
+      .finally(() => setLoadingKits(false));
+  }, []);
+
+  useEffect(() => {
+    if (tab === 'kits') cargarKits();
+  }, [tab, cargarKits]);
+
+  // ── Handlers kits ──
+  async function handleCrearKit(e) {
+    e.preventDefault();
+    setErrorKit('');
+    setCreandoKit(true);
+    const res = await fetchAdmin('/admin/kits', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...nuevoKit,
+        colores_esperados: Number(nuevoKit.colores_esperados) || 0,
+        contenido_fijo: (nuevoKit.contenido_fijo || []).filter((f) => String(f.descripcion || '').trim()),
+      }),
+    });
+    setCreandoKit(false);
+    if (res.success) {
+      mostrarToast(`Kit "${res.kit.nombre}" creado`);
+      setNuevoKit(nuevoKitVacio);
+      cargarKits();
+    } else {
+      setErrorKit(res.error || 'Error al crear kit');
+    }
+  }
+
+  function iniciarEditarKit(kit) {
+    setEditandoKit(kit.id);
+    setEditKitForm({
+      nombre: kit.nombre,
+      patron_shopify: kit.patron_shopify,
+      colores_esperados: kit.colores_esperados ?? 0,
+      activo: kit.activo,
+      contenido_fijo: (kit.kit_contenido_fijo || []).map((f) => ({ descripcion: f.descripcion, cantidad: f.cantidad })),
+    });
+  }
+
+  async function guardarEdicionKit(id) {
+    setGuardandoKit((g) => ({ ...g, [id]: true }));
+    const res = await fetchAdmin(`/admin/kits/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        ...editKitForm,
+        colores_esperados: Number(editKitForm.colores_esperados) || 0,
+        contenido_fijo: (editKitForm.contenido_fijo || []).filter((f) => String(f.descripcion || '').trim()),
+      }),
+    });
+    setGuardandoKit((g) => ({ ...g, [id]: false }));
+    if (res.success) {
+      mostrarToast('Kit actualizado');
+      setEditandoKit(null);
+      cargarKits();
+    } else {
+      mostrarToast(res.error || 'Error al guardar', 'error');
+    }
+  }
+
+  async function eliminarKit(id, nombre) {
+    if (!window.confirm(`¿Eliminar el kit "${nombre}"?`)) return;
+    const res = await fetchAdmin(`/admin/kits/${id}`, { method: 'DELETE' });
+    if (res.success) {
+      mostrarToast('Kit eliminado');
+      cargarKits();
+    } else {
+      mostrarToast(res.error || 'Error al eliminar', 'error');
+    }
+  }
+
+  // Helpers para editar el contenido físico fijo dentro de un formulario de kit.
+  function fijoAdd(setForm) {
+    setForm((f) => ({ ...f, contenido_fijo: [...(f.contenido_fijo || []), { descripcion: '', cantidad: 1 }] }));
+  }
+  function fijoUpdate(setForm, idx, campo, valor) {
+    setForm((f) => {
+      const arr = [...(f.contenido_fijo || [])];
+      arr[idx] = { ...arr[idx], [campo]: valor };
+      return { ...f, contenido_fijo: arr };
+    });
+  }
+  function fijoRemove(setForm, idx) {
+    setForm((f) => ({ ...f, contenido_fijo: (f.contenido_fijo || []).filter((_, i) => i !== idx) }));
+  }
+
+  // Editor de la lista de piezas físicas fijas (compartido por alta y edición de kit).
+  function renderFijoEditor(form, setForm) {
+    const items = form.contenido_fijo || [];
+    return (
+      <div className="admin-field" style={{ maxWidth: '100%' }}>
+        <label>Contenido físico fijo (piezas que van en el kit y no figuran como línea en la orden)</label>
+        {items.length === 0 && (
+          <p className="admin-section-desc" style={{ margin: '0 0 0.4rem' }}>Sin piezas fijas. Agregá lámpara, base coat, manual, etc.</p>
+        )}
+        {items.map((f, idx) => (
+          <div key={idx} style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.4rem', alignItems: 'center' }}>
+            <input
+              type="text"
+              placeholder="Descripción (ej. Lámpara UV)"
+              value={f.descripcion}
+              onChange={(e) => fijoUpdate(setForm, idx, 'descripcion', e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <input
+              type="number"
+              min="1"
+              placeholder="Cant."
+              value={f.cantidad}
+              onChange={(e) => fijoUpdate(setForm, idx, 'cantidad', Number(e.target.value) || 1)}
+              style={{ width: '80px' }}
+            />
+            <button type="button" className="btn btn-danger btn-sm" onClick={() => fijoRemove(setForm, idx)}>✕</button>
+          </div>
+        ))}
+        <button type="button" className="btn btn-secondary btn-sm" onClick={() => fijoAdd(setForm)}>+ Agregar pieza</button>
+      </div>
+    );
+  }
+
+  // ── Handlers carriers ──
+  async function handleCrearCarrier(e) {
+    e.preventDefault();
+    setErrorCarrier('');
+    setCreandoCarrier(true);
+    const res = await fetchAdmin('/admin/carriers', {
+      method: 'POST',
+      body: JSON.stringify(nuevoCarrier),
+    });
+    setCreandoCarrier(false);
+    if (res.success) {
+      mostrarToast('Producto ayudante agregado');
+      setNuevoCarrier(nuevoCarrierVacio);
+      cargarKits();
+    } else {
+      setErrorCarrier(res.error || 'Error al crear');
+    }
+  }
+
+  async function toggleCarrierActivo(carrier) {
+    const res = await fetchAdmin(`/admin/carriers/${carrier.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ activo: !carrier.activo }),
+    });
+    if (res.success) cargarKits();
+    else mostrarToast(res.error || 'Error al actualizar', 'error');
+  }
+
+  async function eliminarCarrier(id) {
+    if (!window.confirm('¿Eliminar este producto ayudante?')) return;
+    const res = await fetchAdmin(`/admin/carriers/${id}`, { method: 'DELETE' });
+    if (res.success) { mostrarToast('Eliminado'); cargarKits(); }
+    else mostrarToast(res.error || 'Error al eliminar', 'error');
+  }
+
   // ── Handlers pedidos ──
   const buscarPedidos = useCallback(async () => {
     setLoadingPedidos(true);
@@ -625,6 +803,9 @@ export default function AdminPanel() {
         </button>
         <button className={`admin-tab${tab === 'productos' ? ' admin-tab-active' : ''}`} onClick={() => setTab('productos')}>
           Productos
+        </button>
+        <button className={`admin-tab${tab === 'kits' ? ' admin-tab-active' : ''}`} onClick={() => setTab('kits')}>
+          Kits
         </button>
         <button className={`admin-tab${tab === 'pedidos' ? ' admin-tab-active' : ''}`} onClick={() => setTab('pedidos')}>
           Pedidos
@@ -1109,6 +1290,221 @@ export default function AdminPanel() {
                         </tr>
                       )}
                     </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+        </>
+      )}
+
+      {/* ══════════════ TAB KITS ══════════════ */}
+      {tab === 'kits' && (
+        <>
+          {/* ── Crear kit ── */}
+          <section className="admin-section">
+            <h2 className="admin-section-title">Agregar kit especial</h2>
+            <p className="admin-section-desc">
+              El kit se reconoce por el <strong>nombre del producto de Shopify</strong> (coincidencia por texto).
+              Ej: patrón "Kit Studio" reconoce "Kit Studio Velinne™". El armador verá el kit con sus colores,
+              adicionales y las piezas físicas fijas que definas acá.
+            </p>
+            <form className="admin-nuevo-form" onSubmit={handleCrearKit}>
+              <div className="admin-nuevo-fields">
+                <div className="admin-field">
+                  <label>Nombre para mostrar *</label>
+                  <input
+                    type="text"
+                    placeholder="Kit Studio"
+                    value={nuevoKit.nombre}
+                    onChange={(e) => setNuevoKit((k) => ({ ...k, nombre: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div className="admin-field">
+                  <label>Patrón nombre Shopify *</label>
+                  <input
+                    type="text"
+                    placeholder="Kit Studio"
+                    value={nuevoKit.patron_shopify}
+                    onChange={(e) => setNuevoKit((k) => ({ ...k, patron_shopify: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div className="admin-field">
+                  <label>Colores esperados</label>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="0 = sin control"
+                    value={nuevoKit.colores_esperados}
+                    onChange={(e) => setNuevoKit((k) => ({ ...k, colores_esperados: e.target.value }))}
+                  />
+                </div>
+                <div className="admin-field">
+                  <label>Estado</label>
+                  <select
+                    value={nuevoKit.activo ? 'true' : 'false'}
+                    onChange={(e) => setNuevoKit((k) => ({ ...k, activo: e.target.value === 'true' }))}
+                  >
+                    <option value="true">Activo</option>
+                    <option value="false">Inactivo</option>
+                  </select>
+                </div>
+              </div>
+              {renderFijoEditor(nuevoKit, setNuevoKit)}
+              {errorKit && <div className="admin-error">{errorKit}</div>}
+              <button className="btn btn-primary" type="submit" disabled={creandoKit}>
+                {creandoKit ? 'Creando...' : '+ Agregar kit'}
+              </button>
+            </form>
+          </section>
+
+          {/* ── Lista de kits ── */}
+          <section className="admin-section">
+            <div className="admin-section-header-row">
+              <h2 className="admin-section-title" style={{ margin: 0 }}>Kits configurados</h2>
+              <button className="btn btn-secondary btn-sm" onClick={cargarKits} disabled={loadingKits}>
+                {loadingKits ? 'Cargando...' : '🔄 Actualizar'}
+              </button>
+            </div>
+
+            {loadingKits && <p className="admin-rep-empty">Cargando...</p>}
+            {!loadingKits && kits.length === 0 && (
+              <p className="admin-rep-empty">No hay kits configurados todavía.</p>
+            )}
+
+            {!loadingKits && kits.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                {kits.map((kit) => {
+                  const enEdicion = editandoKit === kit.id;
+                  return (
+                    <div key={kit.id} className={`admin-section${enEdicion ? ' admin-row-editing' : ''}`} style={{ margin: 0, padding: '0.9rem 1rem' }}>
+                      {!enEdicion ? (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '1rem', flexWrap: 'wrap' }}>
+                          <div style={{ minWidth: 0 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                              <strong>{kit.nombre}</strong>
+                              <span className={`admin-badge ${kit.activo ? 'admin-badge-ok' : 'admin-badge-off'}`}>
+                                {kit.activo ? 'Activo' : 'Inactivo'}
+                              </span>
+                            </div>
+                            <div className="admin-rep-email" style={{ marginTop: '0.25rem' }}>
+                              Reconoce Shopify: “{kit.patron_shopify}” · Colores esperados: {kit.colores_esperados || '—'}
+                            </div>
+                            {(kit.kit_contenido_fijo || []).length > 0 && (
+                              <div style={{ marginTop: '0.35rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
+                                Piezas fijas: {(kit.kit_contenido_fijo || []).map((f) => `${f.descripcion}${f.cantidad > 1 ? ` x${f.cantidad}` : ''}`).join(', ')}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.4rem', height: 'fit-content' }}>
+                            <button className="btn btn-secondary btn-sm" onClick={() => iniciarEditarKit(kit)}>Editar</button>
+                            <button className="btn btn-danger btn-sm" onClick={() => eliminarKit(kit.id, kit.nombre)}>Eliminar</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="admin-nuevo-fields">
+                            <div className="admin-field">
+                              <label>Nombre</label>
+                              <input type="text" value={editKitForm.nombre} onChange={(e) => setEditKitForm((f) => ({ ...f, nombre: e.target.value }))} />
+                            </div>
+                            <div className="admin-field">
+                              <label>Patrón nombre Shopify</label>
+                              <input type="text" value={editKitForm.patron_shopify} onChange={(e) => setEditKitForm((f) => ({ ...f, patron_shopify: e.target.value }))} />
+                            </div>
+                            <div className="admin-field">
+                              <label>Colores esperados</label>
+                              <input type="number" min="0" value={editKitForm.colores_esperados} onChange={(e) => setEditKitForm((f) => ({ ...f, colores_esperados: e.target.value }))} />
+                            </div>
+                            <div className="admin-field">
+                              <label>Estado</label>
+                              <select value={editKitForm.activo ? 'true' : 'false'} onChange={(e) => setEditKitForm((f) => ({ ...f, activo: e.target.value === 'true' }))}>
+                                <option value="true">Activo</option>
+                                <option value="false">Inactivo</option>
+                              </select>
+                            </div>
+                          </div>
+                          {renderFijoEditor(editKitForm, setEditKitForm)}
+                          <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.5rem' }}>
+                            <button className="btn btn-primary btn-sm" onClick={() => guardarEdicionKit(kit.id)} disabled={guardandoKit[kit.id]}>
+                              {guardandoKit[kit.id] ? 'Guardando...' : 'Guardar'}
+                            </button>
+                            <button className="btn btn-secondary btn-sm" onClick={() => setEditandoKit(null)}>Cancelar</button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {/* ── Productos ayudantes (carriers) ── */}
+          <section className="admin-section">
+            <h2 className="admin-section-title">Productos ayudantes</h2>
+            <p className="admin-section-desc">
+              Líneas de Shopify que aportan al kit del pedido: colores elegidos (ej. "Set de colores",
+              "Agregá tus tonos favoritos") o adicionales (ej. "Lápiz Removedor"). Se asocian al kit que
+              esté en el mismo pedido.
+            </p>
+            <form className="admin-nuevo-form" onSubmit={handleCrearCarrier}>
+              <div className="admin-nuevo-fields">
+                <div className="admin-field">
+                  <label>Patrón nombre Shopify *</label>
+                  <input
+                    type="text"
+                    placeholder="Set de colores"
+                    value={nuevoCarrier.patron_shopify}
+                    onChange={(e) => setNuevoCarrier((c) => ({ ...c, patron_shopify: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div className="admin-field">
+                  <label>Tipo</label>
+                  <select value={nuevoCarrier.tipo} onChange={(e) => setNuevoCarrier((c) => ({ ...c, tipo: e.target.value }))}>
+                    <option value="color">Color elegido</option>
+                    <option value="adicional">Adicional</option>
+                  </select>
+                </div>
+              </div>
+              {errorCarrier && <div className="admin-error">{errorCarrier}</div>}
+              <button className="btn btn-primary" type="submit" disabled={creandoCarrier}>
+                {creandoCarrier ? 'Agregando...' : '+ Agregar ayudante'}
+              </button>
+            </form>
+
+            {carriers.length > 0 && (
+              <table className="admin-reporte-table" style={{ marginTop: '1rem' }}>
+                <thead>
+                  <tr>
+                    <th>Patrón Shopify</th>
+                    <th>Tipo</th>
+                    <th>Estado</th>
+                    <th>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {carriers.map((c) => (
+                    <tr key={c.id}>
+                      <td><span className="admin-rep-nombre">{c.patron_shopify}</span></td>
+                      <td>{c.tipo === 'adicional' ? 'Adicional' : 'Color elegido'}</td>
+                      <td>
+                        <span className={`admin-badge ${c.activo ? 'admin-badge-ok' : 'admin-badge-off'}`}>
+                          {c.activo ? 'Activo' : 'Inactivo'}
+                        </span>
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', gap: '0.4rem' }}>
+                          <button className="btn btn-secondary btn-sm" onClick={() => toggleCarrierActivo(c)}>
+                            {c.activo ? 'Desactivar' : 'Activar'}
+                          </button>
+                          <button className="btn btn-danger btn-sm" onClick={() => eliminarCarrier(c.id)}>Eliminar</button>
+                        </div>
+                      </td>
+                    </tr>
                   ))}
                 </tbody>
               </table>

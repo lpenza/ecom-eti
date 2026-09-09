@@ -64,6 +64,7 @@ const facturacionAuditService = require('./services/facturacionAuditService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
 const { procesarCarritosAbandonados, sincronizarDesdeShopify, probarMensaje, crearCarritoManual, obtenerCarritosDB, obtenerFlujoConfig, guardarFlujoConfig, guardarCheckoutCapturado, revisarYEncolar, enviarLinkAPendientes } = require('./services/abandonedCartService');
 const emailService = require('./services/emailService');
+const mailboxService = require('./services/mailboxService');
 const logService = require('./services/logService');
 
 // ── Notificaciones del panel lateral ─────────────────────────────────────────
@@ -109,6 +110,159 @@ function requireAtencion(req, res, next) {
   }
   next();
 }
+
+// ==================== EMAILS (buzón de la empresa) ====================
+// Modelo: un buzón madre (info@) con alias. El admin ve todo; atención al
+// cliente sólo su(s) alias (consultas@). Los armadores no tienen acceso.
+function aliasesPermitidos(user) {
+  if (user?.role === 'admin') {
+    return { canSeeAll: true, aliases: mailboxService.MAIL_ALIASES };
+  }
+  if (user?.role === 'atencion') {
+    return { canSeeAll: false, aliases: mailboxService.MAIL_ALIASES_ATENCION };
+  }
+  return { canSeeAll: false, aliases: [] };
+}
+
+// Normaliza el tipo de carpeta desde la query.
+function tipoCarpeta(req) {
+  return String(req.query.folder || '').toLowerCase() === 'sent' ? 'sent' : 'inbox';
+}
+
+// Alias que el usuario puede leer/usar como remitente.
+app.get('/api/emails/aliases', requireAuth, requireAtencion, (req, res) => {
+  const { canSeeAll, aliases } = aliasesPermitidos(req.user);
+  res.json({
+    success: true,
+    canSeeAll,
+    aliases,
+    defaultAlias: canSeeAll ? 'all' : (aliases[0] || null),
+  });
+});
+
+// Listado de la bandeja (filtrado por alias según rol).
+app.get('/api/emails', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const { canSeeAll, aliases } = aliasesPermitidos(req.user);
+    if (!canSeeAll && aliases.length === 0) {
+      return res.status(403).json({ success: false, error: 'Sin acceso a correos' });
+    }
+
+    let alias = String(req.query.alias || '').toLowerCase().trim();
+    if (canSeeAll) {
+      if (alias && alias !== 'all' && !aliases.includes(alias)) alias = 'all';
+      if (!alias) alias = 'all';
+    } else {
+      alias = aliases[0]; // atención queda fijada a su alias
+    }
+
+    const limit = Number(req.query.limit || 30);
+    const tipo = tipoCarpeta(req);
+    const mensajes = await mailboxService.listMessages({
+      alias: alias === 'all' ? null : alias,
+      limit,
+      tipo,
+    });
+    res.json({ success: true, alias, tipo, mensajes });
+  } catch (error) {
+    logService.error('Error listando emails', { error: error.message });
+    res.status(500).json({ success: false, error: error.message || 'Error al leer la bandeja' });
+  }
+});
+
+// Detalle de un correo (con control de acceso por alias).
+app.get('/api/emails/:uid', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const { canSeeAll, aliases } = aliasesPermitidos(req.user);
+    const mensaje = await mailboxService.getMessage({
+      uid: req.params.uid,
+      restrictTo: canSeeAll ? null : aliases,
+      tipo: tipoCarpeta(req),
+    });
+
+    if (!mensaje) return res.status(404).json({ success: false, error: 'Correo no encontrado' });
+    if (mensaje.forbidden) return res.status(403).json({ success: false, error: 'No tenés acceso a este correo' });
+
+    res.json({ success: true, mensaje });
+  } catch (error) {
+    logService.error('Error obteniendo email', { error: error.message });
+    res.status(500).json({ success: false, error: error.message || 'Error al leer el correo' });
+  }
+});
+
+// Enviar correo (respuesta o nuevo). El remitente se valida contra el rol.
+app.post('/api/emails/send', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const { canSeeAll, aliases } = aliasesPermitidos(req.user);
+    const { to, cc, subject, html, text, inReplyTo, references } = req.body || {};
+
+    if (!to || !String(to).trim()) {
+      return res.status(400).json({ success: false, error: 'Falta el destinatario' });
+    }
+
+    // Remitente: admin elige alias; atención queda fijada al suyo.
+    let from = String(req.body.from || '').toLowerCase().trim();
+    if (canSeeAll) {
+      if (!from || !mailboxService.MAIL_ALIASES.includes(from)) from = mailboxService.MAIL_MADRE;
+    } else {
+      if (aliases.length === 0) return res.status(403).json({ success: false, error: 'Sin remitente autorizado' });
+      from = aliases[0];
+    }
+
+    const resultado = await emailService.enviarCorreoRaw({
+      from,
+      to: String(to).trim(),
+      cc: cc ? String(cc).trim() : undefined,
+      replyTo: from,
+      subject,
+      html,
+      text,
+      inReplyTo,
+      references,
+    });
+
+    logService.info(`Email enviado desde ${from} por ${req.user?.email}`, { to, subject });
+    res.json({ success: true, ...resultado });
+  } catch (error) {
+    logService.error('Error enviando email', { error: error.message });
+    res.status(500).json({ success: false, error: error.message || 'Error al enviar el correo' });
+  }
+});
+
+// Firmas por alias: el admin las edita; atención sólo las lee para su alias.
+app.get('/api/emails/firmas', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const { canSeeAll, aliases } = aliasesPermitidos(req.user);
+    const todas = await supabaseService.obtenerFirmasEmail();
+    // Atención sólo recibe la firma de su alias; el admin todas.
+    const firmas = {};
+    if (canSeeAll) {
+      Object.assign(firmas, todas);
+    } else {
+      aliases.forEach((a) => { if (todas[a] !== undefined) firmas[a] = todas[a]; });
+    }
+    res.json({ success: true, firmas });
+  } catch (error) {
+    logService.error('Error obteniendo firmas', { error: error.message });
+    res.status(500).json({ success: false, error: error.message || 'Error al leer las firmas' });
+  }
+});
+
+app.put('/api/emails/firmas/:alias', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const alias = String(req.params.alias || '').toLowerCase().trim();
+    if (!mailboxService.MAIL_ALIASES.includes(alias)) {
+      return res.status(400).json({ success: false, error: 'Alias no válido' });
+    }
+    await supabaseService.guardarFirmaEmail(alias, String(req.body?.html || ''));
+    logService.info(`Firma de ${alias} actualizada por ${req.user?.email}`);
+    res.json({ success: true });
+  } catch (error) {
+    logService.error('Error guardando firma', { error: error.message });
+    res.status(500).json({ success: false, error: error.message || 'Error al guardar la firma' });
+  }
+});
+// ==================== FIN EMAILS ====================
 
 // ── Login endpoint ───────────────────────────────────────────────────────────
 app.post('/api/auth/login', async (req, res) => {
@@ -363,6 +517,124 @@ app.delete('/api/admin/productos/:id', requireAuth, requireAdmin, async (req, re
     const { id } = req.params;
     await supabaseService.eliminarProducto(id);
     logService.info(`Admin ${req.user.email} eliminó producto ${id}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Kits especiales (admin) — desglose de armado ──────────────────────────────
+
+app.get('/api/admin/kits', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const [kits, carriers] = await Promise.all([
+      supabaseService.listarKits(),
+      supabaseService.listarCarriers(),
+    ]);
+    res.json({ success: true, kits, carriers });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/kits', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { nombre, patron_shopify, colores_esperados, activo, contenido_fijo } = req.body || {};
+    if (!nombre || !String(nombre).trim()) {
+      return res.status(400).json({ success: false, error: 'El nombre es requerido' });
+    }
+    if (!patron_shopify || !String(patron_shopify).trim()) {
+      return res.status(400).json({ success: false, error: 'El patrón de nombre de Shopify es requerido' });
+    }
+    const kit = await supabaseService.crearKit({
+      nombre: String(nombre).trim(),
+      patron_shopify: String(patron_shopify).trim(),
+      colores_esperados: Number(colores_esperados) || 0,
+      activo: activo !== false,
+      contenido_fijo: Array.isArray(contenido_fijo) ? contenido_fijo : [],
+    });
+    logService.info(`Admin ${req.user.email} creó kit "${kit.nombre}"`);
+    res.json({ success: true, kit });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.put('/api/admin/kits/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { nombre, patron_shopify, colores_esperados, activo, contenido_fijo } = req.body || {};
+    const campos = {};
+    if (nombre !== undefined) {
+      if (!String(nombre).trim()) return res.status(400).json({ success: false, error: 'El nombre no puede estar vacío' });
+      campos.nombre = String(nombre).trim();
+    }
+    if (patron_shopify !== undefined) {
+      if (!String(patron_shopify).trim()) return res.status(400).json({ success: false, error: 'El patrón no puede estar vacío' });
+      campos.patron_shopify = String(patron_shopify).trim();
+    }
+    if (colores_esperados !== undefined) campos.colores_esperados = Number(colores_esperados) || 0;
+    if (activo !== undefined) campos.activo = !!activo;
+    if (Array.isArray(contenido_fijo)) campos.contenido_fijo = contenido_fijo;
+    const kit = await supabaseService.actualizarKit(id, campos);
+    logService.info(`Admin ${req.user.email} actualizó kit ${id}`);
+    res.json({ success: true, kit });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/admin/kits/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await supabaseService.eliminarKit(id);
+    logService.info(`Admin ${req.user.email} eliminó kit ${id}`);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/admin/carriers', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { patron_shopify, tipo, activo } = req.body || {};
+    if (!patron_shopify || !String(patron_shopify).trim()) {
+      return res.status(400).json({ success: false, error: 'El patrón de nombre de Shopify es requerido' });
+    }
+    const carrier = await supabaseService.crearCarrier({
+      patron_shopify: String(patron_shopify).trim(),
+      tipo: tipo === 'adicional' ? 'adicional' : 'color',
+      activo: activo !== false,
+    });
+    logService.info(`Admin ${req.user.email} creó carrier "${carrier.patron_shopify}"`);
+    res.json({ success: true, carrier });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.put('/api/admin/carriers/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { patron_shopify, tipo, activo } = req.body || {};
+    const campos = {};
+    if (patron_shopify !== undefined) {
+      if (!String(patron_shopify).trim()) return res.status(400).json({ success: false, error: 'El patrón no puede estar vacío' });
+      campos.patron_shopify = String(patron_shopify).trim();
+    }
+    if (tipo !== undefined) campos.tipo = tipo === 'adicional' ? 'adicional' : 'color';
+    if (activo !== undefined) campos.activo = !!activo;
+    const carrier = await supabaseService.actualizarCarrier(id, campos);
+    res.json({ success: true, carrier });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.delete('/api/admin/carriers/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await supabaseService.eliminarCarrier(id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -1406,16 +1678,20 @@ app.get('/api/pedidos-armado', requireAuth, async (req, res) => {
 });
 
 // ── Stock de colores "NC" (armador) ──────────────────────────────────────────
-// Prefijo de SKU que agrupa los colores que se cuentan y sincronizan con Shopify.
-const STOCK_SKU_PREFIX = String(process.env.STOCK_SKU_PREFIX || 'NC').trim();
+// Prefijos de SKU que agrupan los colores que se cuentan y sincronizan con Shopify.
+// Configurable por env (coma-separado); por defecto NC, BSA, MRT y BSJ.
+const STOCK_SKU_PREFIXES = String(process.env.STOCK_SKU_PREFIX || 'NC,BSA,MRT,BSJ')
+  .split(',')
+  .map((p) => p.trim())
+  .filter(Boolean);
 
 // Lógica compartida por el endpoint manual y el cron: lee el stock "available" de Shopify
 // (locación principal) de todas las variantes con SKU NC y lo vuelca a productos.stock
 // (match por SKU, update por id). Devuelve el resumen.
 async function sincronizarStockNCDesdeShopify() {
   const [stockShopify, productos] = await Promise.all([
-    shopifyService.obtenerStockPorPrefijoSku(STOCK_SKU_PREFIX),
-    supabaseService.listarProductosPorPrefijoSku(STOCK_SKU_PREFIX),
+    shopifyService.obtenerStockPorPrefijoSku(STOCK_SKU_PREFIXES),
+    supabaseService.listarProductosPorPrefijoSku(STOCK_SKU_PREFIXES),
   ]);
 
   const actualizados = [];
@@ -1436,15 +1712,33 @@ async function sincronizarStockNCDesdeShopify() {
     actualizados.push({ sku: prod.sku, nombre: prod.nombre, anterior: prod.stock, nuevo: fila.stock });
   }
 
-  // SKUs que están en Shopify pero no existen como producto en la BD.
+  // SKUs que están en Shopify pero no existen como producto en la BD: se dan de alta
+  // automáticamente con su stock actual para que aparezcan en el panel (recupera NC nuevos).
   const skusEnBd = new Set(productos.map((p) => String(p.sku || '').trim()));
   const soloEnShopify = [...stockShopify.keys()].filter((sku) => !skusEnBd.has(sku));
+
+  const creados = [];
+  if (soloEnShopify.length > 0) {
+    const nuevos = soloEnShopify.map((sku) => {
+      const info = stockShopify.get(sku);
+      return { sku, nombre: info?.nombre || sku, stock: info?.available ?? 0 };
+    });
+    try {
+      const filas = await supabaseService.crearProductosNC(nuevos);
+      for (const f of filas) {
+        creados.push({ sku: f.sku, nombre: f.nombre, stock: f.stock });
+      }
+    } catch (e) {
+      logService.error('Error creando productos NC nuevos desde Shopify', e);
+    }
+  }
 
   return {
     totalShopify: stockShopify.size,
     totalBd: productos.length,
     actualizados,
     sinCambios,
+    creados,
     soloEnShopify,
     sinCoincidenciaEnShopify,
   };
@@ -1453,8 +1747,8 @@ async function sincronizarStockNCDesdeShopify() {
 // Listar productos NC con su stock actual en la tabla productos.
 app.get('/api/armador/stock-nc', requireAuth, async (req, res) => {
   try {
-    const productos = await supabaseService.listarProductosPorPrefijoSku(STOCK_SKU_PREFIX);
-    res.json({ success: true, prefijo: STOCK_SKU_PREFIX, data: productos });
+    const productos = await supabaseService.listarProductosPorPrefijoSku(STOCK_SKU_PREFIXES);
+    res.json({ success: true, prefijo: STOCK_SKU_PREFIXES.join(','), prefijos: STOCK_SKU_PREFIXES, data: productos });
   } catch (error) {
     logService.error('Error listando stock NC', error);
     res.status(500).json({ success: false, data: [], error: error.message });
@@ -1466,8 +1760,9 @@ app.post('/api/armador/stock-nc/sincronizar', requireAuth, async (req, res) => {
   try {
     const r = await sincronizarStockNCDesdeShopify();
 
-    logService.info(`Sync stock NC (${req.user?.email}): ${r.actualizados.length} actualizados`, {
+    logService.info(`Sync stock NC (${req.user?.email}): ${r.actualizados.length} actualizados, ${r.creados.length} creados`, {
       actualizados: r.actualizados.length,
+      creados: r.creados.length,
       sinCambios: r.sinCambios.length,
       soloEnShopify: r.soloEnShopify.length,
       sinCoincidenciaEnShopify: r.sinCoincidenciaEnShopify.length,
@@ -1479,11 +1774,13 @@ app.post('/api/armador/stock-nc/sincronizar', requireAuth, async (req, res) => {
         totalShopify: r.totalShopify,
         totalBd: r.totalBd,
         actualizados: r.actualizados.length,
+        creados: r.creados.length,
         sinCambios: r.sinCambios.length,
         soloEnShopify: r.soloEnShopify,
         sinCoincidenciaEnShopify: r.sinCoincidenciaEnShopify,
       },
       actualizados: r.actualizados,
+      creados: r.creados,
     });
   } catch (error) {
     logService.error('Error sincronizando stock NC desde Shopify', error);
@@ -2915,8 +3212,19 @@ async function handleFulfillmentShopify(req, res) {
 
     const resultados = [];
 
+    // Con la demora activa, los pickup NO se despachan en el acto aunque vengan dentro de
+    // la selección de "Enviar Fulfillment": quedan en Despachados y se agendan para +N min
+    // más abajo (los saca el cron). Solo se despachan al instante si la demora está en 0.
+    const difierePickup = PICKUP_FULFILLMENT_DELAY_MIN > 0;
+
     for (const pedido of candidatos) {
       try {
+        const esPickup = pedido.tipo_envio === 'pickup_local';
+        if (esPickup && difierePickup) {
+          // No se despacha ahora: se programa después, en una sola tanda.
+          continue;
+        }
+
         // Resolver shopify_order_id interno de Shopify usando numero_pedido
         logService.info(`Resolviendo ID Shopify para pedido #${pedido.numero_pedido}...`);
         const shopifyOrderId = await shopifyService.obtenerIdPorNumeroPedido(pedido.numero_pedido);
@@ -2928,9 +3236,10 @@ async function handleFulfillmentShopify(req, res) {
         logService.info(`Fulfillment pedido #${pedido.numero_pedido} | shopifyOrderId=${shopifyOrderId} | tracking=${pedido.numero_seguimiento_ues}`);
 
         const tieneEmail = !!(pedido.cliente_email || pedido.email);
-        const esPickup = pedido.tipo_envio === 'pickup_local';
 
         if (esPickup) {
+          // Solo se llega acá con la demora deshabilitada (PICKUP_FULFILLMENT_DELAY_MIN=0):
+          // despacho inmediato del pickup.
           const resultadoPickup = await ejecutarFulfillmentPickup(pedido, shopifyOrderId);
 
           resultados.push({
@@ -3004,12 +3313,16 @@ async function handleFulfillmentShopify(req, res) {
       return !/^ues/i.test(String(r.pedido?.numero_seguimiento_ues || '').trim());
     });
 
+    // Se agendan los pickup para +N min cuando la selección incluía pickups (para
+    // mantenerles la demora aunque se hayan mandado con "Enviar Fulfillment") o cuando
+    // salió algún MarcoPostal (barrido de los pickup que sigan en Despachados). Los que
+    // fueron despachados en el acto (demora en 0) ya no quedan como pickup despachado.
+    const huboPickupSeleccionado = candidatos.some((p) => p.tipo_envio === 'pickup_local');
+
     let pickupsProgramados = null;
-    if (huboMarcoPostal) {
+    if (difierePickup && (huboPickupSeleccionado || huboMarcoPostal)) {
       try {
-        pickupsProgramados = await programarPickupsDiferidos({
-          excluirIds: candidatos.map((p) => p.id),
-        });
+        pickupsProgramados = await programarPickupsDiferidos();
       } catch (err) {
         logService.warning(`No se pudieron programar los pickups diferidos: ${err.message}`);
       }
@@ -3574,7 +3887,19 @@ app.get('/api/pedido-detalle/:numeroPedido', requireAuth, async (req, res) => {
         quantity: item.current_quantity !== undefined ? item.current_quantity : item.quantity,
         sku: item.sku || null,
       }));
-    res.json({ success: true, lineItems });
+
+    // Desglose de kit para el checklist de armado: agrupa el kit con sus colores
+    // elegidos, adicionales y contenido físico fijo. Devuelve null si el pedido no
+    // contiene ningún kit configurado (armado normal). No debe romper el detalle si falla.
+    let desglose = null;
+    try {
+      const config = await supabaseService.obtenerConfigKits();
+      desglose = supabaseService.desglosarLineItems(lineItems, config);
+    } catch (e) {
+      logService.error('Error calculando desglose de kit (se ignora)', e);
+    }
+
+    res.json({ success: true, lineItems, desglose });
   } catch (error) {
     logService.error('Error obteniendo detalle de pedido', error);
     res.status(500).json({ success: false, error: error.message });

@@ -524,10 +524,12 @@ class SupabaseService {
         .select('*')
         .neq('estado', 'enviado')
         .neq('estado', 'despachado')
-        .neq('es_envio_express', true)
-        .neq('es_reclamo', true)
-        // Excluir tipos especiales que tienen su propio flujo
-        .or('tipo_envio.is.null,tipo_envio.eq.estandar')
+        // Rama estándar: estándar (o sin tipo), excluyendo express y reclamos, que tienen
+        // su propio flujo. Rama especial: Pick-UP y Recibilo Hoy entran sólo cuando ya
+        // tienen la etiqueta generada, para pasar a la card "Etiquetas Generadas" como el
+        // resto. La exclusión express/reclamo NO puede ser global porque Recibilo Hoy está
+        // marcado es_envio_express=true; sin etiqueta viven sólo en su vista de validación.
+        .or('and(or(tipo_envio.is.null,tipo_envio.eq.estandar),es_envio_express.neq.true,es_reclamo.neq.true),and(tipo_envio.in.(pickup_local,recibilo_hoy),etiqueta_generada.eq.true)')
         .order('created_at', { ascending: true });
 
       if (error) throw error;
@@ -630,7 +632,8 @@ class SupabaseService {
     }
   }
 
-  // Obtener pedidos Pick-UP (pendientes de despacho)
+  // Obtener pedidos Pick-UP pendientes de validación (aún sin etiqueta). Al generar
+  // la etiqueta salen de esta vista y pasan a la card "Etiquetas Generadas".
   async obtenerPedidosPickup() {
     try {
       const { data, error } = await supabase
@@ -638,6 +641,7 @@ class SupabaseService {
         .select('*')
         .eq('tipo_envio', 'pickup_local')
         .not('estado', 'in', '("enviado","despachado")')
+        .or('etiqueta_generada.is.null,etiqueta_generada.eq.false')
         .order('created_at', { ascending: false });
 
       if (error) throw error;
@@ -657,6 +661,7 @@ class SupabaseService {
         .select('*')
         .eq('tipo_envio', 'recibilo_hoy')
         .not('estado', 'in', '("enviado","despachado")')
+        .or('etiqueta_generada.is.null,etiqueta_generada.eq.false')
         .order('created_at', { ascending: false });
 
       if (error) throw error;
@@ -1377,6 +1382,63 @@ class SupabaseService {
     }
   }
 
+  // ===== Firmas de email por alias =====
+  // Se guardan en la misma tabla `templates` con el prefijo "[FIRMA] <alias>".
+  // Así sobreviven a los redeploys y se editan sin tocar código.
+  async obtenerFirmasEmail() {
+    try {
+      const { data, error } = await supabase
+        .from('templates')
+        .select('*')
+        .like('name', '[FIRMA] %');
+      if (error) throw error;
+      const out = {};
+      (data || []).forEach((t) => {
+        const alias = String(t.name).slice('[FIRMA] '.length).toLowerCase().trim();
+        if (alias) out[alias] = this.ensureUtf8(t.content);
+      });
+      return out;
+    } catch (error) {
+      console.error('Error al obtener firmas de email:', error);
+      throw error;
+    }
+  }
+
+  async guardarFirmaEmail(alias, html) {
+    try {
+      const name = `[FIRMA] ${String(alias).toLowerCase().trim()}`;
+      const { data: existentes, error: errSel } = await supabase
+        .from('templates')
+        .select('id')
+        .eq('name', name)
+        .limit(1);
+      if (errSel) throw errSel;
+
+      if (existentes && existentes.length > 0) {
+        const { error } = await supabase
+          .from('templates')
+          .update({ content: this.ensureUtf8(html), updated_at: new Date().toISOString() })
+          .eq('id', existentes[0].id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('templates')
+          .insert({
+            name,
+            content: this.ensureUtf8(html),
+            is_active: false,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          });
+        if (error) throw error;
+      }
+      return { success: true };
+    } catch (error) {
+      console.error('Error al guardar firma de email:', error);
+      throw error;
+    }
+  }
+
   // Eliminar una plantilla
   async eliminarPlantilla(id) {
     try {
@@ -1501,16 +1563,25 @@ class SupabaseService {
   }
 
   async reportePedidosPorUsuario(desde, hasta) {
-    const query = supabase
+    // Sin .order()/.limit() PostgREST tope a 1000 filas en orden arbitrario, lo
+    // que truncaba silenciosamente el reporte. Mismo criterio que
+    // listarPedidosArmados para que los totales de las dos pantallas coincidan.
+    let query = supabase
       .from('pedidos')
       .select('despachado_por_nombre, armado_at, notificacion_enviada_at, created_at')
       .in('estado', ['despachado', 'enviado'])
-      .not('despachado_por_nombre', 'is', null);
+      .not('despachado_por_nombre', 'is', null)
+      .order('armado_at', { ascending: false, nullsFirst: false })
+      .limit(20000);
+
+    const { desdeDate, hastaDate } = rangoFechasUy(desde, hasta);
+
+    // Un pedido nunca se arma antes de crearse: podar por created_at no descarta
+    // nada del rango y evita traer pedidos posteriores al período.
+    if (hasta) query = query.lte('created_at', `${hasta}T23:59:59.999-03:00`);
 
     const { data, error } = await query;
     if (error) throw error;
-
-    const { desdeDate, hastaDate } = rangoFechasUy(desde, hasta);
 
     const dataFiltrada = (data || []).filter((p) => dentroDelRango(
       p.armado_at || p.notificacion_enviada_at || p.created_at, desdeDate, hastaDate,
@@ -1658,16 +1729,234 @@ class SupabaseService {
     if (error) throw error;
   }
 
+  // ── Kits especiales (desglose de armado) ──────────────────────────────────────
+  //
+  // Config para reconocer "kits" en un pedido de Shopify por el NOMBRE del producto
+  // y agrupar sus colores/adicionales + contenido físico fijo. Es solo para el
+  // checklist de armado: NO afecta stock, precios ni movimientos_stock.
+
+  // Listar kits con su contenido físico fijo anidado. incluirInactivos=false para el
+  // desglose en vivo; true para la administración.
+  async listarKits({ incluirInactivos = true } = {}) {
+    let q = supabase
+      .from('kits_config')
+      .select('*, kit_contenido_fijo(id, descripcion, cantidad, orden)')
+      .order('nombre', { ascending: true });
+    if (!incluirInactivos) q = q.eq('activo', true);
+    const { data, error } = await q;
+    if (error) throw error;
+    // Ordenar el contenido fijo por su campo `orden` (PostgREST no lo garantiza anidado).
+    return (data || []).map((k) => ({
+      ...k,
+      kit_contenido_fijo: (k.kit_contenido_fijo || []).sort((a, b) => (a.orden || 0) - (b.orden || 0)),
+    }));
+  }
+
+  async crearKit({ nombre, patron_shopify, colores_esperados = 0, activo = true, contenido_fijo = [] }) {
+    const { data, error } = await supabase
+      .from('kits_config')
+      .insert({ nombre, patron_shopify, colores_esperados, activo })
+      .select()
+      .single();
+    if (error) throw error;
+    await this._reemplazarContenidoFijo(data.id, contenido_fijo);
+    return data;
+  }
+
+  async actualizarKit(id, { contenido_fijo, ...campos }) {
+    const { data, error } = await supabase
+      .from('kits_config')
+      .update({ ...campos, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    // Solo tocar el contenido fijo si vino explícito en el update.
+    if (Array.isArray(contenido_fijo)) {
+      await this._reemplazarContenidoFijo(id, contenido_fijo);
+    }
+    return data;
+  }
+
+  async eliminarKit(id) {
+    // kit_contenido_fijo se borra por ON DELETE CASCADE.
+    const { error } = await supabase.from('kits_config').delete().eq('id', id);
+    if (error) throw error;
+  }
+
+  // Reemplaza en bloque las piezas físicas de un kit (borra e inserta).
+  async _reemplazarContenidoFijo(kitId, items = []) {
+    const { error: errDel } = await supabase.from('kit_contenido_fijo').delete().eq('kit_id', kitId);
+    if (errDel) throw errDel;
+    const filas = (items || [])
+      .filter((it) => it && String(it.descripcion || '').trim())
+      .map((it, i) => ({
+        kit_id: kitId,
+        descripcion: String(it.descripcion).trim(),
+        cantidad: Number(it.cantidad) > 0 ? Number(it.cantidad) : 1,
+        orden: Number.isFinite(Number(it.orden)) ? Number(it.orden) : i,
+      }));
+    if (filas.length === 0) return;
+    const { error: errIns } = await supabase.from('kit_contenido_fijo').insert(filas);
+    if (errIns) throw errIns;
+  }
+
+  async listarCarriers({ incluirInactivos = true } = {}) {
+    let q = supabase.from('carriers_color').select('*').order('patron_shopify', { ascending: true });
+    if (!incluirInactivos) q = q.eq('activo', true);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  }
+
+  async crearCarrier({ patron_shopify, tipo = 'color', activo = true }) {
+    const { data, error } = await supabase
+      .from('carriers_color')
+      .insert({ patron_shopify, tipo, activo })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async actualizarCarrier(id, campos) {
+    const { data, error } = await supabase
+      .from('carriers_color')
+      .update({ ...campos, updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async eliminarCarrier(id) {
+    const { error } = await supabase.from('carriers_color').delete().eq('id', id);
+    if (error) throw error;
+  }
+
+  // Cargar la config activa (kits + carriers) para desglosar pedidos.
+  async obtenerConfigKits() {
+    const [kits, carriers] = await Promise.all([
+      this.listarKits({ incluirInactivos: false }),
+      this.listarCarriers({ incluirInactivos: false }),
+    ]);
+    return { kits, carriers };
+  }
+
+  // Desglosa los line items de un pedido de Shopify usando la config de kits.
+  // Función PURA (no toca la BD): recibe los line items ya normalizados
+  // ({ id, title, variant_title, quantity, sku }) y la config { kits, carriers }.
+  //
+  // Regla de asociación (elegida por el negocio): "por productos ayudantes conocidos".
+  // Si el pedido contiene un kit, todas las líneas de carriers (colores/adicionales)
+  // se consideran parte de ese kit. Si no hay kit, las líneas quedan como sueltos.
+  //
+  // Devuelve null si el pedido no contiene ningún kit (armado normal, sin agrupar).
+  desglosarLineItems(lineItems = [], config = null) {
+    const { kits = [], carriers = [] } = config || {};
+    if (!Array.isArray(lineItems) || lineItems.length === 0) return null;
+    if (kits.length === 0) return null;
+
+    const norm = (s) => String(s || '').toLowerCase().trim();
+    const matchPatron = (title, patron) => {
+      const p = norm(patron);
+      return p !== '' && norm(title).includes(p);
+    };
+
+    // Clasificar cada line item.
+    const kitLines = [];      // { item, kit }
+    const colorLines = [];    // item
+    const adicionalLines = [];// item
+    const sueltos = [];       // item
+
+    for (const item of lineItems) {
+      const title = item.title || '';
+      const kit = kits.find((k) => matchPatron(title, k.patron_shopify));
+      if (kit) { kitLines.push({ item, kit }); continue; }
+      const carrier = carriers.find((c) => matchPatron(title, c.patron_shopify));
+      if (carrier) {
+        if (carrier.tipo === 'adicional') adicionalLines.push(item);
+        else colorLines.push(item);
+        continue;
+      }
+      sueltos.push(item);
+    }
+
+    // Sin kits en el pedido: nada que agrupar.
+    if (kitLines.length === 0) return null;
+
+    // Asociar carriers al kit. Con un solo kit es directo; con varios no podemos
+    // saber a cuál pertenece cada color, así que los colgamos del primero y avisamos.
+    const ambiguo = kitLines.length > 1;
+    const kitsOut = kitLines.map(({ item, kit }, idx) => {
+      const esPrimero = idx === 0;
+      const colores = esPrimero ? colorLines : [];
+      const adicionales = esPrimero ? adicionalLines : [];
+      const fijos = (kit.kit_contenido_fijo || [])
+        .slice()
+        .sort((a, b) => (a.orden || 0) - (b.orden || 0))
+        .map((f) => ({ descripcion: f.descripcion, cantidad: f.cantidad }));
+      const coloresEsperados = Number(kit.colores_esperados) || 0;
+      let aviso = null;
+      if (esPrimero && coloresEsperados > 0) {
+        const total = colores.reduce((n, c) => n + (Number(c.quantity) || 1), 0);
+        if (total !== coloresEsperados) {
+          aviso = `Se esperaban ${coloresEsperados} colores y llegaron ${total}.`;
+        }
+      }
+      return {
+        kitLineId: item.id,
+        kitNombre: kit.nombre,
+        colorBase: item,           // el line item del kit (su variante = color base)
+        colores,
+        adicionales,
+        fijos,
+        coloresEsperados,
+        aviso,
+        ambiguo: ambiguo && esPrimero,
+      };
+    });
+
+    return { kits: kitsOut, sueltos };
+  }
+
   // ── Stock de colores "NC" (sincronización con Shopify) ────────────────────────
 
   // Listar productos cuyo SKU empieza por un prefijo (por defecto "NC").
   async listarProductosPorPrefijoSku(prefijo = 'NC') {
-    const pref = String(prefijo || 'NC').trim();
+    // Acepta un prefijo (string) o varios (array o "NC,BSA,MRT"). Normalizamos a lista.
+    const prefijos = (Array.isArray(prefijo) ? prefijo : String(prefijo || 'NC').split(','))
+      .map((p) => String(p || '').trim())
+      .filter(Boolean);
+    if (prefijos.length === 0) prefijos.push('NC');
     const { data, error } = await supabase
       .from('productos')
       .select('id, sku, nombre, stock, stock_minimo, updated_at, activo')
-      .ilike('sku', `${pref}%`)
+      .or(prefijos.map((p) => `sku.ilike.${p}%`).join(','))
       .order('nombre', { ascending: true });
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Dar de alta en la BD los productos NC que existen en Shopify pero todavía no en `productos`.
+  // Recibe [{ sku, nombre, stock }]. Inserta en lote y devuelve las filas creadas.
+  async crearProductosNC(nuevos = []) {
+    const filas = (nuevos || [])
+      .filter((n) => n && String(n.sku || '').trim())
+      .map((n) => ({
+        nombre: String(n.nombre || n.sku).trim() || String(n.sku).trim(),
+        sku: String(n.sku).trim(),
+        stock: Number(n.stock) || 0,
+        activo: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }));
+    if (filas.length === 0) return [];
+    const { data, error } = await supabase
+      .from('productos')
+      .insert(filas)
+      .select('id, sku, nombre, stock, stock_minimo, updated_at, activo');
     if (error) throw error;
     return data || [];
   }

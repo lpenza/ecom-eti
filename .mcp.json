@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "hostinger-email": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.mail.hostinger.com/mcp",
+        "--header",
+        "Authorization: Bearer ${HOSTINGER_MAIL_TOKEN}"
+      ]
+    }
+  }
+}

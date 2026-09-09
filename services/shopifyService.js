@@ -842,7 +842,11 @@ class ShopifyService {
   // Como Easify Inventory Sync mantiene iguales todas las variantes que comparten SKU,
   // basta con quedarnos con una por SKU (guardamos su inventoryItemId para poder escribir).
   async obtenerStockPorPrefijoSku(prefijo = 'NC') {
-    const pref = String(prefijo || 'NC').trim();
+    // Acepta un prefijo (string) o varios (array o "NC,BSA,MRT"). Normalizamos a lista.
+    const prefijos = (Array.isArray(prefijo) ? prefijo : String(prefijo || 'NC').split(','))
+      .map((p) => String(p || '').trim())
+      .filter(Boolean);
+    if (prefijos.length === 0) prefijos.push('NC');
     const location = await this.obtenerLocationPrincipal();
 
     const query = `query stockPorSku($q: String!, $cursor: String, $loc: ID!) {
@@ -851,6 +855,8 @@ class ShopifyService {
         edges {
           node {
             sku
+            title
+            product { title }
             inventoryItem {
               id
               inventoryLevel(locationId: $loc) {
@@ -868,7 +874,7 @@ class ShopifyService {
     do {
       const response = await axios.post(
         `https://${this.domain}/admin/api/2024-01/graphql.json`,
-        { query, variables: { q: `sku:${pref}*`, cursor, loc: location.gid } },
+        { query, variables: { q: prefijos.map((p) => `sku:${p}*`).join(' OR '), cursor, loc: location.gid } },
         { headers: this.getHeaders() }
       );
       const topErrors = response.data?.errors;
@@ -880,12 +886,19 @@ class ShopifyService {
         const v = edge.node;
         const sku = String(v.sku || '').trim();
         // La búsqueda sku:NC* puede traer coincidencias parciales; filtramos por prefijo real.
-        if (!sku || !sku.toUpperCase().startsWith(pref.toUpperCase())) continue;
+        const skuUpper = sku.toUpperCase();
+        if (!sku || !prefijos.some((p) => skuUpper.startsWith(p.toUpperCase()))) continue;
         const inventoryItemId = String(v.inventoryItem?.id || '').replace('gid://shopify/InventoryItem/', '');
         const available = (v.inventoryItem?.inventoryLevel?.quantities || [])
           .find((q) => q.name === 'available')?.quantity ?? 0;
+        // Nombre para dar de alta el producto si todavía no existe en la BD.
+        const productTitle = String(v.product?.title || '').trim();
+        const variantTitle = String(v.title || '').trim();
+        const nombre = [productTitle, variantTitle && variantTitle.toLowerCase() !== 'default title' ? variantTitle : '']
+          .filter(Boolean)
+          .join(' - ') || sku;
         if (!porSku.has(sku)) {
-          porSku.set(sku, { available, inventoryItemId });
+          porSku.set(sku, { available, inventoryItemId, nombre });
         }
       }
       cursor = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;

@@ -30,13 +30,38 @@ PORT=3000
 # Tracking link para mensajes
 UES_TRACKING_URL_TEMPLATE=https://tu-tracking.ues.com.uy/seguimiento/{tracking}
 
-# Email (SMTP)
-SMTP_HOST=smtp.tu-proveedor.com
-SMTP_PORT=587
-SMTP_USER=tu_usuario
+# Email — ENVÍO por SMTP (nodemailer). Panel EMAILS y notificaciones.
+# En Hostinger: smtp.hostinger.com:465 (secure). El usuario/clave es el del buzón
+# madre info@velinneuy.com; se puede enviar con From = alias (ventas@).
+SMTP_HOST=smtp.hostinger.com
+SMTP_PORT=465
+SMTP_USER=info@velinneuy.com
 SMTP_PASS=tu_password
-SMTP_FROM=envios@tu-dominio.com
-SMTP_SECURE=false
+SMTP_FROM=info@velinneuy.com
+SMTP_SECURE=true
+
+# Email — LECTURA por Hostinger Mail REST API (panel EMAILS).
+# Token Bearer creado en el panel de Hostinger (Emails → API / Agentic Mail).
+# HOSTINGER_MAILBOX_ID es opcional: si se omite se resuelve solo desde /me.
+HOSTINGER_MAIL_TOKEN=tu_token_de_hostinger
+HOSTINGER_MAILBOX_ID=
+# HOSTINGER_MAIL_BASE=https://api.mail.hostinger.com
+# HOSTINGER_MAIL_FOLDER=INBOX
+# HOSTINGER_SENT_FOLDER=INBOX.Sent
+
+# IMAP para guardar copia en "Enviados" al enviar (el SMTP no lo hace solo).
+# Si se omiten USER/PASS se reutilizan los de SMTP (mismo buzón info@).
+# IMAP_HOST=imap.hostinger.com
+# IMAP_PORT=993
+# IMAP_SECURE=true
+# IMAP_USER=info@velinneuy.com
+# IMAP_PASS=tu_password
+
+# Alias del buzón madre. MAIL_ALIASES = lista que ve el admin (separados por coma).
+# MAIL_ALIASES_ATENCION = alias que ve/usa el rol "atención al cliente".
+MAIL_MADRE=info@velinneuy.com
+MAIL_ALIASES=info@velinneuy.com,ventas@velinneuy.com,consultas@velinneuy.com,facturacion@velinneuy.com
+MAIL_ALIASES_ATENCION=consultas@velinneuy.com
 
 # WhatsApp (elige proveedor: twilio o meta)
 WHATSAPP_PROVIDER=twilio

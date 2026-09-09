@@ -1,4 +1,28 @@
 const nodemailer = require('nodemailer');
+const MailComposer = require('nodemailer/lib/mail-composer');
+const { ImapFlow } = require('imapflow');
+
+// Guarda una copia del correo en la carpeta Enviados vía IMAP APPEND. El envío
+// por SMTP no la guarda solo (lo hace el cliente de correo), así replicamos ese
+// comportamiento para que el panel de EMAILS muestre los enviados. Best-effort:
+// si falla, no rompe el envío.
+async function appendToSent(rawBuffer) {
+  const host = process.env.IMAP_HOST || 'imap.hostinger.com';
+  const port = Number(process.env.IMAP_PORT || 993);
+  const secure = toBool(process.env.IMAP_SECURE, port === 993);
+  const user = process.env.IMAP_USER || process.env.SMTP_USER;
+  const pass = process.env.IMAP_PASS || process.env.SMTP_PASS;
+  if (!user || !pass) return;
+
+  const folder = process.env.HOSTINGER_SENT_FOLDER || 'INBOX.Sent';
+  const client = new ImapFlow({ host, port, secure, auth: { user, pass }, logger: false });
+  await client.connect();
+  try {
+    await client.append(folder, rawBuffer, ['\\Seen']);
+  } finally {
+    try { await client.logout(); } catch { /* noop */ }
+  }
+}
 
 function toBool(value, defaultValue = false) {
   if (value == null) return defaultValue;
@@ -105,6 +129,48 @@ class EmailService {
       subject,
       html,
     });
+
+    return {
+      messageId: info.messageId,
+      accepted: info.accepted || [],
+      rejected: info.rejected || [],
+    };
+  }
+
+  /**
+   * Envío genérico para el panel de EMAILS (respuestas y correos nuevos).
+   * Permite fijar el remitente (alias) y las cabeceras de hilo para que las
+   * respuestas queden enlazadas en el cliente del destinatario.
+   */
+  async enviarCorreoRaw({ from, to, cc, subject, html, text, inReplyTo, references, replyTo }) {
+    const transporter = this.getTransporter();
+    const fromDefault = process.env.SMTP_FROM || process.env.SMTP_USER;
+
+    if (!to) {
+      throw new Error('Falta el destinatario (to)');
+    }
+
+    const mailOptions = {
+      from: from || fromDefault,
+      to,
+      cc: cc || undefined,
+      replyTo: replyTo || undefined,
+      subject: subject || '(sin asunto)',
+      html: html || undefined,
+      text: text || undefined,
+      inReplyTo: inReplyTo || undefined,
+      references: references || undefined,
+    };
+
+    const info = await transporter.sendMail(mailOptions);
+
+    // Guardar copia en Enviados (best-effort; no bloquea ni rompe el envío).
+    try {
+      const raw = await new MailComposer(mailOptions).compile().build();
+      await appendToSent(raw);
+    } catch (err) {
+      console.error('No se pudo guardar copia en Enviados:', err.message);
+    }
 
     return {
       messageId: info.messageId,

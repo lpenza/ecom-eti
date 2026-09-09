@@ -121,23 +121,6 @@ export function usePedidos() {
     }
   }, [cargarPedidos]);
 
-  // Reenviar notificacion de tracking para un pedido puntual
-  const notificarTrackingPedido = useCallback(async (pedidoId, options = {}) => {
-    console.log(`📨 Reenviando tracking para pedido ${pedidoId}...`);
-    setLoading(true);
-    setLoadingText('Enviando notificacion de tracking...');
-
-    try {
-      const result = await api.notificarTrackingPedido(pedidoId, options);
-      return { success: true, ...result };
-    } catch (error) {
-      console.error('❌ Error reenviando tracking:', error);
-      return { success: false, error: error.message };
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   // Marcar pedido como notificado (para envios manuales de WhatsApp)
   const marcarPedidoNotificado = useCallback(async (pedidoId) => {
     console.log(`✓ Marcando pedido ${pedidoId} como notificado...`);
@@ -498,7 +481,6 @@ export function usePedidos() {
     cargarPedidos,
     sincronizarShopify,
     ejecutarFulfillmentShopify,
-    notificarTrackingPedido,
     marcarPedidoNotificado,
     actualizarRevisionContacto,
     marcarRevisionContactoContactado,

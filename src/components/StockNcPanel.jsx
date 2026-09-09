@@ -61,10 +61,15 @@ export default function StockNcPanel({ mostrarToast }) {
       }
       const r = res.resumen || {};
       let msg = `${r.actualizados} actualizado(s) desde Shopify`;
+      if (r.creados) msg += ` · ${r.creados} nuevo(s)`;
       if (r.sinCambios) msg += ` · ${r.sinCambios} sin cambios`;
       mostrarToast?.(msg, 'success');
-      if (Array.isArray(r.soloEnShopify) && r.soloEnShopify.length > 0) {
-        mostrarToast?.(`${r.soloEnShopify.length} SKU(s) en Shopify sin producto en la base`, 'warning');
+      // SKUs que quedaron en Shopify sin poder darse de alta en la base (p.ej. error al crear).
+      const noCreados = Array.isArray(r.soloEnShopify)
+        ? r.soloEnShopify.length - (Number(r.creados) || 0)
+        : 0;
+      if (noCreados > 0) {
+        mostrarToast?.(`${noCreados} SKU(s) en Shopify no se pudieron dar de alta`, 'warning');
       }
       await cargar();
     } catch (err) {
