@@ -1,22 +1,45 @@
 import React from 'react';
 
-function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillment, onCancelarFulfillment, fulfillmentPreviewCount, fulfillmentPreviewTotalCount, fulfillmentReadyCount, notifPreview, notifChannelFilter, onNotifChannelFilter, channelPriority, onChannelPriorityChange, pendingCount, uesAuthenticated, validarLabel = '1) ✅ Validar Pedidos', validarRequiereUes = true, activeTrackingTemplate, templates, onTrackingTemplateChange }) {
+function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillment, onCancelarFulfillment, fulfillmentPreviewCount, fulfillmentPreviewTotalCount, fulfillmentReadyCount, notifPreview, notifChannelFilter, onNotifChannelFilter, channelPriority, onChannelPriorityChange, pendingCount, uesAuthenticated, validarLabel = '1) ✅ Validar Pedidos', validarRequiereUes = true, activeTrackingTemplate, templates, onTrackingTemplateChange, onSincronizarML, mlEstado, soloMercadoLibre = false }) {
 
   const handleChipClick = (canal) => {
     onNotifChannelFilter?.(notifChannelFilter === canal ? null : canal);
   };
 
+  // El botón de ML sólo aparece si hay credenciales cargadas. Si la app todavía
+  // no fue autorizada, el clic abre el OAuth en vez de sincronizar.
+  const mlVisible = Boolean(onSincronizarML && mlEstado?.configurado);
+  const mlConectado = Boolean(mlEstado?.conectado);
+
   return (
     <div className="toolbar">
-      <button
-        className="btn btn-success"
-        onClick={onValidar}
-        disabled={pendingCount === 0 || (validarRequiereUes && !uesAuthenticated)}
-      >
-        {validarLabel}
-      </button>
+      {/* En la pestaña de ML no se valida ni se manda tracking: la etiqueta la
+          emite MercadoLibre y es MercadoLibre quien le avisa al comprador. */}
+      {!soloMercadoLibre && (
+        <button
+          className="btn btn-success"
+          onClick={onValidar}
+          disabled={pendingCount === 0 || (validarRequiereUes && !uesAuthenticated)}
+        >
+          {validarLabel}
+        </button>
+      )}
 
-      {fulfillmentPreviewCount !== null ? (
+      {mlVisible && (
+        <button
+          className={`btn ${mlConectado ? 'btn-secondary' : 'btn-primary'}`}
+          onClick={onSincronizarML}
+          title={mlConectado
+            ? `Traer ventas de MercadoLibre (${mlEstado.nickname || mlEstado.sellerId}) y bajar sus etiquetas`
+            : `Conectar la cuenta de MercadoLibre — ${mlEstado?.motivo || 'sin autorizar'}`}
+        >
+          {mlConectado ? '🛒 Sincronizar ML' : '🔌 Conectar MercadoLibre'}
+        </button>
+      )}
+
+      {/* Todo el bloque de tracking (enviar, prioridad de canal, plantilla)
+          se oculta en la pestana de ML: a esos compradores les avisa ML. */}
+      {!soloMercadoLibre && (fulfillmentPreviewCount !== null ? (
         <>
           {notifPreview && (
             <div className="notif-preview-chips">
@@ -96,7 +119,7 @@ function Toolbar({ onSincronizar, onValidar, onFulfillment, onConfirmarFulfillme
           )}
 
         </>
-      )}
+      ))}
     </div>
   );
 }

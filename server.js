@@ -59,6 +59,7 @@ const marcoPostalWebService = require('./services/marcoPostalWebService');
 const etiquetaPdfService = require('./services/etiquetaPdfService');
 const etiquetaPdfCleanup = require('./services/etiquetaPdfCleanup');
 const shopifyService = require('./services/shopifyService');
+const mercadolibreService = require('./services/mercadolibreService');
 const facturacionParserService = require('./services/facturacionParserService');
 const facturacionAuditService = require('./services/facturacionAuditService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
@@ -3143,6 +3144,298 @@ app.post('/api/sincronizar-shopify', async (req, res) => {
   }
 });
 
+// ==================== MERCADOLIBRE ====================
+// Las ventas de ML se espejan en la MISMA tabla `pedidos` que las de Shopify
+// (columna `origen`), así aparecen en el panel, en la cola del armador y en
+// cadetería sin duplicar pantallas. Ver sql/create_mercadolibre.sql.
+
+// Un carrito de ML son varias ventas que viajan en un solo paquete: se agrupan
+// por `pack_id` para que el armador vea un pedido, no tres.
+function agruparVentasPorPaquete(ventas) {
+  const grupos = new Map();
+  for (const venta of ventas) {
+    const clave = venta.pack_id ? `pack-${venta.pack_id}` : `order-${venta.id}`;
+    if (!grupos.has(clave)) grupos.set(clave, []);
+    grupos.get(clave).push(venta);
+  }
+  // Orden estable dentro del paquete: ML no garantiza el orden de /orders/search
+  // y la primera venta del grupo es la que aporta el ml_order_id del pedido.
+  for (const lista of grupos.values()) {
+    lista.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  }
+  return grupos;
+}
+
+// URL que se guarda en el pedido para la etiqueta de ML. Apunta al endpoint
+// (que re-descarga si el archivo no esta) y no al path estatico de public/,
+// que se pierde en cada deploy porque el filesystem del contenedor es efimero.
+function urlEtiquetaML(shipmentId) {
+  return '/api/mercadolibre/etiqueta-pdf/' + encodeURIComponent(String(shipmentId));
+}
+
+// Sincroniza las ventas de las últimas `horas` y baja las etiquetas de Mercado
+// Envíos que estén disponibles. Compartida por el endpoint manual, el webhook
+// y el cron.
+async function sincronizarMercadoLibre({ horas = 72, ventasPrecargadas = null } = {}) {
+  const ventas = ventasPrecargadas || await mercadolibreService.obtenerVentasRecientes(horas);
+  const grupos = agruparVentasPorPaquete(ventas);
+
+  const resumen = { nuevos: 0, actualizados: 0, etiquetas: 0, errores: [] };
+
+  for (const [clave, ordenes] of grupos) {
+    try {
+      // Todas las ventas del pack comparten envío y comprador: normalizamos la
+      // primera (una sola llamada a /shipments) y sumamos los ítems del resto.
+      const base = await mercadolibreService.normalizarVenta(ordenes[0]);
+      for (const otra of ordenes.slice(1)) {
+        (otra.order_items || []).forEach((it) => {
+          base.ml_items.push({
+            id: String(it.item?.id || ''),
+            title: it.item?.title || '',
+            variant_title: (it.item?.variation_attributes || [])
+              .map((a) => `${a.name}: ${a.value_name}`).join(' / ') || null,
+            quantity: it.quantity || 1,
+            sku: it.item?.seller_sku || it.item?.seller_custom_field || null,
+          });
+        });
+      }
+
+      // El número visible en el panel. Prefijo ML- para distinguirlo de un
+      // número de orden de Shopify de un vistazo (y en las búsquedas).
+      base.numero_pedido = `ML-${clave.replace(/^(pack|order)-/, '')}`;
+
+      const { pedido, creado } = await supabaseService.upsertPedidoMercadoLibre(base);
+      resumen[creado ? 'nuevos' : 'actualizados'] += 1;
+
+      // Etiqueta de Mercado Envíos: la emite ML, la bajamos y la enganchamos al
+      // pedido en el mismo campo que usan UES y Marco Postal, así el botón de
+      // imprimir del panel funciona sin cambios.
+      if (base.etiquetaLaPoneML && base.ml_shipment_id && !pedido.ml_etiqueta_at) {
+        try {
+          await mercadolibreService.descargarEtiqueta(base.ml_shipment_id);
+          await supabaseService.actualizarPedido(pedido.id, {
+            link_etiqueta_drive: urlEtiquetaML(base.ml_shipment_id),
+            etiqueta_generada: true,
+            estado: pedido.estado === 'pendiente' ? 'etiqueta_generada' : pedido.estado,
+            ml_etiqueta_at: new Date().toISOString(),
+          });
+          resumen.etiquetas += 1;
+        } catch (err) {
+          // La etiqueta puede no estar lista apenas entra la venta: no es un
+          // error del sync, el próximo intento la levanta.
+          logService.warning(`[ML] Etiqueta pendiente para ${base.numero_pedido}: ${err.message}`);
+        }
+      }
+    } catch (err) {
+      logService.error(`[ML] Error sincronizando ${clave}`, err);
+      resumen.errores.push({ clave, error: err.message });
+    }
+  }
+
+  // Segunda pasada: pedidos viejos cuya etiqueta todavía no habíamos podido bajar.
+  try {
+    const pendientes = await supabaseService.obtenerPedidosMlSinEtiqueta();
+    for (const p of pendientes) {
+      if (!mercadolibreService.LOGISTIC_TYPES_ME?.has?.(String(p.ml_logistic_type))) continue;
+      try {
+        await mercadolibreService.descargarEtiqueta(p.ml_shipment_id);
+        await supabaseService.actualizarPedido(p.id, {
+          link_etiqueta_drive: urlEtiquetaML(p.ml_shipment_id),
+          etiqueta_generada: true,
+          ml_etiqueta_at: new Date().toISOString(),
+        });
+        resumen.etiquetas += 1;
+      } catch (_) { /* sigue pendiente para la próxima corrida */ }
+    }
+  } catch (err) {
+    logService.warning(`[ML] No se pudieron revisar etiquetas pendientes: ${err.message}`);
+  }
+
+  return resumen;
+}
+
+// Estado de la conexión (lo consulta el panel para mostrar el botón correcto).
+app.get('/api/mercadolibre/estado', requireAuth, async (req, res) => {
+  try {
+    res.json({ success: true, ...(await mercadolibreService.estado()) });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// El `state` del OAuth va FIRMADO (JWT de 10 min) en vez de guardado en memoria:
+// entre que se abre el link de ML y vuelve el callback puede pasar un redeploy,
+// y una lista en memoria se pierde en cada reinicio (y no la comparten dos
+// instancias), lo que hacía fallar la autorización sin dejar rastro en el log.
+function firmarStateML() {
+  return jwt.sign({ p: 'ml-oauth', n: crypto.randomBytes(8).toString('hex') }, JWT_SECRET, { expiresIn: '10m' });
+}
+
+function stateMLValido(state) {
+  try {
+    return jwt.verify(String(state || ''), JWT_SECRET)?.p === 'ml-oauth';
+  } catch {
+    return false;
+  }
+}
+
+// Paso 1 del OAuth: le damos al admin el link de autorización de ML.
+app.get('/api/mercadolibre/auth-url', requireAuth, requireAdmin, (req, res) => {
+  try {
+    res.json({ success: true, url: mercadolibreService.urlAutorizacion(firmarStateML()) });
+  } catch (error) {
+    res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+// Paso 2 del OAuth: ML redirige acá con el `code`. Es la URL que hay que cargar
+// como "Redirect URI" en la app de developers.mercadolibre.com.uy.
+app.get('/api/mercadolibre/callback', async (req, res) => {
+  const { code, state, error: errorMl } = req.query;
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+
+  // Todos los rechazos dejan log: un callback que falla en silencio es imposible
+  // de diagnosticar después (no hay nada del lado del navegador que se conserve).
+  if (errorMl) {
+    logService.warning(`[ML] Callback rechazado por ML: ${errorMl} ${req.query.error_description || ''}`);
+    return res.status(400).send(`<h3>MercadoLibre rechazó la autorización: ${errorMl}</h3>`);
+  }
+  if (!code) {
+    logService.warning('[ML] Callback sin parámetro code');
+    return res.status(400).send('<h3>Falta el parámetro <code>code</code>.</h3>');
+  }
+  if (!stateMLValido(state)) {
+    logService.warning('[ML] Callback con state inválido o vencido');
+    return res.status(400).send('<h3>Autorización vencida o inválida. Volvé a apretar "Conectar MercadoLibre".</h3>');
+  }
+
+  try {
+    const guardado = await mercadolibreService.canjearCodigo(String(code));
+    res.send(`<h3>✅ MercadoLibre conectado (seller ${guardado.seller_id}). Ya podés cerrar esta pestaña.</h3>`);
+  } catch (error) {
+    logService.error('Error conectando MercadoLibre', error);
+    res.status(500).send(`<h3>❌ No se pudo conectar: ${error.message}</h3>`);
+  }
+});
+
+// Sincronización manual desde el panel.
+app.post('/api/mercadolibre/sincronizar', requireAuth, async (req, res) => {
+  try {
+    const horas = Number(req.body?.horas || 72);
+    const resumen = await sincronizarMercadoLibre({ horas });
+    logService.info(
+      `[ML] Sync: ${resumen.nuevos} nuevos, ${resumen.actualizados} actualizados, ${resumen.etiquetas} etiquetas`
+    );
+    res.json({ success: true, ...resumen });
+  } catch (error) {
+    logService.error('Error sincronizando MercadoLibre', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Etiqueta ("carpeta") de un pedido de Mercado Envíos. Devuelve la URL pública
+// del PDF ya descargado; con ?forzar=1 la vuelve a pedir a ML.
+app.get('/api/mercadolibre/etiqueta/:pedidoId', requireAuth, async (req, res) => {
+  try {
+    const pedido = await supabaseService.obtenerPedido(req.params.pedidoId);
+    if (!pedido) return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    if (!pedido.ml_shipment_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Este pedido no tiene envío de Mercado Envíos (se despacha por nuestra cuenta)',
+      });
+    }
+
+    await mercadolibreService.descargarEtiqueta(pedido.ml_shipment_id, {
+      forzar: String(req.query.forzar || '') === '1',
+    });
+    const url = urlEtiquetaML(pedido.ml_shipment_id);
+    await supabaseService.actualizarPedido(pedido.id, {
+      link_etiqueta_drive: url,
+      etiqueta_generada: true,
+      ml_etiqueta_at: new Date().toISOString(),
+    });
+    res.json({ success: true, pdfUrl: url });
+  } catch (error) {
+    logService.error('Error obteniendo etiqueta de MercadoLibre', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Sirve el PDF de la etiqueta de Mercado Envíos. Es la URL que se guarda en
+// `link_etiqueta_drive`, NO el path estático: el filesystem de Railway es efímero
+// y un redeploy borra public/. Si el archivo no está, se vuelve a pedir a ML y se
+// sirve igual — misma estrategia que /api/marcopostal/etiqueta-web.
+// Sin auth a propósito: lo consumen un <iframe> y un <a download>, que no pueden
+// mandar el header Authorization.
+app.get('/api/mercadolibre/etiqueta-pdf/:shipmentId', async (req, res) => {
+  const shipmentId = String(req.params.shipmentId || '').trim().replace(/\.pdf$/i, '');
+  const forzar = String(req.query.force || '') === 'true';
+  const comoDescarga = String(req.query.download || '') === '1';
+
+  try {
+    const fp = mercadolibreService.rutaEtiquetaLocal(shipmentId);
+    if (forzar || !require('fs').existsSync(fp)) {
+      await mercadolibreService.descargarEtiqueta(shipmentId, { forzar });
+    }
+
+    // El Content-Type se fija explícito porque un middleware global deja todas las
+    // respuestas en application/json; sin esto el navegador no abre el visor de PDF.
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `${comoDescarga ? 'attachment' : 'inline'}; filename="etiqueta-ml-${shipmentId}.pdf"`
+    );
+    return require('fs').createReadStream(fp).pipe(res);
+  } catch (error) {
+    logService.error(`[ML] No se pudo servir la etiqueta ${shipmentId}`, error);
+    // JSON explícito: si cayera en el catch-all del SPA devolvería un HTML con 200
+    // y el visor mostraría la app entera en vez del PDF (bug que ya nos pasó).
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.status(502).json({ success: false, error: error.message });
+  }
+});
+
+// Webhook de notificaciones de ML (topics `orders_v2` y `shipments`). Se registra
+// en la app de developers como URL de callback de notificaciones. ML espera un
+// 200 en menos de 500 ms: respondemos primero y procesamos después.
+app.post('/api/mercadolibre/webhook', (req, res) => {
+  res.status(200).json({ success: true });
+
+  const { topic, resource } = req.body || {};
+  const orderId = String(resource || '').match(/\/orders\/(\d+)/)?.[1];
+
+  (async () => {
+    try {
+      if (topic === 'orders_v2' && orderId) {
+        const venta = await mercadolibreService.obtenerVenta(orderId);
+        if (venta.status !== 'paid' && venta.status !== 'partially_paid') return;
+
+        // Si la venta es parte de un carrito hay que traer las hermanas: el
+        // pedido del panel las agrupa y syncear sólo ésta le borraría los ítems.
+        let ventas = [venta];
+        if (venta.pack_id) {
+          try {
+            const delPack = await mercadolibreService.obtenerVentasDelPack(venta.pack_id);
+            if (delPack.length > 0) ventas = delPack;
+          } catch (err) {
+            logService.warning(`[ML] No se pudo leer el pack ${venta.pack_id}: ${err.message}`);
+          }
+        }
+
+        await sincronizarMercadoLibre({ ventasPrecargadas: ventas });
+        logService.info(`[ML] Webhook: venta ${orderId} sincronizada`);
+      } else if (topic === 'shipments') {
+        // Cambió el envío (ya hay etiqueta, o cambió la dirección): la ventana
+        // corta alcanza para tomar la venta asociada sin barrer todo.
+        await sincronizarMercadoLibre({ horas: 24 });
+      }
+    } catch (err) {
+      logService.error('[ML] Error procesando webhook', err);
+    }
+  })();
+});
+
 // Minutos de espera entre el fulfillment de MarcoPostal y el de los pickup.
 const PICKUP_FULFILLMENT_DELAY_MIN = Number(process.env.PICKUP_FULFILLMENT_DELAY_MIN || 30);
 
@@ -3322,6 +3615,24 @@ async function handleFulfillmentShopify(req, res) {
         const esPickup = pedido.tipo_envio === 'pickup_local';
         if (esPickup && difierePickup) {
           // No se despacha ahora: se programa después, en una sola tanda.
+          continue;
+        }
+
+        // MercadoLibre no tiene fulfillment que empujar: el estado del envío y el
+        // aviso al comprador los maneja ML. Acá sólo cerramos el pedido de este lado.
+        if (pedido.origen === 'mercadolibre') {
+          await supabaseService.actualizarPedido(pedido.id, {
+            estado: 'enviado',
+            notificacion_enviada_at: new Date().toISOString(),
+          });
+          logService.info(`✅ Pedido ML #${pedido.numero_pedido} marcado como enviado (ML notifica al comprador)`);
+          resultados.push({
+            pedidoId: pedido.id,
+            shopifyOrderId: null,
+            success: true,
+            fulfillmentId: null,
+            pedido,
+          });
           continue;
         }
 
@@ -3987,6 +4298,25 @@ app.post('/api/analytics/color-trends/refresh', requireAuth, async (req, res) =>
 app.get('/api/pedido-detalle/:numeroPedido', requireAuth, async (req, res) => {
   try {
     const { numeroPedido } = req.params;
+
+    // Pedidos de MercadoLibre: los ítems ya vienen guardados en el alta (ML tiene
+    // rate limit, no conviene pegarle en cada apertura del modal de armado).
+    if (/^ML-/i.test(String(numeroPedido))) {
+      const pedidoMl = await supabaseService.obtenerPedidoPorNumero(numeroPedido);
+      if (!pedidoMl) {
+        return res.status(404).json({ success: false, error: `Pedido ${numeroPedido} no encontrado` });
+      }
+      const lineItems = (pedidoMl.ml_items || []).filter((i) => (i.quantity || 0) > 0);
+      let desgloseMl = null;
+      try {
+        const config = await supabaseService.obtenerConfigKits();
+        desgloseMl = supabaseService.desglosarLineItems(lineItems, config);
+      } catch (e) {
+        logService.error('Error calculando desglose de kit para pedido ML (se ignora)', e);
+      }
+      return res.json({ success: true, lineItems, desglose: desgloseMl });
+    }
+
     const shopifyOrderId = await shopifyService.obtenerIdPorNumeroPedido(numeroPedido);
     if (!shopifyOrderId) {
       return res.status(404).json({ success: false, error: `Orden #${numeroPedido} no encontrada en Shopify` });
@@ -5319,6 +5649,24 @@ app.post('/api/ues/combinar-pdfs', async (req, res) => {
       const mMpStatic = u.match(/^\/etiquetas-marcopostal\/([^?#/]+)\.pdf$/);
       if (mMpStatic) return await renderOrReadMp(mMpStatic[1]);
 
+      // 2.b) Etiqueta de MercadoLibre. Se aceptan las dos formas: el endpoint
+      // actual y el path estático que guardaban los pedidos viejos. Si el PDF no
+      // está en disco (deploy nuevo) se lo pedimos a ML en el momento.
+      const mMl = u.match(/^\/api\/mercadolibre\/etiqueta-pdf\/([^?#/]+)/)
+        || u.match(/^\/etiquetas-mercadolibre\/([^?#/]+)\.pdf$/);
+      if (mMl) {
+        const shipmentId = decodeURIComponent(mMl[1]).replace(/\.pdf$/i, '');
+        const fp = mercadolibreService.rutaEtiquetaLocal(shipmentId);
+        if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
+        try {
+          await mercadolibreService.descargarEtiqueta(shipmentId);
+          if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
+        } catch (err) {
+          logService.warning(`[combinar-pdfs] ML etiqueta ${shipmentId}: ${err.message}`);
+        }
+        return null;
+      }
+
       // 3) URL absoluta (Drive u otra) → axios.get
       if (/^https?:\/\//i.test(u)) {
         try {
@@ -5778,6 +6126,23 @@ app.post('/api/drive-etiquetas/merge-pdf', async (req, res) => {
         } catch (err) {
           logService.warning(`[MergePDF] MP render fallback falló: ${err.message}`);
         }
+      }
+      return null;
+    }
+
+    // 2.b) Etiqueta de MercadoLibre. Hoy un pedido de ML no llega a esta tabla
+    // (son 'estandar', no pickup/recibilo), pero sin esta rama la impresión en
+    // lote lo saltearía en silencio si alguna vez cambia de tipo de envío.
+    const mMl = linkStr.match(/^\/api\/mercadolibre\/etiqueta-pdf\/([^?#/]+)/)
+      || linkStr.match(/^\/etiquetas-mercadolibre\/([^?#/]+)\.pdf$/);
+    if (mMl) {
+      const shipmentId = decodeURIComponent(mMl[1]).replace(/\.pdf$/i, '');
+      const fp = mercadolibreService.rutaEtiquetaLocal(shipmentId);
+      try {
+        if (!fsLocal.existsSync(fp)) await mercadolibreService.descargarEtiqueta(shipmentId);
+        if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
+      } catch (err) {
+        logService.warning(`[MergePDF] ML etiqueta ${shipmentId}: ${err.message}`);
       }
       return null;
     }
@@ -6500,6 +6865,35 @@ app.listen(PORT, async () => {
       }
     });
     console.log(`🎨 Cron sync stock NC activo (${stockCron})`);
+  }
+
+  // Cron: traer ventas de MercadoLibre al panel y bajar las etiquetas de Mercado
+  // Envíos que ya estén emitidas. Cada 10 min por defecto. El webhook de ML es
+  // el camino instantáneo; esto es la red de seguridad (y lo único que corre si
+  // el webhook todavía no está registrado). Se apaga con ML_SYNC_ENABLED=false.
+  if (String(process.env.ML_SYNC_ENABLED || 'true').toLowerCase() !== 'false'
+      && mercadolibreService.configurado()) {
+    const mlCron = process.env.ML_SYNC_CRON || '*/10 * * * *';
+    cron.schedule(mlCron, async () => {
+      try {
+        const r = await sincronizarMercadoLibre({ horas: Number(process.env.ML_SYNC_HORAS || 72) });
+        if (r.nuevos || r.etiquetas) {
+          logService.info(`[cron] Sync ML: ${r.nuevos} nuevos, ${r.etiquetas} etiquetas`, r);
+        }
+        if (r.nuevos > 0) {
+          await notificar({
+            tipo: 'mercadolibre',
+            nivel: 'info',
+            titulo: `${r.nuevos} venta(s) nueva(s) de MercadoLibre`,
+            mensaje: `Entraron al panel${r.etiquetas ? ` y se bajaron ${r.etiquetas} etiqueta(s)` : ''}.`,
+            data: r,
+          });
+        }
+      } catch (err) {
+        logService.error('[cron] Error sincronizando MercadoLibre', err);
+      }
+    });
+    console.log(`🛒 Cron MercadoLibre activo (${mlCron})`);
   }
 
   // Cron: vigilancia de correos nuevos. Revisa la bandeja y deja una notificación

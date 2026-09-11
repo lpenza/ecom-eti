@@ -301,6 +301,12 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
                     <span>Orden</span>
                     <strong>#{pedido.numero_pedido}</strong>
                   </div>
+                  {pedido.origen === 'mercadolibre' && (
+                    <div className="preview-sidebar-single-row">
+                      <span>Origen</span>
+                      <span className="pedido-ml-badge">🛒 MERCADOLIBRE</span>
+                    </div>
+                  )}
                   <div className="preview-sidebar-single-row">
                     <span>Cliente</span>
                     <strong>{pedido.cliente_nombre || '-'}</strong>

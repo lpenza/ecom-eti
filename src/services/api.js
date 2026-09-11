@@ -173,6 +173,37 @@ export async function sincronizarShopify() {
 }
 
 /**
+ * Traer ventas de MercadoLibre al panel (y bajar las etiquetas de Mercado Envíos).
+ */
+export async function sincronizarMercadoLibre(horas = 72) {
+  return await fetchAPI('/mercadolibre/sincronizar', {
+    method: 'POST',
+    body: JSON.stringify({ horas }),
+  });
+}
+
+/**
+ * Estado de la conexión con MercadoLibre (configurado / conectado / motivo).
+ */
+export async function obtenerEstadoMercadoLibre() {
+  return await fetchAPI('/mercadolibre/estado');
+}
+
+/**
+ * Link de autorización OAuth de MercadoLibre (solo admin).
+ */
+export async function obtenerAuthUrlMercadoLibre() {
+  return await fetchAPI('/mercadolibre/auth-url');
+}
+
+/**
+ * Descargar/refrescar la etiqueta de Mercado Envíos de un pedido.
+ */
+export async function obtenerEtiquetaMercadoLibre(pedidoId, forzar = false) {
+  return await fetchAPI(`/mercadolibre/etiqueta/${pedidoId}${forzar ? '?forzar=1' : ''}`);
+}
+
+/**
  * ⚠️ TEMPORAL: Reprocesar pedido de Shopify que no entró por webhook
  * Cuando ya no se necesite, eliminar esta función y el panel en App.jsx
  */

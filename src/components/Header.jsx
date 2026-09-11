@@ -68,6 +68,15 @@ function Header({ stats, activeFilter, onFilterChange, onLoginUES, uesAuthentica
           <div className="stat-value">{stats.recibilo || 0}</div>
           <div className="stat-label">⚡ Recibilo Hoy</div>
         </button>
+        <button
+          className={`stat-card stat-card-ml ${activeFilter === 'mercadolibre' ? 'stat-card-active' : ''}`}
+          onClick={() => onFilterChange?.('mercadolibre')}
+          type="button"
+          title="Ventas de MercadoLibre activas"
+        >
+          <div className="stat-value">{stats.mercadolibre || 0}</div>
+          <div className="stat-label">🛒 ML</div>
+        </button>
         {esAdmin && (
           <button
             className={`stat-card stat-card-reenvio ${activeFilter === 'reenvios' ? 'stat-card-active' : ''}`}

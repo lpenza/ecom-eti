@@ -2867,6 +2867,152 @@ class SupabaseService {
     if (error) throw error;
     return data || [];
   }
+
+  // ── MercadoLibre ────────────────────────────────────────────────────────────
+
+  // Credenciales OAuth (fila única id=1 de ml_config). Devuelve null si la tabla
+  // todavía no existe: el panel muestra "no conectado" en vez de romperse.
+  async obtenerConfigML() {
+    const { data, error } = await supabase
+      .from('ml_config')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+    if (error) {
+      console.warn('⚠️  No se pudo leer ml_config:', error.message);
+      return null;
+    }
+    return data || null;
+  }
+
+  async guardarConfigML(registro) {
+    const { data, error } = await supabase
+      .from('ml_config')
+      .upsert({ id: 1, ...registro, updated_at: new Date().toISOString() }, { onConflict: 'id' })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async obtenerPedidoPorMlOrderId(mlOrderId) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .eq('ml_order_id', String(mlOrderId))
+      .maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async obtenerPedidoPorNumero(numeroPedido) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .eq('numero_pedido', String(numeroPedido))
+      .maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  // Alta/actualización de un pedido venido de MercadoLibre. `datos` sale de
+  // mercadolibreService.normalizarVenta() ya fusionado por paquete.
+  //
+  // Al actualizar sólo se tocan los campos que ML manda y que todavía pueden
+  // cambiar (dirección hasta que sale el envío, ids de envío, etiqueta). Nunca
+  // se pisa `estado`, `etiqueta_impresa` ni el armado: eso lo maneja el panel.
+  async upsertPedidoMercadoLibre(datos) {
+    // La clave es `numero_pedido` (ML-<pack o order>), que es estable corrida a
+    // corrida. Buscar por ml_order_id daría de alta un pedido duplicado si en un
+    // carrito ML devuelve las ventas en otro orden. El ml_order_id queda como
+    // respaldo para pedidos dados de alta antes de tener el pack armado.
+    const existente = await this.obtenerPedidoPorNumero(datos.numero_pedido)
+      || await this.obtenerPedidoPorMlOrderId(datos.ml_order_id);
+    const ahora = new Date().toISOString();
+
+    const camposML = {
+      ml_order_id: datos.ml_order_id,
+      ml_pack_id: datos.ml_pack_id,
+      ml_shipment_id: datos.ml_shipment_id,
+      ml_logistic_type: datos.ml_logistic_type,
+      ml_shipping_mode: datos.ml_shipping_mode,
+      ml_items: datos.ml_items,
+      ml_referencia: datos.ml_referencia,
+      updated_at: ahora,
+    };
+
+    if (existente) {
+      // La dirección de ML puede completarse después de la compra (el comprador
+      // la elige al despachar), así que se refresca mientras el pedido no salió.
+      const puedeRefrescarDireccion = !['enviado', 'despachado'].includes(existente.estado);
+      const update = { ...camposML };
+      if (puedeRefrescarDireccion && datos.direccion_envio) {
+        Object.assign(update, {
+          cliente_nombre: datos.cliente_nombre || existente.cliente_nombre,
+          // El teléfono se asigna tal cual (no con ||): para un pedido de ML la
+          // única fuente es ML, y así un valor enmascarado que ya guardamos se
+          // limpia en la próxima corrida en vez de quedar pegado para siempre.
+          cliente_telefono: datos.cliente_telefono,
+          direccion_envio: datos.direccion_envio,
+          localidad: datos.localidad || existente.localidad,
+          departamento: datos.departamento || existente.departamento,
+          codigo_postal: datos.codigo_postal || existente.codigo_postal,
+        });
+      }
+      if (datos.numero_seguimiento_ues && !existente.numero_seguimiento_ues) {
+        update.numero_seguimiento_ues = datos.numero_seguimiento_ues;
+      }
+
+      const { data, error } = await supabase
+        .from('pedidos')
+        .update(update)
+        .eq('id', existente.id)
+        .select()
+        .single();
+      if (error) throw error;
+      return { pedido: data, creado: false };
+    }
+
+    const { data, error } = await supabase
+      .from('pedidos')
+      .insert({
+        numero_pedido: datos.numero_pedido,
+        origen: 'mercadolibre',
+        cliente_nombre: datos.cliente_nombre,
+        cliente_email: datos.cliente_email,
+        cliente_telefono: datos.cliente_telefono,
+        direccion_envio: datos.direccion_envio,
+        localidad: datos.localidad,
+        departamento: datos.departamento,
+        codigo_postal: datos.codigo_postal,
+        estado: 'pendiente',
+        // Los pedidos de ML entran a la rama estándar del panel: los de Mercado
+        // Envíos ya traen etiqueta, los de envío propio se etiquetan como siempre.
+        tipo_envio: 'estandar',
+        numero_seguimiento_ues: datos.numero_seguimiento_ues || null,
+        created_at: datos.created_at || ahora,
+        ...camposML,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return { pedido: data, creado: true };
+  }
+
+  // Pedidos de ML con envío de Mercado Envíos a los que todavía no les bajamos
+  // la etiqueta. Los usa el sync para completar las que quedaron pendientes.
+  async obtenerPedidosMlSinEtiqueta() {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('id, numero_pedido, ml_shipment_id, ml_logistic_type')
+      .eq('origen', 'mercadolibre')
+      .not('ml_shipment_id', 'is', null)
+      .is('ml_etiqueta_at', null)
+      .neq('estado', 'enviado')
+      .neq('estado', 'cancelado');
+    if (error) throw error;
+    return data || [];
+  }
 }
 
 module.exports = new SupabaseService();

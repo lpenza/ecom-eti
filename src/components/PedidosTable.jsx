@@ -6,6 +6,12 @@ import { formatFechaHoraCompletaUy, formatUy, parseTimestampUtc } from '../utils
 // Funciona con /file/d/{id}/view, /file/d/{id}/edit, webViewLink, etc.
 function getDriveUrls(link) {
   if (!link) return null;
+  // Etiqueta de MercadoLibre: la sirve nuestro endpoint. El mismo path con
+  // ?download=1 responde con Content-Disposition: attachment; sin eso el
+  // navegador la abre en su visor en vez de bajarla.
+  if (/^\/api\/mercadolibre\/etiqueta-pdf\//.test(String(link))) {
+    return { previewUrl: link, downloadUrl: `${link}?download=1` };
+  }
   const match = String(link).match(/\/d\/([^/?#]+)/);
   if (match) {
     const id = match[1];
@@ -463,11 +469,28 @@ function PedidoRow({
             </span>
           )}
           {esReclamo && <span className="pedido-reclamo-badge" title="Pedido con reclamo asociado">🔄 Reclamo</span>}
+          {pedido.origen === 'mercadolibre' && (
+            <span
+              className="pedido-ml-badge"
+              title={pedido.ml_shipment_id
+                ? `Venta de MercadoLibre — envío ${pedido.ml_shipment_id} (${pedido.ml_logistic_type || 'sin tipo'})`
+                : 'Venta de MercadoLibre — todavía sin envío asignado'}
+            >
+              🛒 ML
+            </span>
+          )}
           {pedido.etiqueta_impresa && <span className="pedido-impresa-badge" title="Etiqueta ya impresa">🖨️</span>}
         </span>
       </td>
       <td>{pedido.cliente_nombre || 'Sin nombre'}</td>
-      <td>{pedido.direccion_envio || 'Sin dirección'}</td>
+      <td>
+        {pedido.direccion_envio || 'Sin dirección'}
+        {/* ML manda piso/apto y referencias aparte de la calle: sin esto el
+            armador no las ve en ningún lado. */}
+        {pedido.ml_referencia && (
+          <div className="pedido-referencia">📍 {pedido.ml_referencia}</div>
+        )}
+      </td>
       <td>
         <span className={`badge ${tieneRevisionContacto ? 'badge-danger' : estadoClass}`}>
           {tieneRevisionContacto ? 'Pendiente Contacto' : estadoText}

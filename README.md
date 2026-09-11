@@ -79,6 +79,18 @@ MAIL_ALIASES_ATENCION=consultas@velinneuy.com
 # Registrar una vez: node scripts/register-webhook.js https://tu-app.up.railway.app
 # EMAIL_WEBHOOK_KEY=una_key_larga_al_azar
 
+# MercadoLibre. Credenciales de la app creada en developers.mercadolibre.com.uy.
+# ML_REDIRECT_URI tiene que ser EXACTAMENTE la misma URL cargada en la app
+# (https, sin barra final) y apuntar al callback del server.
+# Los tokens NO van acá: se guardan en la tabla ml_config (el refresh_token es
+# de un solo uso y rota en cada refresco). Correr sql/create_mercadolibre.sql.
+ML_CLIENT_ID=
+ML_CLIENT_SECRET=
+ML_REDIRECT_URI=https://tu-app.up.railway.app/api/mercadolibre/callback
+# Cron de sincronización (default cada 10 min). ML_SYNC_ENABLED=false lo apaga.
+# ML_SYNC_CRON=*/10 * * * *
+# ML_SYNC_HORAS=72
+
 # WhatsApp (elige proveedor: twilio o meta)
 WHATSAPP_PROVIDER=twilio
 
@@ -115,6 +127,7 @@ http://localhost:5173
 - ✅ **Generación Individual y Masiva** de etiquetas
 - ✅ **Modo de Prueba** (genera PDFs sin llamar API real)
 - ✅ **Sincronización con Shopify** automática
+- ✅ **Pedidos de MercadoLibre** en el mismo panel (ver sección abajo)
 - ✅ **Fulfillment Shopify** con envío de tracking a clientes (email/WhatsApp)
 - ✅ **Vista Previa de PDF** de etiquetas generadas
 - ✅ **Dashboard en Tiempo Real** con estadísticas
@@ -162,6 +175,50 @@ F12 → Components → Inspecciona estado de hooks
 
 ### Network Inspector
 F12 → Network → Filtra "Fetch/XHR"
+
+## 🛒 MercadoLibre
+
+Las ventas de ML se espejan en la **misma tabla `pedidos`** que las de Shopify
+(columna `origen`), así aparecen en el panel, en la cola del armador y en
+cadetería sin pantallas nuevas. El número visible es `ML-<id>` y un carrito
+(varias ventas en un paquete) entra como **un solo pedido**, agrupado por `pack_id`.
+
+**Envíos.** Si la venta va con Mercado Envíos (`logistic_type` = drop_off,
+xd_drop_off, cross_docking, self_service o fulfillment), la etiqueta la emite ML:
+el sistema la baja a `public/etiquetas-mercadolibre/<shipment_id>.pdf`, la
+engancha al pedido en `link_etiqueta_drive` y queda lista para imprimir con los
+mismos botones que UES y Marco Postal (individual y combinada por lote). Si es
+"envío a acordar" (`custom`), el pedido entra al flujo normal y se le genera
+etiqueta UES o Marco Postal como a cualquier otro.
+
+### Puesta en marcha
+
+1. Correr `sql/create_mercadolibre.sql` en Supabase.
+2. Crear la app en https://developers.mercadolibre.com.uy → *Mis aplicaciones* →
+   *Crear aplicación*.
+   - **Redirect URI:** `https://tu-app.up.railway.app/api/mercadolibre/callback`
+     (https obligatorio, sin barra final, idéntica a `ML_REDIRECT_URI`).
+   - **Scopes:** `read` y `offline_access` (este último es el que habilita el
+     refresh token; sin él hay que reautorizar cada 6 horas).
+   - **Notificaciones (webhook):** `https://tu-app.up.railway.app/api/mercadolibre/webhook`
+     con los topics `orders_v2` y `shipments`.
+3. Cargar `ML_CLIENT_ID`, `ML_CLIENT_SECRET` y `ML_REDIRECT_URI` en Railway.
+4. En el panel (como admin) apretar **🔌 Conectar MercadoLibre**, autorizar con la
+   cuenta vendedora y volver. El botón pasa a **🛒 Sincronizar ML**.
+
+Después de eso el cron trae las ventas solo cada 10 minutos y el webhook las trae
+al instante; el botón queda para forzar una pasada.
+
+### Endpoints
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| GET | `/api/mercadolibre/estado` | Si está configurado / conectado, y con qué cuenta |
+| GET | `/api/mercadolibre/auth-url` | Link de autorización OAuth (admin) |
+| GET | `/api/mercadolibre/callback` | Callback del OAuth (es el Redirect URI) |
+| POST | `/api/mercadolibre/sincronizar` | Trae ventas y etiquetas ahora |
+| GET | `/api/mercadolibre/etiqueta/:pedidoId` | Baja/refresca la etiqueta (`?forzar=1`) |
+| POST | `/api/mercadolibre/webhook` | Notificaciones de ML (`orders_v2`, `shipments`) |
 
 ## 📚 Documentación
 

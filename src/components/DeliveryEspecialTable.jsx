@@ -121,6 +121,13 @@ export default function DeliveryEspecialTable({
     const local = driveState[pedido.id];
     if (local?.previewUrl) return { previewUrl: local.previewUrl, downloadUrl: local.downloadUrl };
     if (pedido.link_etiqueta_drive) {
+      // Etiqueta de MercadoLibre: ?download=1 fuerza la descarga en vez del visor.
+      if (/^\/api\/mercadolibre\/etiqueta-pdf\//.test(String(pedido.link_etiqueta_drive))) {
+        return {
+          previewUrl: pedido.link_etiqueta_drive,
+          downloadUrl: `${pedido.link_etiqueta_drive}?download=1`,
+        };
+      }
       const fileId = extractDriveFileId(pedido.link_etiqueta_drive);
       if (fileId) return buildDriveUrls(fileId);
       return { previewUrl: pedido.link_etiqueta_drive, downloadUrl: pedido.link_etiqueta_drive };

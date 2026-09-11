@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import Header from './components/Header';
 import Toolbar from './components/Toolbar';
 import PedidosTable from './components/PedidosTable';
@@ -54,6 +54,9 @@ import {
   buscarEtiquetasCadeteria,
   registrarEntregaSinDespacho,
   cancelarPickupsProgramados,
+  sincronizarMercadoLibre,
+  obtenerEstadoMercadoLibre,
+  obtenerAuthUrlMercadoLibre,
 } from './services/api';
 import DeliveryEspecialTable from './components/DeliveryEspecialTable';
 import ArmadorPanel from './components/ArmadorPanel';
@@ -173,6 +176,9 @@ function AppContent({ user, logout }) {
   const [fulfillmentPreviewIds, setFulfillmentPreviewIds] = useState(null); // null = normal, array = preview mode
   const esAdmin = user.role === 'admin';
   const esAtencion = user.role === 'atencion';
+  // Conexión con MercadoLibre: null mientras no se consultó. Define si el botón
+  // del toolbar sincroniza o manda a autorizar la app.
+  const [mlEstado, setMlEstado] = useState(null);
   const { theme, toggleTheme } = useTheme();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [tableFilter, setTableFilter] = useState(esAdmin ? 'porValidar' : 'etiquetasGeneradas');
@@ -231,8 +237,17 @@ function AppContent({ user, logout }) {
     return estadoNormalizado === 'enviado';
   };
 
+  // Los pedidos de MercadoLibre quedan fuera de los flujos de validación y de
+  // tracking: la etiqueta la emite ML y es ML quien le avisa al comprador. Además
+  // no expone email ni teléfono, así que sin esta exclusión caían en "revisión
+  // manual" y encendían la alerta de tracking sin que hubiera nada que resolver.
+  // Viven en su propia tarjeta (🛒 ML) y siguen entrando a la cola del armador.
+  const esMercadoLibre = (p) => p?.origen === 'mercadolibre';
+
   // Pedidos que aún no tienen etiqueta generada (necesitan validación)
-  const pedidosPendientes = pedidos.filter((p) => !p.etiqueta_generada && !estadoEsCerrado(p.estado));
+  const pedidosPendientes = pedidos.filter(
+    (p) => !p.etiqueta_generada && !estadoEsCerrado(p.estado) && !esMercadoLibre(p)
+  );
   const pedidosPendientesContacto = pedidosPendientes.filter((p) => Boolean(p.revision_contacto_pendiente));
   const pedidosPendientesValidables = pedidosPendientes.filter((p) => !Boolean(p.revision_contacto_pendiente));
   const pedidosPendientesContactoSinCelConEmail = pedidosPendientesContacto.filter((p) => {
@@ -242,7 +257,10 @@ function AppContent({ user, logout }) {
   });
   
   // Pedidos con etiqueta pero no notificados (incluye los de WhatsApp sin email que están esperando notificación manual)
-  const pedidosConEtiqueta = pedidos.filter((p) => p.etiqueta_generada && !Boolean(p.notificacion_enviada_at) && !estadoEsCerrado(p.estado));
+  // Los de ML se excluyen acá, y no sólo de los sub-cubos de tracking: si se
+  // filtraran más abajo, el total dejaría de cuadrar y saltaría la alerta de
+  // descuadre, que es otro aviso de atención sin nada real detrás.
+  const pedidosConEtiqueta = pedidos.filter((p) => p.etiqueta_generada && !Boolean(p.notificacion_enviada_at) && !estadoEsCerrado(p.estado) && !esMercadoLibre(p));
   
   // Pedidos notificados: tienen notificacion_enviada_at O estado 'enviado'
   const pedidosEnviados = pedidos.filter((p) => Boolean(p.notificacion_enviada_at) || estadoEsCerrado(p.estado));
@@ -297,6 +315,9 @@ function AppContent({ user, logout }) {
   // el resto va por MarcoPostal, separando los pickup (su fulfillment se manda en
   // diferido, después del de MarcoPostal) del resto (normales y Recibilo Hoy).
   const getCourierPedido = (p) => {
+    // ML va primero: su tracking (MEL…) no matchea el prefijo UES y su tipo_envio
+    // es 'estandar', así que sin esto caería en el grupo de MarcoPostal.
+    if (p?.origen === 'mercadolibre') return 'ml';
     if (/^ues/i.test(String(p?.numero_seguimiento_ues || '').trim())) return 'ues';
     if (p?.tipo_envio === 'pickup_local') return 'marcopostal_pickup';
     return 'marcopostal';
@@ -332,8 +353,13 @@ function AppContent({ user, logout }) {
 
   // El fulfillment solo sale para pedidos que la cadetería ya retiró. Los pickup no
   // pasan por cadetería: el backend les hace "listo para retirar" en vez de un envío.
-  const requiereRetiroCadeteria = (p) => p?.tipo_envio !== 'pickup_local';
-  const puedeEnviarFulfillment = (p) => !requiereRetiroCadeteria(p) || Boolean(p?.retirado_cadeteria_at);
+  // Los de ML no pasan por cadetería ni por fulfillment: los llevás vos al punto
+  // de despacho y el aviso al comprador lo manda MercadoLibre. Su único cierre
+  // posible en esta vista es "Ya procesados".
+  const esDespachoML = (p) => p?.origen === 'mercadolibre';
+  const requiereRetiroCadeteria = (p) => p?.tipo_envio !== 'pickup_local' && !esDespachoML(p);
+  const puedeEnviarFulfillment = (p) =>
+    !esDespachoML(p) && (!requiereRetiroCadeteria(p) || Boolean(p?.retirado_cadeteria_at));
 
   const notifPreview = fulfillmentPreviewIds !== null ? (() => {
     const enPreview = pedidos.filter((p) => fulfillmentPreviewIds.includes(p.id));
@@ -355,6 +381,14 @@ function AppContent({ user, logout }) {
     return fulfillmentPreviewIds;
   })();
 
+  // Ventas de MercadoLibre activas. Salen del mismo array que el resto (entran a
+  // `pedidos` por la columna `origen`), así que no hace falta otra llamada: es un
+  // corte de la misma lista, como Pick-UP o Recibilo pero sin endpoint aparte.
+  const pedidosMercadoLibre = useMemo(
+    () => pedidos.filter((p) => p.origen === 'mercadolibre'),
+    [pedidos]
+  );
+
   const headerStats = {
     porValidar: pedidosPendientesValidables.length,
     reclamosPendientes: reclamosPendientes.length,
@@ -367,6 +401,7 @@ function AppContent({ user, logout }) {
     enviados: pedidosEnviadosList.length,
     pickup: pickupList.length,
     recibilo: recibiloList.length,
+    mercadolibre: pedidosMercadoLibre.length,
     reenvios: reenvioList.length,
     trackingAlert: hayDescuadreTracking || pedidosRevisionManual.length > 0,
     trackingBreakdown: {
@@ -393,6 +428,7 @@ function AppContent({ user, logout }) {
   })();
 
   const pedidosFiltradosPorCard = (() => {
+    if (tableFilter === 'mercadolibre') return pedidosMercadoLibre;
     if (tableFilter === 'pendientesContacto') return pedidosPendientesContacto;
     if (tableFilter === 'etiquetasGeneradas') {
       return pedidosConEtiqueta;
@@ -451,6 +487,14 @@ function AppContent({ user, logout }) {
     console.log('🚀 App React montada - cargando pedidos...');
     cargarPedidos();
   }, []);
+
+  // Estado de la conexión con MercadoLibre (solo admin: es quien puede autorizar).
+  useEffect(() => {
+    if (!esAdmin) return;
+    obtenerEstadoMercadoLibre()
+      .then(setMlEstado)
+      .catch(() => setMlEstado({ configurado: false, conectado: false }));
+  }, [esAdmin]);
 
   // Monitorear estado del caché UES en background
   useEffect(() => {
@@ -1114,6 +1158,50 @@ function AppContent({ user, logout }) {
     }
   };
 
+  // ── MercadoLibre ───────────────────────────────────────────────────────────
+  // Trae las ventas de ML al panel y baja las etiquetas de Mercado Envíos que ya
+  // estén emitidas. El cron hace lo mismo cada 10 min; esto es el empujón manual.
+  const handleSincronizarMercadoLibre = async () => {
+    if (mlEstado && mlEstado.configurado && !mlEstado.conectado) {
+      // Sin autorizar todavía: lo mandamos al OAuth de ML en otra pestaña.
+      // La pestaña se abre YA, dentro del gesto del clic: si se abriera después
+      // del await, el navegador la bloquea como popup y no pasa nada visible.
+      const tab = window.open('', '_blank');
+      try {
+        const r = await obtenerAuthUrlMercadoLibre();
+        if (!r?.url) throw new Error('El servidor no devolvió el link de autorización');
+        if (tab) {
+          tab.location.href = r.url;
+          mostrarToast('Autorizá la app en la pestaña de MercadoLibre y volvé a sincronizar', 'warning');
+        } else {
+          // Popup bloqueado igual: seguimos en esta pestaña (se vuelve con "atrás").
+          window.location.href = r.url;
+        }
+      } catch (error) {
+        if (tab) tab.close();
+        mostrarToast(error.message || 'No se pudo generar el link de autorización', 'error');
+      }
+      return;
+    }
+
+    setLoadingText('Sincronizando ventas de MercadoLibre...');
+    setLoading(true);
+    try {
+      const r = await sincronizarMercadoLibre(72);
+      if (!r?.success) throw new Error(r?.error || 'Error sincronizando MercadoLibre');
+      mostrarToast(
+        `🛒 ML: ${r.nuevos} nuevo(s), ${r.actualizados} actualizado(s), ${r.etiquetas} etiqueta(s)`,
+        r.errores?.length ? 'warning' : 'success'
+      );
+      await cargarPedidos();
+      obtenerEstadoMercadoLibre().then(setMlEstado).catch(() => {});
+    } catch (error) {
+      mostrarToast(error.message || 'Error sincronizando MercadoLibre', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Handler para fulfillment Shopify — primer clic muestra preview en tabla
   const handleFulfillmentShopify = () => {
     const candidatos = candidatosFulfillment;
@@ -1474,8 +1562,12 @@ function AppContent({ user, logout }) {
       return;
     }
 
+    // Las etiquetas de ML las sirve nuestro endpoint: con ?download=1 responde
+    // como adjunto. El atributo `download` solo no alcanza cuando el server ya
+    // mandó Content-Disposition: inline.
+    const esEtiquetaML = /^\/api\/mercadolibre\/etiqueta-pdf\//.test(etiquetaUrl);
     const a = document.createElement('a');
-    a.href = etiquetaUrl;
+    a.href = esEtiquetaML ? `${etiquetaUrl}?download=1` : etiquetaUrl;
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
     a.download = `etiqueta-${pedido?.numero_pedido || pedidoId}.pdf`;
@@ -2400,7 +2492,10 @@ function AppContent({ user, logout }) {
           {/* Toolbar con acciones (solo admin) */}
           {esAdmin && <Toolbar
             onSincronizar={handleSincronizarShopify}
+            onSincronizarML={handleSincronizarMercadoLibre}
+            mlEstado={mlEstado}
             onValidar={handleValidarSeleccionados}
+            soloMercadoLibre={tableFilter === 'mercadolibre'}
             onFulfillment={handleFulfillmentShopify}
             onConfirmarFulfillment={handleConfirmarFulfillment}
             onCancelarFulfillment={handleCancelarFulfillment}
@@ -2551,6 +2646,14 @@ function AppContent({ user, logout }) {
                 >
                   🚚 UES ({despachadosPorGrupo.ues || 0})
                 </button>
+                <button
+                  type="button"
+                  className={`notif-chip notif-chip-ml ${despachadosCourierFilter === 'ml' ? 'notif-chip-active' : ''}`}
+                  onClick={() => setDespachadosCourierFilter(despachadosCourierFilter === 'ml' ? null : 'ml')}
+                  title="Ventas de MercadoLibre: se entregan en el punto de despacho y sólo se marcan como procesadas"
+                >
+                  🛒 ML ({despachadosPorGrupo.ml || 0})
+                </button>
               </div>
               {/* Pickups agendados por el diferido posterior al fulfillment MarcoPostal */}
               {pickupsProgramados.length > 0 && (
@@ -2592,7 +2695,7 @@ function AppContent({ user, logout }) {
               </span>
               {/* Estado del retiro por cadetería (requisito para poder despachar el fulfillment).
                    Los pickup no cuentan: no pasan por cadetería. */}
-              {(() => {
+              {despachadosCourierFilter !== 'ml' && (() => {
                 const conCadeteria = pedidosFiltradosPorCard.filter(requiereRetiroCadeteria);
                 const total = conCadeteria.length;
                 const retirados = conCadeteria.filter((p) => Boolean(p.retirado_cadeteria_at)).length;
@@ -2611,6 +2714,9 @@ function AppContent({ user, logout }) {
               })()}
               {/* Fulfillment Shopify — para pedidos que necesitan notificar al courier.
                    Solo se despachan los que la cadetería ya marcó como retirados. */}
+              {/* En ML no hay fulfillment que mandar: el aviso al comprador lo
+                  hace MercadoLibre. Con ese filtro activo queda solo 'Ya procesados'. */}
+              {despachadosCourierFilter !== 'ml' && (
               <button
                 className="btn btn-primary btn-sm"
                 onClick={async () => {
@@ -2672,6 +2778,7 @@ function AppContent({ user, logout }) {
                   return `📨 Enviar Fulfillment (${elegibles})`;
                 })()}
               </button>
+              )}
               {/* Procesado directo — para despachados con fulfillment ya hecho en Shopify */}
               <button
                 className="btn btn-success btn-sm"
@@ -2914,6 +3021,26 @@ function AppContent({ user, logout }) {
             </div>
           )}
 
+          {/* ── MercadoLibre ─────────────────────────────────────────────── */}
+          {tableFilter === 'mercadolibre' && (
+            <div className="section-action-bar">
+              <span>
+                🛒 {pedidosMercadoLibre.length} venta(s) de MercadoLibre activa(s)
+                {' — '}
+                {pedidosMercadoLibre.filter((p) => p.ml_shipment_id).length} con Mercado Envíos
+                {' · '}
+                {pedidosMercadoLibre.filter((p) => !p.ml_shipment_id).length} a despachar por nuestra cuenta
+              </span>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleSincronizarMercadoLibre}
+                title="Traer ventas nuevas de MercadoLibre y bajar sus etiquetas"
+              >
+                🔄 Sincronizar ahora
+              </button>
+            </div>
+          )}
+
           {/* Tabla de pedidos */}
           {tableFilter !== 'reclamosPendientes' && tableFilter !== 'pickup' && tableFilter !== 'recibilo' && tableFilter !== 'reenvios' && (
           <div className="main-content">
@@ -2953,7 +3080,9 @@ function AppContent({ user, logout }) {
               onRevertirEtiqueta={(tableFilter === 'enviados' || tableFilter === 'despachados') ? handleRevertirEtiqueta : undefined}
               fulfillmentPreview={fulfillmentPreviewIds !== null}
               channelPriority={channelPriority}
-              showNotifyColumn={tableFilter !== 'porValidar'}
+              /* En ML no hay nada que notificar desde acá: el aviso al comprador
+                 lo manda MercadoLibre. El tracking sí se muestra (es el de ML). */
+              showNotifyColumn={tableFilter !== 'porValidar' && tableFilter !== 'mercadolibre'}
               showTrackingColumn={tableFilter !== 'porValidar'}
               showProcesarButton={tableFilter === 'despachados'}
               groupByTracking={tableFilter === 'etiquetasGeneradas'}

@@ -405,6 +405,11 @@ body {
   background: linear-gradient(180deg, #fefce8 0%, #fef08a 40%, #fde047 100%);
 }
 
+/* MercadoLibre: amarillo de ML, para que la tarjeta se lea de un vistazo. */
+.stat-card-ml {
+  background: linear-gradient(180deg, #fffdf0 0%, #fff59d 40%, #fff159 100%);
+}
+
 .stat-card-reenvio {
   background: linear-gradient(180deg, #f0f4ff 0%, #dbeafe 40%, #bfdbfe 100%);
 }
@@ -1848,6 +1853,14 @@ body {
   border: 1px solid currentColor;
 }
 
+/* Courier MercadoLibre en Despachados: amarillo de ML, como el resto de los
+   distintivos de ML del panel. */
+.notif-chip-ml {
+  background: #fff159;
+  color: #2d3277;
+  border: 1px solid #e6d94f;
+}
+
 /* Channel priority control */
 .channel-priority-control {
   display: flex;
@@ -2089,6 +2102,28 @@ body {
   padding: 0.1rem 0.5rem;
   white-space: nowrap;
   cursor: default;
+}
+
+/* Origen MercadoLibre: amarillo de ML para distinguirlo de un pedido de Shopify. */
+.pedido-ml-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #2d3277;
+  background: #fff159;
+  border: 1px solid #e6d94f;
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.pedido-referencia {
+  font-size: 0.75rem;
+  opacity: 0.75;
+  margin-top: 0.15rem;
 }
 
 .pedido-notified-label,
@@ -5569,6 +5604,96 @@ body {
   border-left: 3px solid #f59e0b;
 }
 
+/* ── Filtro de courier del armador (imprimir etiquetas por courier) ──────── */
+.armador-courier-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.armador-courier-bar-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--brand-text-soft);
+  margin-right: 0.15rem;
+}
+
+.armador-courier-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid var(--brand-border);
+  border-radius: 999px;
+  background: var(--brand-surface);
+  color: var(--brand-text);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.armador-courier-chip span {
+  display: inline-block;
+  min-width: 1.2rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: var(--brand-surface-alt);
+  color: var(--brand-text-soft);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.armador-courier-chip:hover:not(:disabled) {
+  border-color: var(--brand-primary);
+}
+
+.armador-courier-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.armador-courier-chip.is-active {
+  background: var(--brand-primary);
+  border-color: var(--brand-primary);
+  color: #fff;
+}
+
+.armador-courier-chip.is-active span {
+  background: rgba(255, 255, 255, 0.25);
+  color: #fff;
+}
+
+.armador-courier-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.armador-courier-badge--marcopostal {
+  background: #e0e7ff;
+  border-color: #a5b4fc;
+  color: #3730a3;
+}
+
+.armador-courier-badge--ues {
+  background: #dcfce7;
+  border-color: #86efac;
+  color: #166534;
+}
+
+.armador-courier-badge--mercadolibre {
+  background: #fef9c3;
+  border-color: #fde047;
+  color: #854d0e;
+}
+
 /* ── Armado Review Modal ── */
 .armado-review-overlay {
   position: fixed;
@@ -7699,6 +7824,17 @@ body {
 :root[data-theme="dark"] .armador-table th,
 :root[data-theme="dark"] .armador-table td { border-color: var(--brand-border); }
 
+/* Badges de courier del armador */
+:root[data-theme="dark"] .armador-courier-badge--marcopostal {
+  background: #23243f; border-color: #4c4f8a; color: #c7d2fe;
+}
+:root[data-theme="dark"] .armador-courier-badge--ues {
+  background: #16241c; border-color: #2f6b42; color: #bbf7d0;
+}
+:root[data-theme="dark"] .armador-courier-badge--mercadolibre {
+  background: #2b2616; border-color: #7a6a24; color: #fef08a;
+}
+
 /* Modales */
 :root[data-theme="dark"] .modal-header,
 :root[data-theme="dark"] .modal-footer { border-color: var(--brand-border); }
@@ -7772,6 +7908,7 @@ body {
 :root[data-theme="dark"] .stat-card-despachado{ background: linear-gradient(180deg, #1e2740 0%, #182034 100%); }
 :root[data-theme="dark"] .stat-card-pickup    { background: linear-gradient(180deg, #34291a 0%, #2a2015 100%); }
 :root[data-theme="dark"] .stat-card-recibilo  { background: linear-gradient(180deg, #35331a 0%, #2b2914 100%); }
+:root[data-theme="dark"] .stat-card-ml        { background: linear-gradient(180deg, #38351a 0%, #2d2a13 100%); }
 :root[data-theme="dark"] .stat-card-reenvio   { background: linear-gradient(180deg, #1e2740 0%, #172038 100%); }
 :root[data-theme="dark"] .stat-card-success   { background: linear-gradient(180deg, #173026 0%, #14281e 100%); }
 :root[data-theme="dark"] .stat-card-danger    { background: linear-gradient(180deg, #351f26 0%, #2b1920 100%); }
