@@ -220,9 +220,24 @@ propio stock al vender y mandarle un delta descontaría dos veces.
 | Venta en **ML** | Se descuenta en Shopify (y en `productos`) por SKU NC, y se empuja el nuevo valor a las publicaciones de ese SKU |
 | Venta en **Shopify** | Shopify descuenta solo; la reconciliación trae el valor a `productos` y lo empuja a ML |
 
-Ritmo: el ciclo corto corre **cada 10 min** (`ML_STOCK_CRON`, desfasado 5 min del
-cron de pedidos para que las ventas ya estén en la base) y la reconciliación completa
-**cada 30 min** (`ML_STOCK_RECON_CRON`).
+Ritmo:
+
+| Camino | Cuándo | Demora |
+|---|---|---|
+| Venta ML → Shopify | El webhook descuenta al entrar la venta | segundos |
+| Venta ML (respaldo) | Cron `ML_STOCK_CRON`, cada 3 min | ≤ 3 min |
+| Venta Shopify → ML | Cron `ML_STOCK_SHOPIFY_CRON`, cada 3 min | ≤ 3 min |
+| Barrido completo | Cron `ML_STOCK_RECON_CRON`, a los :20 de cada hora | red de seguridad |
+
+Los caminos rápidos usan un **índice SKU → publicaciones cacheado en memoria** (1 h
+de vida, o se refresca cuando aparece un SKU desconocido). Sin él, empujar un solo
+SKU obligaba a releer las ~166 publicaciones. Con el índice, un push cuesta una
+llamada por publicación, y cero si ML ya tiene el valor correcto — que pasa seguido,
+porque ML descuenta sola la publicación donde se vendió.
+
+Un solo ciclo de stock corre a la vez (guard en memoria): el webhook y el cron
+pueden dispararse casi juntos, y dos corridas en paralelo leerían el mismo stock
+antes de que la otra escriba.
 
 Los descuentos automáticos quedan firmados en `stock_ajustes_nc` con
 `usuario_nombre = "venta ML"` y `origen = "venta_ml"`, para distinguirlos de un

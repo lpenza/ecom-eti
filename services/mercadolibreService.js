@@ -25,6 +25,10 @@ class MercadoLibreService {
     // Cache en memoria del token; la fuente de verdad es la tabla ml_config.
     this.cache = null;
     this.refreshPromise = null;
+    // Índice SKU → publicaciones (ver obtenerIndicePublicaciones). Vive en memoria:
+    // si el proceso reinicia se reconstruye solo en el primer push.
+    this.indicePublicaciones = null;
+    this.indicePublicacionesAt = 0;
   }
 
   configurado() {
@@ -388,6 +392,74 @@ class MercadoLibreService {
         mlOfreceDeMenos: filas.filter((f) => f.diferencia < 0).length,
       },
     };
+  }
+
+  // Índice SKU → publicaciones, cacheado en memoria. Sin esto, empujar el stock
+  // de UN SKU obligaba a releer las 166 publicaciones (≈19 llamadas a ML) para
+  // después descartar casi todas. Con el índice, un push puntual cuesta una
+  // llamada por publicación.
+  //
+  // Se reconstruye solo cuando está vencido (1 h por defecto) o cuando se pide un
+  // SKU que no figura — que es lo que pasa cuando se publica algo nuevo.
+  async obtenerIndicePublicaciones({ forzar = false, maxEdadMs = 60 * 60 * 1000 } = {}) {
+    const vencido = !this.indicePublicaciones
+      || (Date.now() - this.indicePublicacionesAt) > maxEdadMs;
+    if (forzar || vencido) {
+      const unidades = await this.listarUnidadesPublicadas();
+      const mapa = new Map();
+      for (const u of unidades) {
+        if (!u.sku) continue;
+        const clave = String(u.sku).trim().toUpperCase();
+        if (!mapa.has(clave)) mapa.set(clave, []);
+        mapa.get(clave).push({
+          itemId: u.itemId,
+          variationId: u.variationId,
+          cantidadML: u.cantidadML,
+        });
+      }
+      this.indicePublicaciones = mapa;
+      this.indicePublicacionesAt = Date.now();
+    }
+    return this.indicePublicaciones;
+  }
+
+  // Empuja cantidades a las publicaciones de SKU puntuales, usando el índice.
+  // `cantidadesPorSku` es un objeto { SKU: cantidadAbsoluta }.
+  async empujarStockDeSkus(cantidadesPorSku = {}, { pausaMs = 120 } = {}) {
+    const skus = Object.keys(cantidadesPorSku);
+    if (skus.length === 0) return { aplicados: [], fallados: [], sinPublicacion: [] };
+
+    let indice = await this.obtenerIndicePublicaciones();
+    // Un SKU que no figura puede ser una publicación nueva: se refresca el índice
+    // una sola vez antes de darlo por inexistente.
+    const faltaAlguno = skus.some((s) => !indice.has(String(s).trim().toUpperCase()));
+    if (faltaAlguno) indice = await this.obtenerIndicePublicaciones({ forzar: true });
+
+    const aplicados = [];
+    const fallados = [];
+    const sinPublicacion = [];
+
+    for (const sku of skus) {
+      const clave = String(sku).trim().toUpperCase();
+      const publicaciones = indice.get(clave);
+      if (!publicaciones || publicaciones.length === 0) { sinPublicacion.push(sku); continue; }
+
+      const objetivo = Math.max(0, Math.trunc(Number(cantidadesPorSku[sku]) || 0));
+      for (const pub of publicaciones) {
+        // ML descuenta sola la publicación donde se vendió, así que muchas veces
+        // ya está en el valor correcto y la escritura sobra.
+        if (Number(pub.cantidadML) === objetivo) continue;
+        try {
+          await this.fijarStockPublicacion(pub.itemId, pub.variationId, objetivo);
+          aplicados.push({ sku: String(sku).trim(), itemId: pub.itemId, antes: pub.cantidadML, ahora: objetivo });
+          pub.cantidadML = objetivo; // el índice queda al día sin releer nada
+        } catch (err) {
+          fallados.push({ sku: String(sku).trim(), itemId: pub.itemId, objetivo, error: err.message });
+        }
+        if (pausaMs > 0) await new Promise((r) => setTimeout(r, pausaMs));
+      }
+    }
+    return { aplicados, fallados, sinPublicacion };
   }
 
   // Fija la cantidad disponible de UNA publicación. Siempre valor absoluto:

@@ -3340,38 +3340,90 @@ async function descontarStockVentasML() {
   return resumen;
 }
 
-// Ciclo corto (cada 10 min): descontar las ventas nuevas de ML y empujar a ML
-// SOLO los SKU que se movieron. Barato: no relee el catálogo entero para nada.
-async function cicloStockML() {
-  const descuento = await descontarStockVentasML();
-  const skus = [...descuento.skusAfectados];
-  let push = null;
-
-  if (skus.length > 0) {
-    push = await mercadolibreService.ajustarStockEnML({ soloSkus: skus });
+// Arma el detalle "SKU: antes→ahora" que va al log. Sin esto, una corrida decía
+// sólo "3 publicaciones empujadas" y no había forma de reconstruir después qué
+// se tocó ni por qué.
+function detallePushLog(aplicados = []) {
+  const porSku = {};
+  for (const a of aplicados) {
+    const k = String(a.sku).trim();
+    if (!porSku[k]) porSku[k] = { antes: a.antes, ahora: a.ahora, n: 0 };
+    porSku[k].n += 1;
   }
-
-  if (descuento.descontados.length > 0 || descuento.errores.length > 0) {
-    logService.info(
-      `[ML stock] ${descuento.descontados.length} ítem(s) descontado(s) de ${descuento.pedidos} venta(s)` +
-      (push ? ` · ${push.aplicados.length} publicación(es) actualizada(s)` : '') +
-      (descuento.errores.length ? ` · ${descuento.errores.length} error(es)` : '')
-    );
-  }
-  return { descuento, push };
+  return Object.entries(porSku)
+    .map(([sku, v]) => `${sku} ${v.antes}→${v.ahora}${v.n > 1 ? ` (×${v.n})` : ''}`)
+    .join(', ');
 }
 
-// Ciclo largo (cada 30 min): trae el stock de Shopify a `productos` — así entran
-// las ventas hechas EN Shopify, que Shopify descuenta por su cuenta — y después
-// empuja a ML todo lo que haya quedado distinto.
+// Sólo un ciclo de stock a la vez: el webhook de ML y el cron pueden dispararse
+// casi juntos, y dos corridas en paralelo leerían el mismo stock antes de que la
+// otra escriba, descontando de menos.
+let cicloStockEnCurso = false;
+
+// Descuenta las ventas nuevas de ML y empuja a ML sólo los SKU que se movieron.
+// Lo dispara el webhook (al instante, cuando entra la venta) y el cron (red de
+// seguridad). El push usa el índice cacheado: una llamada por publicación.
+async function cicloStockML(origen = 'cron') {
+  if (cicloStockEnCurso) return { saltado: true };
+  cicloStockEnCurso = true;
+  try {
+    const descuento = await descontarStockVentasML();
+    let push = null;
+
+    if (descuento.skusAfectados.size > 0) {
+      // Cantidad absoluta final de cada SKU tocado (si un SKU aparece en varias
+      // ventas, vale el último valor, que es el stock que quedó).
+      const cantidades = {};
+      for (const d of descuento.descontados) cantidades[String(d.sku).trim()] = d.nuevo;
+      push = await mercadolibreService.empujarStockDeSkus(cantidades);
+    }
+
+    if (descuento.descontados.length > 0 || descuento.errores.length > 0) {
+      const vendidos = descuento.descontados.map((d) => `${d.sku} ${d.anterior}→${d.nuevo}`).join(', ');
+      logService.info(
+        `[ML stock/${origen}] ${descuento.pedidos} venta(s) · descontado: ${vendidos}` +
+        (push && push.aplicados.length ? ` · ML actualizado: ${detallePushLog(push.aplicados)}` : '') +
+        (push && push.sinPublicacion.length ? ` · sin publicación en ML: ${push.sinPublicacion.join(', ')}` : '') +
+        (descuento.errores.length ? ` · ERRORES: ${descuento.errores.map((e) => e.sku + ' (' + e.error + ')').join(', ')}` : '')
+      );
+    }
+    return { descuento, push };
+  } finally {
+    cicloStockEnCurso = false;
+  }
+}
+
+// Trae el stock desde Shopify a `productos` —así entran las ventas hechas EN la
+// tienda, que Shopify descuenta por su cuenta— y empuja a ML sólo lo que cambió.
+// Es barato: una consulta a Shopify, y a ML nada si no se movió nada.
+async function sincronizarStockShopifyHaciaML() {
+  const desdeShopify = await sincronizarStockNCDesdeShopify();
+  if (desdeShopify.actualizados.length === 0) return { desdeShopify, push: null };
+
+  const cantidades = {};
+  for (const a of desdeShopify.actualizados) cantidades[String(a.sku).trim()] = a.nuevo;
+  const push = await mercadolibreService.empujarStockDeSkus(cantidades);
+
+  logService.info(
+    `[ML stock/shopify] cambió en Shopify: ${desdeShopify.actualizados.map((a) => `${String(a.sku).trim()} ${a.anterior}→${a.nuevo}`).join(', ')}` +
+    (push.aplicados.length ? ` · ML actualizado: ${detallePushLog(push.aplicados)}` : ' · ML ya estaba igual') +
+    (push.sinPublicacion.length ? ` · sin publicación en ML: ${push.sinPublicacion.join(', ')}` : '') +
+    (push.fallados.length ? ` · FALLAS: ${push.fallados.map((f) => f.sku + ' (' + f.error + ')').join(', ')}` : '')
+  );
+  return { desdeShopify, push };
+}
+
+// Barrido completo (red de seguridad, 1×hora): relee TODO el catálogo de ML y
+// corrige cualquier desfasaje que se haya escapado de los caminos rápidos.
 async function reconciliarStockML() {
   const desdeShopify = await sincronizarStockNCDesdeShopify();
+  mercadolibreService.indicePublicaciones = null; // forzar índice fresco
   const push = await mercadolibreService.ajustarStockEnML();
   if (push.aplicados.length > 0 || push.fallados.length > 0) {
     logService.info(
-      `[ML stock] Reconciliación: ${desdeShopify.actualizados.length} producto(s) actualizado(s) desde Shopify · ` +
-      `${push.aplicados.length} publicación(es) empujada(s) a ML` +
-      (push.fallados.length ? ` · ${push.fallados.length} falla(s)` : '')
+      `[ML stock/barrido] ${desdeShopify.actualizados.length} producto(s) desde Shopify · ` +
+      (push.aplicados.length ? `corregido en ML: ${detallePushLog(push.aplicados)}` : 'nada que corregir') +
+      (push.fallados.length ? ` · FALLAS: ${push.fallados.map((f) => f.sku + ' (' + f.error + ')').join(', ')}` : '')
     );
   }
   return { desdeShopify, push };
@@ -3598,6 +3650,10 @@ app.post('/api/mercadolibre/webhook', (req, res) => {
 
         await sincronizarMercadoLibre({ ventasPrecargadas: ventas });
         logService.info(`[ML] Webhook: venta ${orderId} sincronizada`);
+        // Descontar acá mismo, en vez de esperar al cron: baja la demora de
+        // "hasta 10 minutos" a segundos. El cron queda como red de seguridad
+        // para las ventas que el webhook no llegue a traer.
+        await cicloStockML('webhook');
       } else if (topic === 'shipments') {
         // Cambió el envío (ya hay etiqueta, o cambió la dirección): la ventana
         // corta alcanza para tomar la venta asociada sin barrer todo.
@@ -7068,22 +7124,34 @@ app.listen(PORT, async () => {
     });
     console.log(`🛒 Cron MercadoLibre activo (${mlCron})`);
 
-    // Stock — ciclo corto: descuenta las ventas nuevas de ML y empuja a ML sólo
-    // los SKU que se movieron. Va desfasado 5 min del cron de pedidos para que
-    // las ventas ya estén en la base cuando este corre.
-    const mlStockCron = process.env.ML_STOCK_CRON || '5-59/10 * * * *';
+    // Stock — ventas de ML. El webhook ya descuenta al instante; esto es la red
+    // de seguridad para las ventas que el webhook no traiga. Cada 3 min: el
+    // guard de concurrencia evita que se pise con el webhook.
+    const mlStockCron = process.env.ML_STOCK_CRON || '*/3 * * * *';
     cron.schedule(mlStockCron, async () => {
       try {
-        await cicloStockML();
+        await cicloStockML('cron');
       } catch (err) {
         logService.error('[cron] Error en el ciclo de stock de MercadoLibre', err);
       }
     });
     console.log(`📦 Cron stock ML activo (${mlStockCron})`);
 
-    // Stock — reconciliación: trae el stock desde Shopify (donde impactan las
-    // ventas de la tienda) y empuja a ML lo que haya quedado distinto.
-    const mlReconCron = process.env.ML_STOCK_RECON_CRON || '*/30 * * * *';
+    // Stock — ventas de Shopify. Una consulta a Shopify y, sólo si algo cambió,
+    // un push puntual a ML por el índice cacheado. Barato, así que corre seguido.
+    const mlShopifyCron = process.env.ML_STOCK_SHOPIFY_CRON || '*/3 * * * *';
+    cron.schedule(mlShopifyCron, async () => {
+      try {
+        await sincronizarStockShopifyHaciaML();
+      } catch (err) {
+        logService.error('[cron] Error empujando stock de Shopify a MercadoLibre', err);
+      }
+    });
+    console.log(`🛍️  Cron stock Shopify→ML activo (${mlShopifyCron})`);
+
+    // Stock — barrido completo. Relee todo el catálogo de ML y corrige lo que se
+    // haya escapado de los caminos rápidos. Una vez por hora alcanza.
+    const mlReconCron = process.env.ML_STOCK_RECON_CRON || '20 * * * *';
     cron.schedule(mlReconCron, async () => {
       try {
         const { push } = await reconciliarStockML();
@@ -7097,10 +7165,10 @@ app.listen(PORT, async () => {
           });
         }
       } catch (err) {
-        logService.error('[cron] Error reconciliando stock con MercadoLibre', err);
+        logService.error('[cron] Error en el barrido de stock con MercadoLibre', err);
       }
     });
-    console.log(`🔁 Cron reconciliación stock ML activo (${mlReconCron})`);
+    console.log(`🔁 Cron barrido stock ML activo (${mlReconCron})`);
   }
 
   // Cron: vigilancia de correos nuevos. Revisa la bandeja y deja una notificación
