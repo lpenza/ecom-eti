@@ -209,11 +209,43 @@ etiqueta UES o Marco Postal como a cualquier otro.
 Después de eso el cron trae las ventas solo cada 10 minutos y el webhook las trae
 al instante; el botón queda para forzar una pasada.
 
+### Sincronización de stock
+
+**Shopify es el master.** El stock real vive en Shopify, `productos` lo espeja y ML
+recibe siempre valores **absolutos** — nunca diferencias, porque ML ya descuenta su
+propio stock al vender y mandarle un delta descontaría dos veces.
+
+| Cuándo | Qué pasa |
+|---|---|
+| Venta en **ML** | Se descuenta en Shopify (y en `productos`) por SKU NC, y se empuja el nuevo valor a las publicaciones de ese SKU |
+| Venta en **Shopify** | Shopify descuenta solo; la reconciliación trae el valor a `productos` y lo empuja a ML |
+
+Ritmo: el ciclo corto corre **cada 10 min** (`ML_STOCK_CRON`, desfasado 5 min del
+cron de pedidos para que las ventas ya estén en la base) y la reconciliación completa
+**cada 30 min** (`ML_STOCK_RECON_CRON`).
+
+Los descuentos automáticos quedan firmados en `stock_ajustes_nc` con
+`usuario_nombre = "venta ML"` y `origen = "venta_ml"`, para distinguirlos de un
+conteo físico hecho por una persona en el panel del armador.
+
+**Idempotencia.** `pedidos.ml_stock_descontado_at` marca la venta ya procesada y
+`pedidos.ml_stock_descontado` guarda el detalle ítem por ítem. Sin esto, el cron
+—que reprocesa una ventana de 72 h cada 10 minutos— descontaría el mismo pedido en
+cada corrida. El detalle por ítem permite además reintentar un pedido que falló a
+la mitad sin volver a descontar lo que ya salió. Correr `sql/add_ml_stock_sync.sql`.
+
+Un SKU con varias publicaciones recibe el stock **completo en cada una** (no se
+reparte), así que el catálogo ofrece más unidades de las que hay. Es una decisión
+tomada, no un bug.
+
 ### Endpoints
 
 | Método | Ruta | Qué hace |
 |---|---|---|
 | GET | `/api/mercadolibre/estado` | Si está configurado / conectado, y con qué cuenta |
+| GET | `/api/mercadolibre/stock/comparar` | Compara ML vs nuestro stock (solo lectura) |
+| POST | `/api/mercadolibre/stock/ajustar` | Empuja el stock a ML (`?simular=1` para no escribir) |
+| POST | `/api/mercadolibre/stock/sincronizar` | Corre el ciclo de stock a mano |
 | GET | `/api/mercadolibre/auth-url` | Link de autorización OAuth (admin) |
 | GET | `/api/mercadolibre/callback` | Callback del OAuth (es el Redirect URI) |
 | POST | `/api/mercadolibre/sincronizar` | Trae ventas y etiquetas ahora |

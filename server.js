@@ -3254,6 +3254,129 @@ async function sincronizarMercadoLibre({ horas = 72, ventasPrecargadas = null } 
   return resumen;
 }
 
+// ── Sincronización automática de stock ML ↔ Shopify ─────────────────────────
+// Shopify es el master: el stock real vive ahí y `productos` lo espeja. Una venta
+// de ML descuenta en Shopify (ML ya descontó lo suyo solo); cualquier cambio de
+// stock se empuja después a ML como valor ABSOLUTO — nunca como diferencia, o se
+// descontaría dos veces.
+
+// Nombre con el que quedan firmados en la auditoría los descuentos automáticos,
+// para distinguirlos de un conteo físico hecho por una persona.
+const USUARIO_VENTA_ML = 'venta ML';
+
+// Descuenta el stock de las ventas de ML que todavía no lo hicieron.
+// La idempotencia es lo crítico acá: el cron reprocesa una ventana de 72 h cada
+// 10 minutos, así que cada ítem se marca apenas se descuenta y un pedido que
+// falla a la mitad se reintenta sin volver a descontar lo que ya salió.
+async function descontarStockVentasML() {
+  const pendientes = await supabaseService.obtenerPedidosMlSinDescontarStock();
+  const resumen = { pedidos: 0, descontados: [], sinProducto: [], errores: [], skusAfectados: new Set() };
+  if (pendientes.length === 0) return resumen;
+
+  for (const pedido of pendientes) {
+    let detalle = Array.isArray(pedido.ml_stock_descontado) ? pedido.ml_stock_descontado : [];
+    // Un SKU ya anotado en el detalle no se vuelve a tocar (reintento parcial).
+    const yaHechos = new Set(detalle.filter((d) => d.sku).map((d) => String(d.sku).trim().toUpperCase()));
+    let todoOk = true;
+
+    for (const item of (pedido.ml_items || [])) {
+      const sku = String(item.sku || '').trim();
+      const cantidad = Number(item.quantity) || 0;
+      if (!sku || cantidad <= 0) continue;
+      if (yaHechos.has(sku.toUpperCase())) continue;
+
+      try {
+        const producto = await supabaseService.obtenerProductoPorSku(sku);
+        if (!producto) {
+          // Sin producto no hay de dónde descontar; se anota para no reintentar
+          // en cada corrida y que quede visible qué falta mapear.
+          resumen.sinProducto.push({ pedido: pedido.numero_pedido, sku });
+          detalle = await supabaseService.registrarDescuentoItemMl(pedido.id, detalle, { sku, cantidad, sinProducto: true });
+          continue;
+        }
+
+        const anterior = Number(producto.stock || 0);
+        const nuevo = Math.max(0, anterior - cantidad);
+
+        // Shopify primero (es el master); si falla, no se marca y se reintenta.
+        await shopifyService.fijarStockDisponiblePorSku(String(producto.sku).trim(), nuevo);
+        await supabaseService.actualizarStockPorId(producto.id, nuevo);
+
+        // Auditoría: el ajuste queda firmado como "venta ML", no como un conteo
+        // físico de una persona.
+        try {
+          await supabaseService.registrarAjusteStockNC({
+            producto_id: producto.id,
+            sku: String(producto.sku).trim(),
+            stock_anterior: anterior,
+            stock_nuevo: nuevo,
+            usuario_id: null,
+            usuario_email: null,
+            usuario_nombre: USUARIO_VENTA_ML,
+            origen: 'venta_ml',
+          });
+        } catch (auditErr) {
+          logService.warning(`[ML stock] No se pudo auditar el descuento de ${sku}: ${auditErr.message}`);
+        }
+
+        detalle = await supabaseService.registrarDescuentoItemMl(pedido.id, detalle, { sku, cantidad, anterior, nuevo });
+        resumen.descontados.push({ pedido: pedido.numero_pedido, sku, cantidad, anterior, nuevo });
+        resumen.skusAfectados.add(String(producto.sku).trim());
+      } catch (err) {
+        todoOk = false;
+        resumen.errores.push({ pedido: pedido.numero_pedido, sku, error: err.message });
+        logService.error(`[ML stock] Error descontando ${sku} del pedido ${pedido.numero_pedido}`, err);
+      }
+    }
+
+    // El pedido se cierra sólo si no quedó ningún ítem fallado; si falló alguno,
+    // vuelve en la próxima corrida y retoma justo donde quedó.
+    if (todoOk) {
+      await supabaseService.marcarPedidoMlStockDescontado(pedido.id);
+      resumen.pedidos += 1;
+    }
+  }
+
+  return resumen;
+}
+
+// Ciclo corto (cada 10 min): descontar las ventas nuevas de ML y empujar a ML
+// SOLO los SKU que se movieron. Barato: no relee el catálogo entero para nada.
+async function cicloStockML() {
+  const descuento = await descontarStockVentasML();
+  const skus = [...descuento.skusAfectados];
+  let push = null;
+
+  if (skus.length > 0) {
+    push = await mercadolibreService.ajustarStockEnML({ soloSkus: skus });
+  }
+
+  if (descuento.descontados.length > 0 || descuento.errores.length > 0) {
+    logService.info(
+      `[ML stock] ${descuento.descontados.length} ítem(s) descontado(s) de ${descuento.pedidos} venta(s)` +
+      (push ? ` · ${push.aplicados.length} publicación(es) actualizada(s)` : '') +
+      (descuento.errores.length ? ` · ${descuento.errores.length} error(es)` : '')
+    );
+  }
+  return { descuento, push };
+}
+
+// Ciclo largo (cada 30 min): trae el stock de Shopify a `productos` — así entran
+// las ventas hechas EN Shopify, que Shopify descuenta por su cuenta — y después
+// empuja a ML todo lo que haya quedado distinto.
+async function reconciliarStockML() {
+  const desdeShopify = await sincronizarStockNCDesdeShopify();
+  const push = await mercadolibreService.ajustarStockEnML();
+  if (push.aplicados.length > 0 || push.fallados.length > 0) {
+    logService.info(
+      `[ML stock] Reconciliación: ${desdeShopify.actualizados.length} producto(s) actualizado(s) desde Shopify · ` +
+      `${push.aplicados.length} publicación(es) empujada(s) a ML` +
+      (push.fallados.length ? ` · ${push.fallados.length} falla(s)` : '')
+    );
+  }
+  return { desdeShopify, push };
+}
+
 // Estado de la conexión (lo consulta el panel para mostrar el botón correcto).
 app.get('/api/mercadolibre/estado', requireAuth, async (req, res) => {
   try {
@@ -3393,6 +3516,56 @@ app.get('/api/mercadolibre/etiqueta-pdf/:shipmentId', async (req, res) => {
     // y el visor mostraría la app entera en vez del PDF (bug que ya nos pasó).
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     return res.status(502).json({ success: false, error: error.message });
+  }
+});
+
+// Comparación de stock ML vs nuestro (SOLO LECTURA, no escribe nada).
+app.get('/api/mercadolibre/stock/comparar', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const r = await mercadolibreService.compararStock();
+    res.json({ success: true, totales: r.totales, filas: r.filas, sinSku: r.sinSku, sinPublicar: r.sinPublicar });
+  } catch (error) {
+    logService.error('Error comparando stock con MercadoLibre', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Empuje manual del stock a ML. Con ?simular=1 calcula sin escribir.
+app.post('/api/mercadolibre/stock/ajustar', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const r = await mercadolibreService.ajustarStockEnML({
+      simular: String(req.query.simular || '') === '1',
+      soloSkus: Array.isArray(req.body?.skus) && req.body.skus.length ? req.body.skus : null,
+    });
+    res.json({
+      success: true,
+      simulado: r.simulado,
+      intentados: r.intentados,
+      aplicados: r.aplicados.length,
+      fallados: r.fallados,
+      omitidos: r.omitidos,
+    });
+  } catch (error) {
+    logService.error('Error ajustando stock en MercadoLibre', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Corrida manual del ciclo de stock (descontar ventas ML + empujar lo movido).
+app.post('/api/mercadolibre/stock/sincronizar', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { descuento, push } = await cicloStockML();
+    res.json({
+      success: true,
+      ventasProcesadas: descuento.pedidos,
+      itemsDescontados: descuento.descontados,
+      sinProducto: descuento.sinProducto,
+      errores: descuento.errores,
+      publicacionesActualizadas: push ? push.aplicados.length : 0,
+    });
+  } catch (error) {
+    logService.error('Error en el ciclo de stock de MercadoLibre', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -6894,6 +7067,40 @@ app.listen(PORT, async () => {
       }
     });
     console.log(`🛒 Cron MercadoLibre activo (${mlCron})`);
+
+    // Stock — ciclo corto: descuenta las ventas nuevas de ML y empuja a ML sólo
+    // los SKU que se movieron. Va desfasado 5 min del cron de pedidos para que
+    // las ventas ya estén en la base cuando este corre.
+    const mlStockCron = process.env.ML_STOCK_CRON || '5-59/10 * * * *';
+    cron.schedule(mlStockCron, async () => {
+      try {
+        await cicloStockML();
+      } catch (err) {
+        logService.error('[cron] Error en el ciclo de stock de MercadoLibre', err);
+      }
+    });
+    console.log(`📦 Cron stock ML activo (${mlStockCron})`);
+
+    // Stock — reconciliación: trae el stock desde Shopify (donde impactan las
+    // ventas de la tienda) y empuja a ML lo que haya quedado distinto.
+    const mlReconCron = process.env.ML_STOCK_RECON_CRON || '*/30 * * * *';
+    cron.schedule(mlReconCron, async () => {
+      try {
+        const { push } = await reconciliarStockML();
+        if (push.fallados.length > 0) {
+          await notificar({
+            tipo: 'mercadolibre',
+            nivel: 'warning',
+            titulo: `${push.fallados.length} publicación(es) de ML no se pudieron actualizar`,
+            mensaje: 'Revisá el stock de MercadoLibre: quedaron publicaciones desfasadas.',
+            data: { fallados: push.fallados.slice(0, 20) },
+          });
+        }
+      } catch (err) {
+        logService.error('[cron] Error reconciliando stock con MercadoLibre', err);
+      }
+    });
+    console.log(`🔁 Cron reconciliación stock ML activo (${mlReconCron})`);
   }
 
   // Cron: vigilancia de correos nuevos. Revisa la bandeja y deja una notificación

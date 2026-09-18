@@ -2999,6 +2999,55 @@ class SupabaseService {
     return { pedido: data, creado: true };
   }
 
+  // Ventas de ML que todavía no descontaron stock. Se excluyen las canceladas:
+  // esas nunca salieron del depósito.
+  async obtenerPedidosMlSinDescontarStock(limite = 200) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('id, numero_pedido, ml_items, ml_stock_descontado, created_at')
+      .eq('origen', 'mercadolibre')
+      .is('ml_stock_descontado_at', null)
+      .neq('estado', 'cancelado')
+      .order('created_at', { ascending: true })
+      .limit(limite);
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Suma un ítem al detalle de lo ya descontado. Se guarda item por item para que
+  // un pedido que falló a la mitad se pueda reintentar sin descontar dos veces.
+  async registrarDescuentoItemMl(pedidoId, detallePrevio, item) {
+    const detalle = Array.isArray(detallePrevio) ? [...detallePrevio] : [];
+    detalle.push({ ...item, at: new Date().toISOString() });
+    const { error } = await supabase
+      .from('pedidos')
+      .update({ ml_stock_descontado: detalle })
+      .eq('id', pedidoId);
+    if (error) throw error;
+    return detalle;
+  }
+
+  async marcarPedidoMlStockDescontado(pedidoId) {
+    const { error } = await supabase
+      .from('pedidos')
+      .update({ ml_stock_descontado_at: new Date().toISOString() })
+      .eq('id', pedidoId);
+    if (error) throw error;
+  }
+
+  // Producto NC por SKU, tolerando los SKU cargados con espacios de más.
+  async obtenerProductoPorSku(sku) {
+    const limpio = String(sku || '').trim();
+    if (!limpio) return null;
+    const { data, error } = await supabase
+      .from('productos')
+      .select('id, sku, nombre, stock')
+      .or(`sku.eq.${limpio},sku.eq.${limpio} `)
+      .limit(1);
+    if (error) throw error;
+    return (data && data[0]) || null;
+  }
+
   // Pedidos de ML con envío de Mercado Envíos a los que todavía no les bajamos
   // la etiqueta. Los usa el sync para completar las que quedaron pendientes.
   async obtenerPedidosMlSinEtiqueta() {

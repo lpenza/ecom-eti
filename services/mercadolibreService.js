@@ -252,6 +252,210 @@ class MercadoLibreService {
     return await Promise.all(ids.map((id) => this.obtenerVenta(id)));
   }
 
+  // ── Catálogo y stock ───────────────────────────────────────────────────────
+
+  // El SKU puede venir en tres lugares según cómo se cargó la publicación:
+  // seller_custom_field, seller_sku, o el atributo SELLER_SKU.
+  skuDePublicacion(obj) {
+    if (!obj) return null;
+    const directo = obj.seller_custom_field || obj.seller_sku;
+    if (directo) return String(directo).trim();
+    const attr = (obj.attributes || []).find((a) => a.id === 'SELLER_SKU');
+    const valor = attr?.value_name || attr?.values?.[0]?.name;
+    return valor ? String(valor).trim() : null;
+  }
+
+  // Todas las publicaciones activas, aplanadas a "unidades vendibles": un ítem
+  // simple es una unidad; un ítem con variaciones es una unidad por variación,
+  // que es el nivel al que ML lleva el stock.
+  // `estados` incluye 'paused' a propósito: ML pausa sola cualquier publicación que
+  // llega a stock 0. Si sólo miráramos las activas, un producto agotado parecería
+  // no existir en ML — y al reponer stock nunca se le empujaría la cantidad nueva,
+  // que es justo lo que la devuelve a estar publicada.
+  async listarUnidadesPublicadas({ estados = ['active', 'paused'] } = {}) {
+    const sellerId = await this.getSellerId();
+
+    const ids = [];
+    for (const estado of estados) {
+      for (let offset = 0; offset < 2000; offset += 50) {
+        const r = await this.request('GET', `/users/${sellerId}/items/search`, {
+          params: { limit: 50, offset, status: estado },
+        });
+        const lote = r.results || [];
+        ids.push(...lote);
+        if (lote.length < 50) break;
+      }
+    }
+
+    const unidades = [];
+    // El multiget acepta 20 ids por llamada.
+    for (let i = 0; i < ids.length; i += 20) {
+      const r = await this.request('GET', '/items', {
+        params: {
+          ids: ids.slice(i, i + 20).join(','),
+          attributes: 'id,title,status,permalink,available_quantity,seller_custom_field,attributes,variations',
+        },
+      });
+      for (const fila of r) {
+        if (fila.code !== 200 || !fila.body) continue;
+        const it = fila.body;
+        const variaciones = it.variations || [];
+        if (variaciones.length === 0) {
+          unidades.push({
+            itemId: it.id,
+            variationId: null,
+            titulo: it.title,
+            permalink: it.permalink || null,
+            sku: this.skuDePublicacion(it),
+            cantidadML: it.available_quantity,
+          });
+        } else {
+          for (const v of variaciones) {
+            unidades.push({
+              itemId: it.id,
+              variationId: v.id,
+              titulo: it.title,
+              permalink: it.permalink || null,
+              sku: this.skuDePublicacion(v) || this.skuDePublicacion(it),
+              cantidadML: v.available_quantity,
+            });
+          }
+        }
+      }
+    }
+    return unidades;
+  }
+
+  // Compara lo publicado en ML contra el stock de `productos`. SOLO LECTURA:
+  // no escribe en ML ni en la base. Es la foto que alimenta el reporte y, más
+  // adelante, la decisión de qué empujar.
+  //
+  // Criterio acordado para SKU con varias publicaciones: cada una lleva el stock
+  // real completo (no se reparte), así que el objetivo de todas es el mismo.
+  async compararStock(prefijos = ['NC', 'BSA', 'MRT', 'BSJ']) {
+    const supabaseService = require('./supabaseService');
+    const [unidades, productos] = await Promise.all([
+      this.listarUnidadesPublicadas(),
+      supabaseService.listarProductosPorPrefijoSku(prefijos),
+    ]);
+
+    const porSku = new Map(productos.map((p) => [String(p.sku).trim().toUpperCase(), p]));
+    const publicacionesPorSku = {};
+    const filas = [];
+    const sinSku = [];
+    const skuDesconocido = [];
+
+    for (const u of unidades) {
+      if (!u.sku) { sinSku.push(u); continue; }
+      const clave = u.sku.toUpperCase();
+      const producto = porSku.get(clave);
+      if (!producto) { skuDesconocido.push(u); continue; }
+
+      publicacionesPorSku[clave] = (publicacionesPorSku[clave] || 0) + 1;
+      filas.push({
+        ...u,
+        sku: producto.sku,
+        nombre: producto.nombre,
+        stockNuestro: Number(producto.stock || 0),
+        diferencia: Number(u.cantidadML || 0) - Number(producto.stock || 0),
+      });
+    }
+
+    // Cuántas publicaciones tiene cada SKU: con el criterio "stock completo en
+    // todas", un SKU con 3 publicaciones ofrece 3× su stock real.
+    filas.forEach((f) => { f.publicacionesDelSku = publicacionesPorSku[f.sku.toUpperCase()]; });
+
+    // Trim obligatorio: hay SKU cargados con espacios al final ("NC250120 "), y
+    // sin normalizar el mismo producto aparecía a la vez publicado y sin publicar.
+    const skusPublicados = new Set(filas.map((f) => String(f.sku).trim().toUpperCase()));
+    const sinPublicar = productos.filter((p) => !skusPublicados.has(String(p.sku).trim().toUpperCase()));
+
+    return {
+      generadoAt: new Date().toISOString(),
+      filas,
+      sinSku,
+      skuDesconocido,
+      sinPublicar: sinPublicar.map((p) => ({ sku: p.sku, nombre: p.nombre, stock: p.stock })),
+      totales: {
+        publicaciones: unidades.length,
+        mapeadas: filas.length,
+        skusUnicos: skusPublicados.size,
+        skusDuplicados: Object.values(publicacionesPorSku).filter((n) => n > 1).length,
+        unidadesEnML: filas.reduce((s, f) => s + Number(f.cantidadML || 0), 0),
+        unidadesNuestras: [...skusPublicados].reduce((s, k) => s + Number(porSku.get(k)?.stock || 0), 0),
+        conDiferencia: filas.filter((f) => f.diferencia !== 0).length,
+        mlOfreceDeMas: filas.filter((f) => f.diferencia > 0).length,
+        mlOfreceDeMenos: filas.filter((f) => f.diferencia < 0).length,
+      },
+    };
+  }
+
+  // Fija la cantidad disponible de UNA publicación. Siempre valor absoluto:
+  // ML descuenta su propio stock al vender, así que mandar diferencias descuenta
+  // dos veces.
+  async fijarStockPublicacion(itemId, variationId, cantidad) {
+    const qty = Math.max(0, Math.trunc(Number(cantidad) || 0));
+    if (variationId) {
+      await this.request('PUT', `/items/${itemId}`, {
+        data: { variations: [{ id: variationId, available_quantity: qty }] },
+      });
+    } else {
+      await this.request('PUT', `/items/${itemId}`, { data: { available_quantity: qty } });
+    }
+    return qty;
+  }
+
+  // Empuja el stock real a todas las publicaciones que estén desfasadas.
+  // Criterio acordado: cada publicación de un SKU lleva el stock COMPLETO (no se
+  // reparte entre las publicaciones del mismo SKU).
+  //
+  // `simular: true` calcula todo sin escribir nada en ML.
+  async ajustarStockEnML({ simular = false, excluirSkus = [], soloSkus = null, pausaMs = 120 } = {}) {
+    const comparacion = await this.compararStock();
+    const excluidos = new Set(excluirSkus.map((s) => String(s).trim().toUpperCase()));
+    // `soloSkus` acota la corrida a los SKU que acaban de cambiar: el cron corto
+    // empuja sólo lo que se movió en vez de reescribir todo el catálogo.
+    const incluidos = soloSkus
+      ? new Set(soloSkus.map((s) => String(s).trim().toUpperCase()))
+      : null;
+
+    const aCambiar = comparacion.filas.filter((f) => {
+      const clave = String(f.sku).trim().toUpperCase();
+      if (excluidos.has(clave)) return false;
+      if (incluidos && !incluidos.has(clave)) return false;
+      return Number(f.cantidadML) !== Number(f.stockNuestro);
+    });
+
+    const aplicados = [];
+    const fallados = [];
+    const omitidos = comparacion.filas.length - aCambiar.length;
+
+    for (const f of aCambiar) {
+      if (simular) {
+        aplicados.push({ ...f, nuevaCantidad: f.stockNuestro, simulado: true });
+        continue;
+      }
+      try {
+        const qty = await this.fijarStockPublicacion(f.itemId, f.variationId, f.stockNuestro);
+        aplicados.push({ sku: f.sku, nombre: f.nombre, itemId: f.itemId, antes: f.cantidadML, ahora: qty });
+      } catch (err) {
+        fallados.push({ sku: f.sku, itemId: f.itemId, antes: f.cantidadML, objetivo: f.stockNuestro, error: err.message });
+      }
+      // ML limita el ritmo de escritura; una pausa corta evita los 429.
+      if (pausaMs > 0) await new Promise((r) => setTimeout(r, pausaMs));
+    }
+
+    return {
+      simulado: simular,
+      total: comparacion.filas.length,
+      intentados: aCambiar.length,
+      aplicados,
+      fallados,
+      omitidos,
+      estadoPrevio: comparacion,
+    };
+  }
+
   // ── Normalización a la forma de `pedidos` ──────────────────────────────────
 
   // Convierte una venta de ML (+ su envío, si tiene) al shape que usa la tabla
