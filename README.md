@@ -198,8 +198,14 @@ etiqueta UES o Marco Postal como a cualquier otro.
    *Crear aplicación*.
    - **Redirect URI:** `https://tu-app.up.railway.app/api/mercadolibre/callback`
      (https obligatorio, sin barra final, idéntica a `ML_REDIRECT_URI`).
-   - **Scopes:** `read` y `offline_access` (este último es el que habilita el
-     refresh token; sin él hay que reautorizar cada 6 horas).
+   - **Scopes:** `read`, `offline_access` (habilita el refresh token; sin él hay
+     que reautorizar cada 6 horas) y el dominio de **publicaciones**
+     (`urn:ml:mktp:publish-sync`), que es el que permite leer y escribir
+     `available_quantity`. Sin ese último, todo `/items/...` responde 403
+     PolicyAgent aunque la app tenga `read` y `write` genéricos.
+   - Al agregar un scope hay que **volver a autorizar**: un token ya emitido NO
+     gana permisos nuevos, y el síntoma es un 403 que parece un cambio que no
+     se guardó.
    - **Notificaciones (webhook):** `https://tu-app.up.railway.app/api/mercadolibre/webhook`
      con los topics `orders_v2` y `shipments`.
 3. Cargar `ML_CLIENT_ID`, `ML_CLIENT_SECRET` y `ML_REDIRECT_URI` en Railway.
