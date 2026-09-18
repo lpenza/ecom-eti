@@ -3398,14 +3398,35 @@ async function cicloStockML(origen = 'cron') {
 // Es barato: una consulta a Shopify, y a ML nada si no se movió nada.
 async function sincronizarStockShopifyHaciaML() {
   const desdeShopify = await sincronizarStockNCDesdeShopify();
-  if (desdeShopify.actualizados.length === 0) return { desdeShopify, push: null };
+
+  // Se compara TODO `productos` contra el índice, no sólo lo que cambió en esta
+  // corrida: el stock también lo mueven el panel del armador y el cron de cada
+  // 2 h, y mirando sólo `actualizados` esos cambios nunca llegaban a ML — se
+  // quedaban esperando al barrido de la hora. Comparar contra el índice no
+  // cuesta llamadas a ML porque está en memoria.
+  const [productos, indice] = await Promise.all([
+    supabaseService.listarProductosPorPrefijoSku(STOCK_SKU_PREFIXES),
+    mercadolibreService.obtenerIndicePublicaciones(),
+  ]);
 
   const cantidades = {};
-  for (const a of desdeShopify.actualizados) cantidades[String(a.sku).trim()] = a.nuevo;
-  const push = await mercadolibreService.empujarStockDeSkus(cantidades);
+  for (const p of productos) {
+    const publicaciones = indice.get(String(p.sku).trim().toUpperCase());
+    if (!publicaciones || publicaciones.length === 0) continue;
+    const nuestro = Number(p.stock || 0);
+    if (publicaciones.some((pub) => Number(pub.cantidadML) !== nuestro)) {
+      cantidades[String(p.sku).trim()] = nuestro;
+    }
+  }
 
+  if (Object.keys(cantidades).length === 0) return { desdeShopify, push: null };
+
+  const push = await mercadolibreService.empujarStockDeSkus(cantidades);
   logService.info(
-    `[ML stock/shopify] cambió en Shopify: ${desdeShopify.actualizados.map((a) => `${String(a.sku).trim()} ${a.anterior}→${a.nuevo}`).join(', ')}` +
+    `[ML stock/shopify] ${desdeShopify.actualizados.length} cambio(s) desde Shopify` +
+    (desdeShopify.actualizados.length
+      ? `: ${desdeShopify.actualizados.map((a) => `${String(a.sku).trim()} ${a.anterior}→${a.nuevo}`).join(', ')}`
+      : '') +
     (push.aplicados.length ? ` · ML actualizado: ${detallePushLog(push.aplicados)}` : ' · ML ya estaba igual') +
     (push.sinPublicacion.length ? ` · sin publicación en ML: ${push.sinPublicacion.join(', ')}` : '') +
     (push.fallados.length ? ` · FALLAS: ${push.fallados.map((f) => f.sku + ' (' + f.error + ')').join(', ')}` : '')
