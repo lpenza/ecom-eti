@@ -2113,6 +2113,32 @@ class SupabaseService {
     return (data || []).filter((p) => /^ues/i.test(String(p.numero_seguimiento_ues || '').trim()));
   }
 
+  // Pausa del levante automático (fila única id=1 de ues_levante_pausa).
+  // Devuelve null si la tabla todavía no existe: el cron sigue corriendo como
+  // siempre en vez de romperse por una migración que falta.
+  async obtenerPausaLevante() {
+    const { data, error } = await supabase
+      .from('ues_levante_pausa')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+    if (error) {
+      console.warn('⚠️  No se pudo leer ues_levante_pausa:', error.message);
+      return null;
+    }
+    return data || null;
+  }
+
+  async guardarPausaLevante(registro) {
+    const { data, error } = await supabase
+      .from('ues_levante_pausa')
+      .upsert({ id: 1, ...registro, updated_at: new Date().toISOString() }, { onConflict: 'id' })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
   // ── Notificaciones del sistema ───────────────────────────────────────────────
 
   // Crear una notificación para el panel lateral. Best-effort desde los crons:

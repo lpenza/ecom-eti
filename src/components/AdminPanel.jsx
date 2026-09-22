@@ -141,6 +141,11 @@ export default function AdminPanel() {
   const levanteObsEditado = useRef(false);
   // Estado del levante automático (cron lun/mié/vie 12:30 UY).
   const [levanteAuto, setLevanteAuto] = useState(null);
+  // Pausa del automático: fecha de reanudación (opcional) y motivo, más el
+  // loading del botón. La pausa vive en la base, así que sobrevive redeploys.
+  const [pausaHasta, setPausaHasta] = useState('');
+  const [pausaMotivo, setPausaMotivo] = useState('');
+  const [pausaLoading, setPausaLoading] = useState(false);
   const [uesAuth, setUesAuth] = useState(false);
   const [uesLoginLoading, setUesLoginLoading] = useState(false);
 
@@ -305,6 +310,34 @@ export default function AdminPanel() {
       mostrarToast('Error al solicitar el levante', 'error');
     } finally {
       setLevanteLoading(false);
+    }
+  };
+
+  // Pausar / reanudar el levante automático. La pausa sólo frena el cron: el
+  // botón "Solicitar levante" de arriba sigue disponible.
+  const handlePausaLevanteAuto = async (pausar) => {
+    setPausaLoading(true);
+    try {
+      const res = await fetchAdmin('/ues/levante-automatico/pausa', {
+        method: 'POST',
+        body: JSON.stringify(
+          pausar ? { pausado: true, hasta: pausaHasta || null, motivo: pausaMotivo } : { pausado: false }
+        ),
+      });
+      if (res.success) {
+        setLevanteAuto((prev) => (prev ? { ...prev, pausa: res.pausa } : prev));
+        if (!pausar) {
+          setPausaHasta('');
+          setPausaMotivo('');
+        }
+        mostrarToast(pausar ? '⏸️ Levante automático pausado' : '▶️ Levante automático reanudado', 'ok');
+      } else {
+        mostrarToast(res.error || 'No se pudo cambiar la pausa del levante automático', 'error');
+      }
+    } catch {
+      mostrarToast('Error al cambiar la pausa del levante automático', 'error');
+    } finally {
+      setPausaLoading(false);
     }
   };
 
@@ -2083,6 +2116,13 @@ export default function AdminPanel() {
               Iniciá sesión en UES para poder solicitar el levante.
             </p>
           )}
+          {levanteAuto?.pausa?.activa && (
+            <p className="admin-section-desc" style={{ marginTop: 12 }}>
+              ⏸️ El levante automático está en pausa
+              {levanteAuto.pausa.hasta ? ` hasta el ${levanteAuto.pausa.hasta}` : ''}, pero este botón
+              sigue pidiendo el levante igual.
+            </p>
+          )}
 
           {/* ── Levante automático ── */}
           {levanteAuto && (
@@ -2104,6 +2144,64 @@ export default function AdminPanel() {
                 Ahora mismo hay <strong>{levanteAuto.pendientes}</strong> pedido(s) UES esperando
                 retiro{levanteAuto.yaSolicitado ? ` y el levante del ${levanteAuto.fecha} ya fue solicitado.` : '.'}
               </p>
+
+              {/* ── Pausar / reanudar el automático ── */}
+              {levanteAuto.habilitado && (levanteAuto.pausa?.activa ? (
+                <>
+                  <p className="admin-section-desc" style={{ marginTop: 10 }}>
+                    ⏸️ <strong>En pausa</strong>
+                    {levanteAuto.pausa.hasta
+                      ? <> hasta el <strong>{levanteAuto.pausa.hasta}</strong> (se reanuda solo al día siguiente)</>
+                      : <> sin fecha de reanudación</>}
+                    {levanteAuto.pausa.por ? ` · pausado por ${levanteAuto.pausa.por}` : ''}
+                    {levanteAuto.pausa.motivo ? ` · ${levanteAuto.pausa.motivo}` : ''}
+                    . El cron no va a pedir levantes; el botón de arriba sigue funcionando.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => handlePausaLevanteAuto(false)}
+                    disabled={pausaLoading}
+                    style={{ marginTop: 8 }}
+                  >
+                    {pausaLoading ? 'Reanudando...' : '▶️ Reanudar levante automático'}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="admin-nuevo-fields" style={{ marginTop: 12, marginBottom: 12 }}>
+                    <div className="admin-field">
+                      <label>Pausar hasta (opcional)</label>
+                      <input
+                        type="date"
+                        min={hoy}
+                        value={pausaHasta}
+                        onChange={(e) => setPausaHasta(e.target.value)}
+                      />
+                    </div>
+                    <div className="admin-field">
+                      <label>Motivo (opcional)</label>
+                      <input
+                        type="text"
+                        placeholder="Licencia, feriado, mudanza..."
+                        value={pausaMotivo}
+                        onChange={(e) => setPausaMotivo(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => handlePausaLevanteAuto(true)}
+                    disabled={pausaLoading}
+                  >
+                    {pausaLoading ? 'Pausando...' : '⏸️ Pausar levante automático'}
+                  </button>
+                  <p className="admin-section-desc" style={{ marginTop: 8 }}>
+                    Sin fecha, la pausa queda hasta que alguien la reanude a mano.
+                  </p>
+                </>
+              ))}
             </div>
           )}
 

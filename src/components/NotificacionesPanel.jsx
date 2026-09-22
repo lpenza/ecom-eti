@@ -5,6 +5,9 @@ import { formatFechaHoraUy, tiempoRelativoUy } from '../utils/fechas';
 const ICONO_POR_TIPO = {
   levante_auto: '📦',
   levante_manual: '📦',
+  // Pausa del automático: ícono propio para que un día pausado no se confunda
+  // de un vistazo con un levante que sí se pidió.
+  levante_pausa: '⏸️',
   pickup_programado: '⏱',
   pickup_despachado: '🏬',
   email: '📧',

@@ -65,6 +65,7 @@ import FacturacionPanel from './components/FacturacionPanel';
 import AtencionPanel from './components/AtencionPanel';
 import CadeteriaPanel from './components/CadeteriaPanel';
 import EmailsPanel from './components/EmailsPanel';
+import FaqAtencionPanel from './components/FaqAtencionPanel';
 import { formatFechaUy, formatUy } from './utils/fechas';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
@@ -2315,6 +2316,16 @@ function AppContent({ user, logout }) {
               onSelect={() => setActiveView('emails')}
             />
           )}
+          {(esAdmin || esAtencion) && (
+            <button
+              type="button"
+              className={`side-nav-item ${activeView === 'faq' ? 'side-nav-item-active' : ''}`}
+              onClick={() => setActiveView('faq')}
+            >
+              <span className="side-nav-icon">📖</span>
+              Guía de Atención
+            </button>
+          )}
           {!esAdmin && !esAtencion && (
             <button
               type="button"
@@ -3326,6 +3337,10 @@ function AppContent({ user, logout }) {
 
       {activeView === 'emails' && (esAdmin || esAtencion) && (
         <EmailsPanel mostrarToast={mostrarToast} />
+      )}
+
+      {activeView === 'faq' && (esAdmin || esAtencion) && (
+        <FaqAtencionPanel mostrarToast={mostrarToast} />
       )}
 
       {activeView === 'pedidos' && esAtencion && (

@@ -1,10 +1,42 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { obtenerStockNC, sincronizarStockNC, actualizarStockNC } from '../services/api';
+import {
+  obtenerStockNC, sincronizarStockNC, actualizarStockNC,
+  obtenerStockOtros, sincronizarStockOtros,
+} from '../services/api';
 import { formatFechaHoraUy, parseTimestampUtc } from '../utils/fechas';
+
+// Subcategorías del panel: "colores" (NC/BSA/MRT/BSJ) y "otros" (base coat, top
+// coat, tratamientos). Comparten toda la mecánica de conteo/guardado; sólo cambia
+// de dónde se listan y sincronizan los productos.
+const TABS = [
+  {
+    id: 'colores',
+    label: 'Colores',
+    titulo: 'Stock de colores (NC)',
+    sub: 'Sincronizá el stock desde Shopify, contá el físico y guardalo: se refleja en Shopify (todas las variantes con el mismo SKU quedan iguales).',
+    columnaNombre: 'Color',
+    vacio: 'No hay productos para mostrar',
+  },
+  {
+    id: 'otros',
+    label: 'Otros artículos',
+    titulo: 'Stock de otros artículos',
+    sub: 'Base coat, top coat y tratamientos: mismo mecanismo que el stock de colores (sincronizar, contar y guardar).',
+    columnaNombre: 'Artículo',
+    vacio: 'No hay otros artículos para mostrar',
+  },
+];
 
 // La hora se muestra siempre en horario uruguayo (ver src/utils/fechas.js: los
 // timestamps de productos vuelven en UTC pero sin sufijo de zona).
 const formatFecha = formatFechaHoraUy;
+
+// Parámetro de "stock bajo": con 5 unidades o menos, un color se considera bajo.
+// Si un producto tiene un `stock_minimo` propio más alto, se respeta ese en su lugar.
+const STOCK_BAJO_UMBRAL = 5;
+function umbralBajo(p) {
+  return Math.max(STOCK_BAJO_UMBRAL, Number(p?.stock_minimo) || 0);
+}
 
 // Columnas ordenables. `dirInicial` es la dirección al hacer el primer click:
 // las de texto arrancan A→Z y las numéricas / de fecha arrancan de mayor a menor.
@@ -18,6 +50,8 @@ const COLUMNAS = [
 ];
 
 export default function StockNcPanel({ mostrarToast }) {
+  const [tab, setTab] = useState('colores');
+  const tabActiva = TABS.find((t) => t.id === tab) || TABS[0];
   const [productos, setProductos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [sincronizando, setSincronizando] = useState(false);
@@ -36,25 +70,27 @@ export default function StockNcPanel({ mostrarToast }) {
   const cargar = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await obtenerStockNC();
+      const data = tab === 'colores' ? await obtenerStockNC() : await obtenerStockOtros();
       setProductos(data);
       // Reiniciar borradores al valor actual.
       const nextDrafts = {};
       for (const p of data) nextDrafts[p.sku] = String(p.stock ?? 0);
       setDrafts(nextDrafts);
     } catch (err) {
-      mostrarToast?.(err.message || 'Error cargando stock NC', 'error');
+      mostrarToast?.(err.message || 'Error cargando stock', 'error');
     } finally {
       setLoading(false);
     }
-  }, [mostrarToast]);
+  }, [mostrarToast, tab]);
 
+  // Al cambiar de subcategoría, `cargar` cambia (depende de `tab`) y este efecto
+  // recarga automáticamente la lista correspondiente.
   useEffect(() => { cargar(); }, [cargar]);
 
   async function handleSincronizar() {
     setSincronizando(true);
     try {
-      const res = await sincronizarStockNC();
+      const res = tab === 'colores' ? await sincronizarStockNC() : await sincronizarStockOtros();
       if (!res.success) {
         mostrarToast?.(res.error || 'Error al sincronizar', 'error');
         return;
@@ -117,6 +153,9 @@ export default function StockNcPanel({ mostrarToast }) {
       const detalleVar = nVar ? ` · ${nVar} variante(s) igualadas en Shopify` : ' (Shopify actualizado)';
       mostrarToast?.(`${sku}: stock fijado en ${valor}${detalleVar}`, 'success');
       setProductos((prev) => prev.map((p) => (p.sku === sku ? { ...p, stock: valor, updated_at: res.producto?.updated_at || p.updated_at } : p)));
+      if (valor <= umbralBajo(prod)) {
+        mostrarToast?.(`⚠ Stock bajo: ${prod.nombre} (SKU ${sku}) llegó a ${valor} unidad(es)`, 'warning');
+      }
     } catch (err) {
       mostrarToast?.(err.message || 'Error al guardar', 'error');
     } finally {
@@ -157,6 +196,7 @@ export default function StockNcPanel({ mostrarToast }) {
     setGuardandoTodo(true);
     let ok = 0;
     const errores = [];
+    const quedaronBajos = [];
     for (const { prod, valor } of items) {
       const sku = prod.sku;
       setGuardando((g) => ({ ...g, [sku]: true }));
@@ -167,6 +207,7 @@ export default function StockNcPanel({ mostrarToast }) {
         } else {
           ok++;
           setProductos((prev) => prev.map((p) => (p.sku === sku ? { ...p, stock: valor, updated_at: res.producto?.updated_at || p.updated_at } : p)));
+          if (valor <= umbralBajo(prod)) quedaronBajos.push({ nombre: prod.nombre, sku, valor });
         }
       } catch {
         errores.push(sku);
@@ -179,7 +220,15 @@ export default function StockNcPanel({ mostrarToast }) {
     if (errores.length > 0) {
       mostrarToast?.(`${errores.length} con error: ${errores.slice(0, 4).join(', ')}${errores.length > 4 ? '…' : ''}`, 'error');
     }
+    for (const b of quedaronBajos) {
+      mostrarToast?.(`⚠ Stock bajo: ${b.nombre} (SKU ${b.sku}) llegó a ${b.valor} unidad(es)`, 'warning');
+    }
   }
+
+  // Colores con stock bajo (≤5 unidades, o su propio mínimo si es mayor), para la alerta del panel.
+  const productosBajos = useMemo(() => (
+    productos.filter((p) => p.activo !== false && Number(p.stock) <= umbralBajo(p))
+  ), [productos]);
 
   const filtrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
@@ -230,13 +279,24 @@ export default function StockNcPanel({ mostrarToast }) {
 
   return (
     <div className="stocknc-panel">
+      <div className="admin-tabs">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            className={`admin-tab${tab === t.id ? ' admin-tab-active' : ''}`}
+            onClick={() => setTab(t.id)}
+            disabled={loading || sincronizando || guardandoTodo}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       <div className="stocknc-header">
         <div>
-          <h2 className="stocknc-title">Stock de colores (NC)</h2>
-          <p className="stocknc-sub">
-            Sincronizá el stock desde Shopify, contá el físico y guardalo: se refleja en Shopify
-            (todas las variantes con el mismo SKU quedan iguales).
-          </p>
+          <h2 className="stocknc-title">{tabActiva.titulo}</h2>
+          <p className="stocknc-sub">{tabActiva.sub}</p>
         </div>
         <div className="stocknc-header-actions">
           <button className="btn btn-secondary btn-sm" onClick={cargar} disabled={loading || sincronizando || guardandoTodo}>
@@ -247,6 +307,21 @@ export default function StockNcPanel({ mostrarToast }) {
           </button>
         </div>
       </div>
+
+      {productosBajos.length > 0 && (
+        <div className="stocknc-alerta-bajo" role="alert">
+          <span className="stocknc-alerta-bajo-icono">⚠</span>
+          <div className="stocknc-alerta-bajo-texto">
+            <strong>Stock bajo ({productosBajos.length}):</strong>{' '}
+            {productosBajos.map((p, i) => (
+              <span key={p.id}>
+                {i > 0 && ' · '}
+                {p.nombre} (SKU {p.sku}) llegó a {p.stock} unidad{Number(p.stock) === 1 ? '' : 'es'}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="stocknc-toolbar">
         <input
@@ -284,7 +359,7 @@ export default function StockNcPanel({ mostrarToast }) {
                     onClick={() => ordenarPor(c.campo)}
                     title={`Ordenar por ${c.label.toLowerCase()}`}
                   >
-                    {c.label}
+                    {c.campo === 'nombre' ? tabActiva.columnaNombre : c.label}
                     <span className="stocknc-sort-icon">
                       {activa ? (orden.dir === 'asc' ? '▲' : '▼') : '↕'}
                     </span>
@@ -300,14 +375,14 @@ export default function StockNcPanel({ mostrarToast }) {
               const draftValido = draft !== '' && draft != null && Number.isInteger(Number(draft));
               const diff = draftValido ? Number(draft) - Number(p.stock) : null;
               const cambiado = diff !== null && diff !== 0;
-              const bajo = Number(p.stock) <= Number(p.stock_minimo ?? 0);
+              const bajo = Number(p.stock) <= umbralBajo(p);
               return (
                 <tr key={p.id} className={bajo ? 'stocknc-row-bajo' : ''}>
                   <td className="stocknc-sku">{p.sku}</td>
                   <td>{p.nombre}</td>
                   <td className={`stocknc-stock ${Number(p.stock) < 0 ? 'stocknc-neg' : ''}`}>
                     {p.stock}
-                    {bajo && <span className="stocknc-badge-bajo" title={`Mínimo: ${p.stock_minimo}`}>⚠ bajo</span>}
+                    {bajo && <span className="stocknc-badge-bajo" title={`Stock bajo: umbral ${umbralBajo(p)} unidad(es)`}>⚠ bajo</span>}
                   </td>
                   <td>
                     <input
@@ -348,7 +423,7 @@ export default function StockNcPanel({ mostrarToast }) {
               );
             })}
             {ordenados.length === 0 && !loading && (
-              <tr><td colSpan={7} className="stocknc-empty">No hay productos NC para mostrar</td></tr>
+              <tr><td colSpan={7} className="stocknc-empty">{tabActiva.vacio}</td></tr>
             )}
             {loading && (
               <tr><td colSpan={7} className="stocknc-empty">Cargando…</td></tr>
@@ -438,7 +513,7 @@ export default function StockNcPanel({ mostrarToast }) {
                   <thead>
                     <tr>
                       <th>SKU</th>
-                      <th>Color</th>
+                      <th>{tabActiva.columnaNombre}</th>
                       <th>Sistema</th>
                       <th>Tu conteo</th>
                       <th>Diferencia</th>

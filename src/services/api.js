@@ -855,6 +855,32 @@ export async function actualizarStockNC(id, sku, stock) {
   });
 }
 
+// ==================== STOCK OTROS ARTÍCULOS (base coat, top coat, tratamientos) ====================
+// Misma mecánica que stock NC (arriba), acotada a otra lista de prefijos de SKU en el backend.
+
+/**
+ * Listar "otros artículos" (base coat, top coat, tratamientos) con su stock actual.
+ */
+export async function obtenerStockOtros() {
+  const data = await fetchAPI('/armador/stock-otros', { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+/**
+ * Sincronizar el stock de "otros artículos" desde Shopify hacia la tabla productos.
+ */
+export async function sincronizarStockOtros() {
+  return await fetchAPI('/armador/stock-otros/sincronizar', { method: 'POST' });
+}
+
+/**
+ * Guardar un conteo físico de un "otro artículo": mismo endpoint que stock NC
+ * (fija el valor en Shopify y en productos por id, sin importar la categoría).
+ */
+export async function actualizarStockOtros(id, sku, stock) {
+  return await actualizarStockNC(id, sku, stock);
+}
+
 export async function obtenerMisPedidosArmados(desde, hasta) {
   const params = new URLSearchParams();
   if (desde) params.append('desde', desde);

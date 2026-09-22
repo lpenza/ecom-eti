@@ -1786,13 +1786,23 @@ const STOCK_SKU_PREFIXES = String(process.env.STOCK_SKU_PREFIX || 'NC,BSA,MRT,BS
   .map((p) => p.trim())
   .filter(Boolean);
 
+// Prefijos de SKU de "otros artículos" (base coat, top coat, tratamientos): misma
+// mecánica que los colores pero como subcategoría aparte dentro del panel Stock Colores.
+// Configurable por env (coma-separado); por defecto TOPCOAT, BASECOAT y TRATNAILS.
+const STOCK_SKU_PREFIXES_OTROS = String(process.env.STOCK_SKU_PREFIX_OTROS || 'TOPCOAT,BASECOAT,TRATNAILS')
+  .split(',')
+  .map((p) => p.trim())
+  .filter(Boolean);
+
 // Lógica compartida por el endpoint manual y el cron: lee el stock "available" de Shopify
-// (locación principal) de todas las variantes con SKU NC y lo vuelca a productos.stock
-// (match por SKU, update por id). Devuelve el resumen.
-async function sincronizarStockNCDesdeShopify() {
+// (locación principal) de todas las variantes cuyo SKU matchea alguno de los prefijos dados
+// y lo vuelca a productos.stock (match por SKU, update por id). Devuelve el resumen.
+// `prefijos` por defecto son los de colores; se le puede pasar STOCK_SKU_PREFIXES_OTROS
+// para sincronizar la subcategoría de otros artículos con la misma lógica.
+async function sincronizarStockNCDesdeShopify(prefijos = STOCK_SKU_PREFIXES) {
   const [stockShopify, productos] = await Promise.all([
-    shopifyService.obtenerStockPorPrefijoSku(STOCK_SKU_PREFIXES),
-    supabaseService.listarProductosPorPrefijoSku(STOCK_SKU_PREFIXES),
+    shopifyService.obtenerStockPorPrefijoSku(prefijos),
+    supabaseService.listarProductosPorPrefijoSku(prefijos),
   ]);
 
   const actualizados = [];
@@ -1856,6 +1866,18 @@ app.get('/api/armador/stock-nc', requireAuth, async (req, res) => {
   }
 });
 
+// Listar "otros artículos" (base coat, top coat, tratamientos): misma tabla y mecánica
+// que el stock de colores, filtrando por los prefijos de STOCK_SKU_PREFIXES_OTROS.
+app.get('/api/armador/stock-otros', requireAuth, async (req, res) => {
+  try {
+    const productos = await supabaseService.listarProductosPorPrefijoSku(STOCK_SKU_PREFIXES_OTROS);
+    res.json({ success: true, prefijo: STOCK_SKU_PREFIXES_OTROS.join(','), prefijos: STOCK_SKU_PREFIXES_OTROS, data: productos });
+  } catch (error) {
+    logService.error('Error listando stock de otros artículos', error);
+    res.status(500).json({ success: false, data: [], error: error.message });
+  }
+});
+
 // Sincronizar (manual): leer el stock "available" de Shopify y volcarlo a productos.stock.
 app.post('/api/armador/stock-nc/sincronizar', requireAuth, async (req, res) => {
   try {
@@ -1885,6 +1907,40 @@ app.post('/api/armador/stock-nc/sincronizar', requireAuth, async (req, res) => {
     });
   } catch (error) {
     logService.error('Error sincronizando stock NC desde Shopify', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Sincronizar (manual) la subcategoría de "otros artículos": misma lógica que
+// /stock-nc/sincronizar pero acotada a STOCK_SKU_PREFIXES_OTROS.
+app.post('/api/armador/stock-otros/sincronizar', requireAuth, async (req, res) => {
+  try {
+    const r = await sincronizarStockNCDesdeShopify(STOCK_SKU_PREFIXES_OTROS);
+
+    logService.info(`Sync stock otros artículos (${req.user?.email}): ${r.actualizados.length} actualizados, ${r.creados.length} creados`, {
+      actualizados: r.actualizados.length,
+      creados: r.creados.length,
+      sinCambios: r.sinCambios.length,
+      soloEnShopify: r.soloEnShopify.length,
+      sinCoincidenciaEnShopify: r.sinCoincidenciaEnShopify.length,
+    });
+
+    res.json({
+      success: true,
+      resumen: {
+        totalShopify: r.totalShopify,
+        totalBd: r.totalBd,
+        actualizados: r.actualizados.length,
+        creados: r.creados.length,
+        sinCambios: r.sinCambios.length,
+        soloEnShopify: r.soloEnShopify,
+        sinCoincidenciaEnShopify: r.sinCoincidenciaEnShopify,
+      },
+      actualizados: r.actualizados,
+      creados: r.creados,
+    });
+  } catch (error) {
+    logService.error('Error sincronizando stock de otros artículos desde Shopify', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
@@ -2395,8 +2451,71 @@ function formatHoraUruguay(iso) {
   }).format(d);
 }
 
+// ── Pausa del levante automático ─────────────────────────────────────────────
+// La pausa vive en la base (no en LEVANTE_AUTO_ENABLED) para que se pueda
+// prender y apagar desde el panel sin redeploy: licencias, feriados, mudanzas.
+// `pausado_hasta` es el último día INCLUIDO; al pasar esa fecha se reanuda sola.
+const PAUSA_LEVANTE_INACTIVA = { activa: false, hasta: null, motivo: null, desde: null, por: null };
+
+async function obtenerEstadoPausaLevante() {
+  // Si la tabla todavía no existe, obtenerPausaLevante devuelve null y el cron
+  // sigue funcionando como antes de esta función.
+  const fila = await supabaseService.obtenerPausaLevante();
+  if (!fila?.pausado) return { ...PAUSA_LEVANTE_INACTIVA };
+
+  const hasta = fila.pausado_hasta || null;
+
+  if (hasta && hasta < fechaHoyUruguay()) {
+    // Venció: se limpia la fila (best-effort) para que el estado no quede colgado.
+    // Al quedar pausado=false, la próxima lectura ya no vuelve a notificar.
+    try {
+      await supabaseService.guardarPausaLevante({
+        pausado: false,
+        pausado_hasta: null,
+        motivo: null,
+        reanudado_at: new Date().toISOString(),
+      });
+      logService.info(`Levante automático reanudado: venció la pausa del ${hasta}`);
+      await notificar({
+        tipo: 'levante_pausa',
+        nivel: 'info',
+        titulo: 'Levante automático reanudado',
+        mensaje: `Terminó la pausa (iba hasta el ${hasta}), los levantes vuelven a pedirse solos.`,
+        data: { hasta, motivo: fila.motivo || null },
+      });
+    } catch (err) {
+      logService.warning(`No se pudo limpiar la pausa vencida del levante: ${err.message}`);
+    }
+    return { ...PAUSA_LEVANTE_INACTIVA };
+  }
+
+  return {
+    activa: true,
+    hasta,
+    motivo: fila.motivo || null,
+    desde: fila.pausado_at || null,
+    por: fila.pausado_por_nombre || fila.pausado_por_email || null,
+  };
+}
+
 async function ejecutarLevanteAutomatico() {
   const fecha = fechaHoyUruguay();
+
+  // En pausa no se le pide nada a UES, pero queda la notificación para que en el
+  // panel se vea por qué ese día no salió el levante.
+  const pausa = await obtenerEstadoPausaLevante();
+  if (pausa.activa) {
+    const hastaTexto = pausa.hasta ? `hasta el ${pausa.hasta}` : 'sin fecha de reanudación';
+    logService.info(`[cron] Levante automático omitido: en pausa (${hastaTexto})`);
+    await notificar({
+      tipo: 'levante_pausa',
+      nivel: 'info',
+      titulo: 'No se pidió el levante (en pausa)',
+      mensaje: `No se pidió el levante del ${fecha}: está pausado ${hastaTexto}.${pausa.motivo ? ` Motivo: ${pausa.motivo}.` : ''}`,
+      data: { fecha, pausa },
+    });
+    return { solicitado: false, motivo: 'pausado', pausa };
+  }
 
   const pendientes = await supabaseService.obtenerPedidosUesPendientesDeLevante();
   const cantidad = pendientes.length;
@@ -2470,10 +2589,86 @@ app.get('/api/ues/levante-automatico', requireAuth, async (req, res) => {
       fecha,
       pendientes: pendientes.length,
       yaSolicitado: await supabaseService.existeLevanteEnFecha(fecha),
+      pausa: await obtenerEstadoPausaLevante(),
     });
   } catch (error) {
     logService.error('Error consultando el levante automático', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Pausar / reanudar el levante automático. `hasta` (YYYY-MM-DD, opcional) es el
+// último día de la pausa: después de esa fecha el cron se reanuda solo.
+// Sólo frena el automático; el botón de levante manual sigue disponible.
+app.post('/api/ues/levante-automatico/pausa', requireAuth, async (req, res) => {
+  try {
+    const { pausado, hasta, motivo } = req.body || {};
+    const activar = pausado !== false;
+    const hoy = fechaHoyUruguay();
+    const hastaLimpio = String(hasta ?? '').trim() || null;
+
+    if (activar && hastaLimpio) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(hastaLimpio)) {
+        return res.status(400).json({ success: false, error: 'La fecha de reanudación tiene que ser YYYY-MM-DD.' });
+      }
+      if (hastaLimpio < hoy) {
+        return res.status(400).json({ success: false, error: 'La pausa no puede terminar antes de hoy.' });
+      }
+    }
+
+    const ahora = new Date().toISOString();
+    const motivoLimpio = String(motivo ?? '').trim() || null;
+
+    await supabaseService.guardarPausaLevante(
+      activar
+        ? {
+            pausado: true,
+            pausado_hasta: hastaLimpio,
+            motivo: motivoLimpio,
+            pausado_por_email: req.user?.email ?? null,
+            pausado_por_nombre: req.user?.nombre ?? null,
+            pausado_at: ahora,
+            reanudado_at: null,
+          }
+        : {
+            pausado: false,
+            pausado_hasta: null,
+            motivo: null,
+            reanudado_at: ahora,
+          }
+    );
+
+    const quien = req.user?.nombre || req.user?.email || 'un usuario';
+    const hastaTexto = hastaLimpio ? `hasta el ${hastaLimpio}` : 'sin fecha de reanudación';
+
+    logService.info(
+      activar
+        ? `Levante automático pausado por ${quien} (${hastaTexto})`
+        : `Levante automático reanudado por ${quien}`
+    );
+
+    await notificar({
+      tipo: 'levante_pausa',
+      nivel: 'info',
+      titulo: activar ? 'Levante automático pausado' : 'Levante automático reanudado',
+      mensaje: activar
+        ? `${quien} pausó los levantes automáticos ${hastaTexto}.${motivoLimpio ? ` Motivo: ${motivoLimpio}.` : ''}`
+        : `${quien} reanudó los levantes automáticos.`,
+      data: { hasta: hastaLimpio, motivo: motivoLimpio, usuario: req.user?.email ?? null },
+    });
+
+    res.json({ success: true, pausa: await obtenerEstadoPausaLevante() });
+  } catch (error) {
+    logService.error('Error al pausar/reanudar el levante automático', error);
+    // La tabla se crea a mano en Supabase (sql/create_ues_levante_pausa.sql):
+    // si falta, el cron sigue andando pero la pausa no se puede guardar.
+    const faltaTabla = /does not exist|Could not find the table/i.test(error.message || '');
+    res.status(500).json({
+      success: false,
+      error: faltaTabla
+        ? 'Falta la tabla ues_levante_pausa en Supabase. Corré sql/create_ues_levante_pausa.sql.'
+        : error.message,
+    });
   }
 });
 
@@ -7112,6 +7307,17 @@ app.listen(PORT, async () => {
         });
       } catch (err) {
         logService.error('[cron] Error sincronizando stock NC desde Shopify', err);
+      }
+      try {
+        const rOtros = await sincronizarStockNCDesdeShopify(STOCK_SKU_PREFIXES_OTROS);
+        logService.info(`[cron] Sync stock otros artículos: ${rOtros.actualizados.length} actualizados`, {
+          actualizados: rOtros.actualizados.length,
+          sinCambios: rOtros.sinCambios.length,
+          soloEnShopify: rOtros.soloEnShopify.length,
+          sinCoincidenciaEnShopify: rOtros.sinCoincidenciaEnShopify.length,
+        });
+      } catch (err) {
+        logService.error('[cron] Error sincronizando stock de otros artículos desde Shopify', err);
       }
     });
     console.log(`🎨 Cron sync stock NC activo (${stockCron})`);
