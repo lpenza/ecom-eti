@@ -688,6 +688,20 @@ export const atencionFaqCategorias = [
         fuente: '11/08, 20/08, 29/07',
       },
       {
+        id: 'llego-color-incorrecto',
+        pregunta: 'Llegó un color incorrecto, ¿qué procede?',
+        regla: 'Primero se valida si efectivamente el color es incorrecto (pedir foto de lo que llegó y compararlo con lo que dice el pedido). A partir de ahí depende de cuántos colores compró, si ya lo abrió/usó, y de la zona. Si el error fue nuestro, el cambio o reenvío va a costo nuestro.',
+        variantes: [
+          { condicion: 'Compró más de un color', respuesta: 'Se le ofrece dejar ese color puntual a favor, en vez de gestionar un cambio o reenvío.' },
+          { condicion: 'Un solo color, sin abrir, en Montevideo', respuesta: 'Se le ofrece un cambio.' },
+          { condicion: 'Un solo color, sin abrir, en el interior', respuesta: 'Se le ofrece mandarle otro (reenvío).' },
+          { condicion: 'Ya lo abrió y lo usó', respuesta: 'Se le deja saldo a favor para un próximo pedido.' },
+        ],
+        respuesta: 'Uy, perdón por eso 😔 Antes que nada, ¿me mandás una foto de lo que te llegó? Así confirmo que efectivamente no es el color que pediste. Apenas lo confirmo, vemos cómo lo resolvemos 💜',
+        escalar: 'Confirmado el error, el cambio, el reenvío o el saldo a favor lo gestiona Bryan (a nuestro costo si el error fue nuestro).',
+        fuente: 'agregado por Bryan · 23/09',
+      },
+      {
         id: 'devolucion-de-dinero',
         pregunta: 'Quiere que le devuelvan la plata',
         regla: 'Es la última instancia. Primero se verifica si el pedido está en camino, porque muchos reclamos de devolución son en realidad demoras. Después se ofrece toda la escalera. Solo si la exige y ya se ofreció todo lo demás se avanza con la devolución.',
