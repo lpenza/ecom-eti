@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { obtenerDetallePedido } from '../services/api';
+import { cierreFuera } from '../utils/cierreModal';
 
 // Etiqueta de tipo de entrega. La regla es simple: si el número de seguimiento
 // empieza por "UES" es un envío UES; cualquier otro caso es MarcoPostal.
@@ -324,11 +325,14 @@ export default function CadeteriaPanel({
               <div className="cadeteria-empty"><p>Sin productos visibles en este pedido.</p></div>
             ) : (
               <ul className="cadeteria-detalle-list">
-                {detalleModal.items.map((item) => {
+                {detalleModal.items.flatMap((item) => {
                   const kitTipo = getKitTipo(item);
-                  return (
-                    <li key={item.id} className="cadeteria-detalle-item">
-                      <span className="cadeteria-detalle-cant">{item.quantity}×</span>
+                  // Con cantidad > 1 se repite la fila una vez por unidad ("1/2", "2/2")
+                  // para que quien retira cuente cada unidad física.
+                  const n = Math.max(1, parseInt(item.quantity, 10) || 1);
+                  return Array.from({ length: n }, (_, u) => (
+                    <li key={`${item.id}#${u}`} className="cadeteria-detalle-item">
+                      <span className="cadeteria-detalle-cant">{n > 1 ? `${u + 1}/${n}` : `${item.quantity}×`}</span>
                       <div className="cadeteria-detalle-body">
                         <div className="cadeteria-detalle-titulo">
                           {item.title}
@@ -348,7 +352,7 @@ export default function CadeteriaPanel({
                         </div>
                       </div>
                     </li>
-                  );
+                  ));
                 })}
               </ul>
             )}
@@ -367,7 +371,13 @@ export default function CadeteriaPanel({
 
       {/* Modal: motivo de entrega sin despacho */}
       {entregaModal && (
-        <div className="cadeteria-modal-overlay" onClick={() => !registrando && setEntregaModal(null)}>
+        <div
+          className="cadeteria-modal-overlay"
+          {...cierreFuera(() => setEntregaModal(null), {
+            bloqueado: registrando,
+            mensaje: '¿Cerrar sin registrar la entrega?',
+          })}
+        >
           <div className="cadeteria-modal" onClick={(e) => e.stopPropagation()}>
             <h3 className="cadeteria-modal-title">Entregar sin despacho</h3>
             <p className="cadeteria-modal-desc">

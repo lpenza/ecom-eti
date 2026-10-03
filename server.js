@@ -65,7 +65,11 @@ const facturacionAuditService = require('./services/facturacionAuditService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
 const { procesarCarritosAbandonados, sincronizarDesdeShopify, probarMensaje, crearCarritoManual, obtenerCarritosDB, obtenerFlujoConfig, guardarFlujoConfig, guardarCheckoutCapturado, revisarYEncolar, enviarLinkAPendientes } = require('./services/abandonedCartService');
 const emailService = require('./services/emailService');
+const metaAdsService = require('./services/metaAdsService');
+const metaAdsPiloto = require('./services/metaAdsPilotoService');
+const metaAdsParametros = require('./services/metaAdsParametros');
 const mailboxService = require('./services/mailboxService');
+const { FIRMA_EMAIL_DEFAULT, agregarFirma } = require('./services/firmaEmailDefault');
 const emailWatchService = require('./services/emailWatchService');
 const sseHub = require('./services/sseHub');
 const logService = require('./services/logService');
@@ -429,6 +433,55 @@ const STOCKPLANNER = {
   ssoPath: process.env.STOCKPLANNER_SSO_PATH || '/login',
 };
 
+// Password-grant contra el Supabase de StockPlanner. Devuelve { access_token, refresh_token, expires_in, ... }.
+async function iniciarSesionStockPlanner(email, password) {
+  const { data } = await axios.post(
+    `${STOCKPLANNER.supabaseUrl}/auth/v1/token?grant_type=password`,
+    { email, password },
+    {
+      headers: {
+        apikey: STOCKPLANNER.anonKey,
+        Authorization: `Bearer ${STOCKPLANNER.anonKey}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 15000,
+    }
+  );
+  return data;
+}
+
+// Token de la cuenta dueño para leer datos de StockPlanner desde el backend (RLS: sólo
+// ve sus propias filas). Se cachea en memoria hasta un minuto antes de vencer.
+let stockPlannerTokenCache = { token: null, venceEn: 0 };
+async function tokenStockPlannerDueno() {
+  if (stockPlannerTokenCache.token && Date.now() < stockPlannerTokenCache.venceEn) {
+    return stockPlannerTokenCache.token;
+  }
+  if (!STOCKPLANNER.email || !STOCKPLANNER.password) {
+    throw new Error('Faltan STOCKPLANNER_EMAIL / STOCKPLANNER_PASSWORD en el entorno');
+  }
+  const data = await iniciarSesionStockPlanner(STOCKPLANNER.email, STOCKPLANNER.password);
+  if (!data?.access_token) throw new Error('Supabase de StockPlanner no devolvió token');
+  const segundos = Number(data.expires_in) || 3600;
+  stockPlannerTokenCache = { token: data.access_token, venceEn: Date.now() + (segundos - 60) * 1000 };
+  return data.access_token;
+}
+
+// SKUs de StockPlanner con su stock en depósito (pedidos recibidos en depósito que
+// todavía no se trasladaron a la tienda: skus.stock_deposit) y en tránsito.
+async function listarSkusStockPlanner() {
+  const token = await tokenStockPlannerDueno();
+  const { data } = await axios.get(`${STOCKPLANNER.supabaseUrl}/rest/v1/skus`, {
+    params: {
+      select: 'sku_code,name,stock_current,stock_deposit,stock_in_transit,transit_arrival_date,is_archived',
+      limit: 5000,
+    },
+    headers: { apikey: STOCKPLANNER.anonKey, Authorization: `Bearer ${token}` },
+    timeout: 20000,
+  });
+  return Array.isArray(data) ? data : [];
+}
+
 // Acceso a StockPlanner: admin (cuenta dueño) o armador (rol "user", cuenta acotada).
 // atencion u otros roles no tienen acceso.
 app.get('/api/admin/stockplanner-sso', requireAuth, async (req, res) => {
@@ -457,18 +510,7 @@ app.get('/api/admin/stockplanner-sso', requireAuth, async (req, res) => {
       return res.json({ success: true, url: `${STOCKPLANNER.appUrl}/login`, autoLogin: false });
     }
 
-    const { data } = await axios.post(
-      `${STOCKPLANNER.supabaseUrl}/auth/v1/token?grant_type=password`,
-      { email, password },
-      {
-        headers: {
-          apikey: STOCKPLANNER.anonKey,
-          Authorization: `Bearer ${STOCKPLANNER.anonKey}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 15000,
-      }
-    );
+    const data = await iniciarSesionStockPlanner(email, password);
 
     if (!data?.access_token || !data?.refresh_token) {
       logService.error('[StockPlanner SSO] Respuesta de Supabase sin tokens', data);
@@ -1878,6 +1920,74 @@ app.get('/api/armador/stock-otros', requireAuth, async (req, res) => {
   }
 });
 
+// Comparación tienda vs depósito (sólo admin): stock de cada color en Shopify (el que
+// guarda productos.stock, sincronizado desde Bvar España) contra lo que queda en el
+// depósito según StockPlanner. Sirve para ver qué colores reponer en la tienda.
+app.get('/api/admin/stock-nc/deposito', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const [productos, skusSp] = await Promise.all([
+      supabaseService.listarProductosPorPrefijoSku(STOCK_SKU_PREFIXES),
+      listarSkusStockPlanner(),
+    ]);
+    const norm = (sku) => String(sku || '').trim().toUpperCase();
+    const prefijos = STOCK_SKU_PREFIXES.map((p) => p.toUpperCase());
+    const spPorSku = new Map();
+    for (const s of skusSp) {
+      const k = norm(s.sku_code);
+      if (k) spPorSku.set(k, s);
+    }
+
+    const filas = [];
+    const vistos = new Set();
+    for (const p of productos) {
+      const k = norm(p.sku);
+      if (!k || vistos.has(k)) continue;
+      vistos.add(k);
+      const sp = spPorSku.get(k);
+      filas.push({
+        id: p.id,
+        sku: String(p.sku).trim(),
+        nombre: p.nombre,
+        activo: p.activo !== false,
+        stock_minimo: p.stock_minimo,
+        stock_tienda: Number(p.stock) || 0,
+        stock_deposito: sp ? Number(sp.stock_deposit) || 0 : null,
+        stock_transito: sp ? Number(sp.stock_in_transit) || 0 : null,
+        llegada_transito: sp?.transit_arrival_date || null,
+        en_stockplanner: !!sp,
+        en_tienda: true,
+        updated_at: p.updated_at,
+      });
+    }
+    // Colores con stock en depósito que todavía no están en la tienda.
+    for (const [k, sp] of spPorSku) {
+      if (vistos.has(k) || sp.is_archived) continue;
+      if (!prefijos.some((pre) => k.startsWith(pre))) continue;
+      if ((Number(sp.stock_deposit) || 0) <= 0) continue;
+      filas.push({
+        id: `sp-${k}`,
+        sku: String(sp.sku_code).trim(),
+        nombre: sp.name,
+        activo: true,
+        stock_minimo: null,
+        stock_tienda: null,
+        stock_deposito: Number(sp.stock_deposit) || 0,
+        stock_transito: Number(sp.stock_in_transit) || 0,
+        llegada_transito: sp.transit_arrival_date || null,
+        en_stockplanner: true,
+        en_tienda: false,
+        updated_at: null,
+      });
+    }
+
+    res.json({ success: true, data: filas });
+  } catch (error) {
+    const detalle = error.response?.data?.message || error.response?.data?.error_description || error.message;
+    logService.error('Error comparando stock tienda vs depósito', detalle);
+    res.status(502).json({ success: false, data: [], error: `No se pudo leer StockPlanner: ${detalle}` });
+  }
+});
+
 // Sincronizar (manual): leer el stock "available" de Shopify y volcarlo a productos.stock.
 app.post('/api/armador/stock-nc/sincronizar', requireAuth, async (req, res) => {
   try {
@@ -2002,6 +2112,422 @@ app.post('/api/armador/stock-nc/actualizar', requireAuth, async (req, res) => {
   } catch (error) {
     logService.error('Error actualizando stock NC en Shopify', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ── Alta de un color NC nuevo en Shopify y MercadoLibre ─────────────────────
+// Un color vive en ~10 productos de Shopify (kits, sets, "agregá tus tonos") y en
+// 3 familias de publicaciones de ML (gel suelto, Kit Inicial, Kit Studio). Dar de
+// alta uno a mano era repetir lo mismo 13 veces: esto arma el plan y lo aplica.
+
+// Qué se tocaría para un color: productos de Shopify y familias de ML, marcando
+// los que ya lo tienen (por SKU o por nombre) para no duplicar.
+async function planNuevoColor({ nombre, sku }, { validarML = false } = {}) {
+  const skuUp = sku.toUpperCase();
+  const nombreLow = nombre.toLowerCase();
+
+  const productos = await shopifyService.listarProductosConPrefijoSku('NC');
+  const shopify = productos.map((p) => {
+    let motivo = null;
+    if (p.skus.includes(skuUp)) motivo = 'Ya tiene este SKU';
+    else if (p.nombresColor.includes(nombreLow)) motivo = 'Ya tiene un color con este nombre';
+    else if (p.opciones.length !== 1) motivo = `Tiene ${p.opciones.length} opciones (se espera solo Color)`;
+    return {
+      id: p.id,
+      titulo: p.titulo,
+      estado: p.estado,
+      precio: p.precio,
+      variantes: p.cantidadVariantes,
+      omitir: motivo,
+    };
+  });
+
+  let ml = [];
+  let mlError = null;
+  if (!mercadolibreService.configurado()) {
+    mlError = 'MercadoLibre no está configurado';
+  } else {
+    try {
+      const familias = await mercadolibreService.familiasPorPrefijo('NC');
+      ml = familias.map((f) => ({
+        familia: f.familia,
+        plantillaId: f.plantilla.itemId,
+        plantillaTitulo: f.plantilla.titulo,
+        tituloNuevo: `${f.familia} ${nombre}`,
+        publicaciones: f.skus.length,
+        omitir: f.skus.includes(skuUp) ? 'Ya tiene este SKU' : null,
+      }));
+      // Validación en seco: ML revisa el cuerpo completo sin publicar. Como la foto
+      // nueva todavía no está subida, se valida con la foto 1 de la plantilla.
+      if (validarML) {
+        for (const f of ml) {
+          if (f.omitir) continue;
+          try {
+            const plantilla = await mercadolibreService.request('GET', `/items/${f.plantillaId}`);
+            const fotoId = plantilla.pictures?.[0]?.id;
+            await mercadolibreService.crearPublicacionColor(f.plantillaId, { nombre, sku, stock: 1, fotoId }, { validar: true });
+          } catch (err) {
+            f.omitir = `ML rechaza la publicación: ${err.message}`;
+          }
+        }
+      }
+    } catch (err) {
+      mlError = err.message;
+    }
+  }
+
+  // La opción Color de los productos está vinculada al metaobjeto de colores de
+  // Shopify: si el color no existe ahí, hay que crearlo (con color base y patrón)
+  // antes de las variantes.
+  const requiereColor = productos.some((p) => p.opcionVinculada);
+  const colorShopify = requiereColor ? await shopifyService.buscarColorShopify(nombre) : null;
+
+  return {
+    shopify,
+    ml,
+    mlError,
+    colorShopify: {
+      requerido: requiereColor,
+      existente: colorShopify,
+      coloresBase: shopifyService.constructor.COLORES_BASE,
+      patrones: shopifyService.constructor.PATRONES,
+    },
+  };
+}
+
+// Progreso en vivo para las altas largas (Shopify + ML). Si el cliente manda
+// `X-Progreso: ndjson`, cada paso sale como una línea JSON y la respuesta final
+// va en la última ({ tipo: 'fin' | 'error', ... }). Los 400 de validación que
+// ocurren antes del primer paso siguen siendo respuestas JSON normales.
+function progresoNdjson(req, res) {
+  const activo = req.get('x-progreso') === 'ndjson';
+  let abierto = false;
+  function abrir() {
+    if (abierto) return;
+    res.status(200).set({
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders();
+    abierto = true;
+  }
+  return {
+    paso(evento) {
+      if (!activo) return;
+      abrir();
+      res.write(`${JSON.stringify({ tipo: 'progreso', ...evento })}\n`);
+    },
+    responder(status, body) {
+      if (!abierto) return res.status(status).json(body);
+      res.end(`${JSON.stringify({ tipo: status >= 400 ? 'error' : 'fin', ...body })}\n`);
+    },
+  };
+}
+
+// Foto del color que manda el modal como data URL. El archivo se nombra por SKU
+// para que en Shopify (Contenido → Archivos) se encuentre igual que las demás.
+function leerFotoColor(body, sku) {
+  const { base64, mimeType } = body?.imagen || {};
+  if (!base64 || !['image/jpeg', 'image/png'].includes(mimeType)) {
+    return { error: 'Falta la foto del color (JPG o PNG)' };
+  }
+  return {
+    imagen: Buffer.from(String(base64).replace(/^data:[^,]+,/, ''), 'base64'),
+    mimeType,
+    nombreArchivo: `${sku}.${mimeType === 'image/png' ? 'png' : 'jpg'}`,
+  };
+}
+
+function validarDatosColor(body) {
+  const nombre = String(body?.nombre || '').trim().replace(/\s+/g, ' ');
+  const sku = String(body?.sku || '').trim().toUpperCase();
+  if (!nombre) return { error: 'Falta el nombre del color' };
+  if (!/^NC\d{4,}$/.test(sku)) return { error: 'El SKU debe ser NC seguido de números (ej. NC260015)' };
+  return { nombre, sku };
+}
+
+app.post('/api/armador/stock-nc/nuevo-color/plan', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const datos = validarDatosColor(req.body);
+    if (datos.error) return res.status(400).json({ success: false, error: datos.error });
+
+    const plan = await planNuevoColor(datos, { validarML: true });
+    const enBd = (await supabaseService.listarProductosPorPrefijoSku(['NC']))
+      .find((p) => String(p.sku || '').trim().toUpperCase() === datos.sku) || null;
+
+    res.json({ success: true, ...datos, ...plan, existeEnBd: Boolean(enBd) });
+  } catch (error) {
+    logService.error('Error armando el plan de color nuevo', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/armador/stock-nc/nuevo-color', requireAuth, requireAdmin, async (req, res) => {
+  const progreso = progresoNdjson(req, res);
+  try {
+    const datos = validarDatosColor(req.body);
+    if (datos.error) return res.status(400).json({ success: false, error: datos.error });
+    const { nombre, sku } = datos;
+
+    const stock = Number(req.body.stock);
+    if (!Number.isInteger(stock) || stock < 0) {
+      return res.status(400).json({ success: false, error: 'El stock inicial debe ser un entero ≥ 0' });
+    }
+
+    const foto = leerFotoColor(req.body, sku);
+    if (foto.error) return res.status(400).json({ success: false, error: foto.error });
+    const { imagen, mimeType, nombreArchivo } = foto;
+
+    const elegidosShopify = new Set(req.body.productosShopify || []);
+    const elegidasML = new Set(req.body.familiasML || []);
+    if (elegidasML.size > 0 && stock < 1) {
+      return res.status(400).json({ success: false, error: 'ML no deja publicar con stock 0: cargá al menos 1 unidad o destildá ML' });
+    }
+
+    // El plan se recalcula acá: si alguien reintenta después de un fallo parcial,
+    // lo que ya quedó creado se saltea en vez de duplicarse.
+    progreso.paso({ mensaje: 'Revisando Shopify y MercadoLibre…', hechos: 0, total: 0 });
+    const plan = await planNuevoColor({ nombre, sku });
+    const productosShopify = plan.shopify.filter((p) => elegidosShopify.has(p.id) && !p.omitir);
+    const familiasML = plan.ml.filter((f) => elegidasML.has(f.familia) && !f.omitir);
+
+    const resultado = { colorShopify: null, shopify: [], ml: [], bd: null };
+
+    // Unidades de trabajo: cada variante, cada publicación, las subidas de foto y el panel.
+    const total = productosShopify.length + familiasML.length
+      + (productosShopify.length > 0 ? 1 : 0) + (familiasML.length > 0 ? 1 : 0) + 1;
+    let hechos = 0;
+    const avanzar = (mensaje, item) => progreso.paso({ mensaje, hechos: ++hechos, total, item });
+
+    if (productosShopify.length > 0) {
+      progreso.paso({ mensaje: 'Preparando Shopify…', hechos, total });
+      const productos = await shopifyService.listarProductosConPrefijoSku('NC');
+
+      // Entrada de color de Shopify: se reutiliza si existe; si no, se crea con el
+      // color base que eligió el usuario. Sin ella ninguna variante se puede crear.
+      let colorId = plan.colorShopify.existente?.id || null;
+      if (plan.colorShopify.requerido && !colorId) {
+        const { colorBase, patron, hex } = req.body.colorShopify || {};
+        if (!colorBase) {
+          return progreso.responder(400, { success: false, error: 'Elegí el color base para dar de alta el color en Shopify' });
+        }
+        progreso.paso({ mensaje: `Creando el color ${nombre} en Shopify…`, hechos, total });
+        const creado = await shopifyService.crearColorShopify({ nombre, colorBase, patron, hex });
+        colorId = creado.id;
+        resultado.colorShopify = { creado: true, nombre: creado.displayName };
+      } else if (colorId) {
+        resultado.colorShopify = { creado: false, nombre: plan.colorShopify.existente.nombre };
+      }
+
+      progreso.paso({ mensaje: 'Subiendo la foto a Shopify…', hechos, total });
+      const imagenSrc = await shopifyService.subirImagenStaged(imagen, nombreArchivo, mimeType);
+      avanzar('Foto subida a Shopify');
+      for (const p of productosShopify) {
+        progreso.paso({ mensaje: `Shopify · creando la variante en ${p.titulo}…`, hechos, total });
+        const producto = productos.find((x) => x.id === p.id);
+        let r;
+        try {
+          const v = await shopifyService.crearVarianteColor(producto, { nombre, sku, stock, imagenSrc, colorId });
+          r = { titulo: p.titulo, ok: true, varianteId: v?.id };
+        } catch (err) {
+          r = { titulo: p.titulo, ok: false, error: err.message };
+        }
+        resultado.shopify.push(r);
+        avanzar(`Shopify · ${p.titulo}`, { plataforma: 'Shopify', titulo: p.titulo, ok: r.ok, error: r.error });
+      }
+    }
+
+    if (familiasML.length > 0) {
+      try {
+        progreso.paso({ mensaje: 'Subiendo la foto a MercadoLibre…', hechos, total });
+        const fotoId = await mercadolibreService.subirFoto(imagen, nombreArchivo, mimeType);
+        avanzar('Foto subida a MercadoLibre');
+        for (const f of familiasML) {
+          const titulo = f.tituloNuevo || f.familia;
+          progreso.paso({ mensaje: `MercadoLibre · publicando ${titulo}…`, hechos, total });
+          let r;
+          try {
+            const pub = await mercadolibreService.crearPublicacionColor(f.plantillaId, { nombre, sku, stock, fotoId });
+            r = { familia: f.familia, ok: true, ...pub };
+          } catch (err) {
+            r = { familia: f.familia, ok: false, error: err.message };
+          }
+          resultado.ml.push(r);
+          avanzar(`MercadoLibre · ${titulo}`, { plataforma: 'MercadoLibre', titulo, ok: r.ok, error: r.error });
+        }
+      } catch (err) {
+        // Falló la subida de la foto: ninguna publicación se puede crear.
+        avanzar('No se pudo subir la foto a MercadoLibre');
+        for (const f of familiasML) {
+          resultado.ml.push({ familia: f.familia, ok: false, error: err.message });
+          const titulo = f.tituloNuevo || f.familia;
+          avanzar(`MercadoLibre · ${titulo}`, { plataforma: 'MercadoLibre', titulo, ok: false, error: err.message });
+        }
+      }
+    }
+
+    // Alta en `productos` para que aparezca en el panel con su stock. Si ya
+    // existía (reintento) no se toca: el stock lo maneja el conteo físico.
+    progreso.paso({ mensaje: 'Agregando el color al panel de stock…', hechos, total });
+    try {
+      const existentes = await supabaseService.listarProductosPorPrefijoSku(['NC']);
+      const yaEsta = existentes.some((p) => String(p.sku || '').trim().toUpperCase() === sku);
+      if (!yaEsta) {
+        const [fila] = await supabaseService.crearProductosNC([{ sku, nombre, stock }]);
+        resultado.bd = { ok: true, creado: true, id: fila?.id };
+      } else {
+        resultado.bd = { ok: true, creado: false };
+      }
+    } catch (err) {
+      resultado.bd = { ok: false, error: err.message };
+    }
+    avanzar('Panel de stock', { plataforma: 'Panel', titulo: 'Panel de stock', ok: resultado.bd.ok, error: resultado.bd.error });
+
+    const fallos = [...resultado.shopify, ...resultado.ml].filter((r) => !r.ok).length;
+    logService.info(`Color nuevo ${sku} "${nombre}" (${req.user?.email}): ${resultado.shopify.filter((r) => r.ok).length} variantes Shopify, ${resultado.ml.filter((r) => r.ok).length} publicaciones ML, ${fallos} fallos`, {
+      sku, nombre, stock, resultado,
+    });
+
+    progreso.responder(200, { success: true, sku, nombre, fallos, ...resultado });
+  } catch (error) {
+    logService.error('Error dando de alta color nuevo', error);
+    progreso.responder(500, { success: false, error: error.message });
+  }
+});
+
+// ── Cambio de foto de un color NC existente ─────────────────────────────────
+// Reemplaza la foto del color en todos los productos de Shopify que lo tienen y
+// la foto 1 de sus publicaciones de ML. Nada se borra del todo: en Shopify la
+// vieja queda en Contenido → Archivos y en ML en su repositorio de imágenes.
+
+async function planFotoColor(sku) {
+  const [shopify, bd] = await Promise.all([
+    shopifyService.productosConSku(sku),
+    supabaseService.listarProductosPorPrefijoSku(['NC']),
+  ]);
+  const producto = bd.find((p) => String(p.sku || '').trim().toUpperCase() === sku) || null;
+
+  let ml = [];
+  let mlError = null;
+  if (!mercadolibreService.configurado()) {
+    mlError = 'MercadoLibre no está configurado';
+  } else {
+    try {
+      ml = await mercadolibreService.publicacionesDeSku(sku);
+    } catch (err) {
+      mlError = err.message;
+    }
+  }
+  return { nombre: producto?.nombre?.trim() || shopify[0]?.color || sku, shopify, ml, mlError };
+}
+
+function validarSkuColor(body) {
+  const sku = String(body?.sku || '').trim().toUpperCase();
+  if (!/^NC\d{4,}$/.test(sku)) return { error: 'SKU inválido' };
+  return { sku };
+}
+
+app.post('/api/armador/stock-nc/foto/plan', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { sku, error } = validarSkuColor(req.body);
+    if (error) return res.status(400).json({ success: false, error });
+    res.json({ success: true, sku, ...(await planFotoColor(sku)) });
+  } catch (error) {
+    logService.error('Error armando el plan de cambio de foto', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/armador/stock-nc/foto', requireAuth, requireAdmin, async (req, res) => {
+  const progreso = progresoNdjson(req, res);
+  try {
+    const { sku, error } = validarSkuColor(req.body);
+    if (error) return res.status(400).json({ success: false, error });
+    const foto = leerFotoColor(req.body, sku);
+    if (foto.error) return res.status(400).json({ success: false, error: foto.error });
+    const { imagen, mimeType, nombreArchivo } = foto;
+
+    // Sólo se toca lo elegido que sigue teniendo el SKU al momento de aplicar.
+    progreso.paso({ mensaje: 'Buscando el color en Shopify y MercadoLibre…', hechos: 0, total: 0 });
+    const plan = await planFotoColor(sku);
+    const elegidosShopify = new Set(req.body.productosShopify || []);
+    const elegidasML = new Set(req.body.publicacionesML || []);
+    const productos = plan.shopify.filter((p) => elegidosShopify.has(p.id));
+    const publicaciones = plan.ml.filter((p) => elegidasML.has(p.itemId));
+
+    const resultado = { shopify: [], ml: [] };
+
+    const total = productos.length + publicaciones.length
+      + (productos.length > 0 ? 1 : 0) + (publicaciones.length > 0 ? 1 : 0);
+    let hechos = 0;
+    const avanzar = (mensaje, item) => progreso.paso({ mensaje, hechos: ++hechos, total, item });
+
+    if (productos.length > 0) {
+      try {
+        progreso.paso({ mensaje: 'Subiendo la foto a Shopify…', hechos, total });
+        const imagenSrc = await shopifyService.subirImagenStaged(imagen, nombreArchivo, mimeType);
+        avanzar('Foto subida a Shopify');
+        for (const p of productos) {
+          progreso.paso({ mensaje: `Shopify · cambiando la foto en ${p.titulo}…`, hechos, total });
+          let r;
+          try {
+            r = { id: p.id, titulo: p.titulo, ok: true, ...(await shopifyService.reemplazarFotoVariantes(p.id, sku, imagenSrc, plan.nombre)) };
+          } catch (err) {
+            r = { id: p.id, titulo: p.titulo, ok: false, error: err.message };
+          }
+          resultado.shopify.push(r);
+          avanzar(`Shopify · ${p.titulo}`, { plataforma: 'Shopify', titulo: p.titulo, ok: r.ok, error: r.error });
+        }
+      } catch (err) {
+        avanzar('No se pudo subir la foto a Shopify');
+        for (const p of productos) {
+          resultado.shopify.push({ id: p.id, titulo: p.titulo, ok: false, error: err.message });
+          avanzar(`Shopify · ${p.titulo}`, { plataforma: 'Shopify', titulo: p.titulo, ok: false, error: err.message });
+        }
+      }
+    }
+
+    if (publicaciones.length > 0) {
+      try {
+        progreso.paso({ mensaje: 'Subiendo la foto a MercadoLibre…', hechos, total });
+        const fotoId = await mercadolibreService.subirFoto(imagen, nombreArchivo, mimeType);
+        avanzar('Foto subida a MercadoLibre');
+        for (const p of publicaciones) {
+          progreso.paso({ mensaje: `MercadoLibre · cambiando la foto en ${p.titulo}…`, hechos, total });
+          let r;
+          try {
+            r = { itemId: p.itemId, titulo: p.titulo, permalink: p.permalink, ok: true, ...(await mercadolibreService.reemplazarFotoPrincipal(p.itemId, fotoId)) };
+          } catch (err) {
+            r = { itemId: p.itemId, titulo: p.titulo, ok: false, error: err.message };
+          }
+          resultado.ml.push(r);
+          avanzar(`MercadoLibre · ${p.titulo}`, { plataforma: 'MercadoLibre', titulo: p.titulo, ok: r.ok, error: r.error });
+        }
+      } catch (err) {
+        avanzar('No se pudo subir la foto a MercadoLibre');
+        for (const p of publicaciones) {
+          resultado.ml.push({ itemId: p.itemId, titulo: p.titulo, ok: false, error: err.message });
+          avanzar(`MercadoLibre · ${p.titulo}`, { plataforma: 'MercadoLibre', titulo: p.titulo, ok: false, error: err.message });
+        }
+      }
+    }
+
+    const fallos = [...resultado.shopify, ...resultado.ml].filter((r) => !r.ok).length;
+    // Las URL viejas quedan en el log: son la referencia para volver atrás a mano.
+    logService.info(`Foto de color ${sku} cambiada (${req.user?.email}): ${resultado.shopify.filter((r) => r.ok).length} productos Shopify, ${resultado.ml.filter((r) => r.ok).length} publicaciones ML, ${fallos} fallos`, {
+      sku,
+      fotosAnteriores: {
+        shopify: productos.map((p) => ({ producto: p.titulo, url: p.fotoActual })),
+        ml: publicaciones.map((p) => ({ itemId: p.itemId, url: p.fotoActual })),
+      },
+      resultado,
+    });
+
+    progreso.responder(200, { success: true, sku, fallos, ...resultado });
+  } catch (error) {
+    logService.error('Error cambiando la foto del color', error);
+    progreso.responder(500, { success: false, error: error.message });
   }
 });
 
@@ -2153,6 +2679,65 @@ app.post('/api/pedidos/:pedidoId/revision-contacto/contactado', async (req, res)
   }
 });
 
+// Los emails de contacto salen desde el buzón madre (info@) con su firma (la
+// cargada en el panel EMAILS, o la por defecto), y queda copia en Enviados.
+async function leerFirmaContacto() {
+  try {
+    const firmas = await supabaseService.obtenerFirmasEmail();
+    const firma = firmas?.[mailboxService.MAIL_MADRE];
+    if (firma != null) return firma;
+  } catch (err) {
+    logService.warning('No se pudo leer la firma de info@, se usa la por defecto', { error: err.message });
+  }
+  return FIRMA_EMAIL_DEFAULT;
+}
+
+function armarEmailContacto({ pedido, revision, subjectTemplate, htmlTemplate, firma }) {
+  const { subject, html } = emailService.renderMail({
+    pedido,
+    subjectTemplate,
+    htmlTemplate,
+    motivoContacto: revision?.motivo || '',
+  });
+  return {
+    from: mailboxService.MAIL_MADRE,
+    to: String(pedido.cliente_email || '').trim(),
+    subject,
+    html: agregarFirma(html, firma),
+  };
+}
+
+// Preview del email de contacto de un pedido: devuelve exactamente lo que se
+// enviaría (remitente, asunto y cuerpo con firma), sin enviar nada.
+app.post('/api/pedidos/:id/revision-contacto/email-preview', async (req, res) => {
+  try {
+    const pedidoId = String(req.params.id);
+    const { subjectTemplate = 'Seguimiento de tu pedido #{{numero_pedido}}', htmlTemplate = '' } = req.body || {};
+
+    const [pedidosActivos, revisiones] = await Promise.all([
+      supabaseService.obtenerPedidosActivos(),
+      leerRevisionContacto(),
+    ]);
+    const pedido = (pedidosActivos || []).find((p) => String(p.id) === pedidoId);
+    if (!pedido) return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    if (!String(pedido.cliente_email || '').trim()) {
+      return res.status(400).json({ success: false, error: 'El pedido no tiene email' });
+    }
+
+    const mail = armarEmailContacto({
+      pedido,
+      revision: revisiones?.[pedido.id] || {},
+      subjectTemplate,
+      htmlTemplate,
+      firma: await leerFirmaContacto(),
+    });
+    return res.json({ success: true, ...mail });
+  } catch (error) {
+    logService.error('Error armando preview de email de contacto', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.post('/api/pedidos/revision-contacto/email-masivo', async (req, res) => {
   try {
     const {
@@ -2198,23 +2783,14 @@ app.post('/api/pedidos/revision-contacto/email-masivo', async (req, res) => {
       });
     }
 
+    const firma = await leerFirmaContacto();
     const resultados = [];
 
     for (const pedido of candidatos) {
       try {
         const revision = revisiones[pedido.id] || {};
-        const { subject, html } = emailService.renderMail({
-          pedido,
-          subjectTemplate,
-          htmlTemplate,
-          motivoContacto: revision?.motivo || '',
-        });
-
-        const envio = await emailService.enviarCorreo({
-          to: String(pedido.cliente_email || '').trim(),
-          subject,
-          html,
-        });
+        const mail = armarEmailContacto({ pedido, revision, subjectTemplate, htmlTemplate, firma });
+        const envio = await emailService.enviarCorreoRaw({ ...mail, replyTo: mail.from });
 
         const ahora = new Date().toISOString();
         revisiones[pedido.id] = {
@@ -3371,8 +3947,73 @@ function urlEtiquetaML(shipmentId) {
 // Sincroniza las ventas de las últimas `horas` y baja las etiquetas de Mercado
 // Envíos que estén disponibles. Compartida por el endpoint manual, el webhook
 // y el cron.
+// Venta cancelada en ML: el pedido pasa a 'cancelado' y sale de todas las vistas
+// activas (armado, etiquetas, pickup), así nadie lo arma por error. Si era parte
+// de un carrito y quedan hermanas pagas, el pedido sigue vivo: sólo se resincroniza
+// para que pierda los ítems cancelados.
+// Carrito cancelado a medias: el descuento de stock se anota por SKU para todo el
+// carrito, así que no se puede separar con seguridad qué parte era de la venta
+// cancelada. Se avisa en el log para devolverlo a mano.
+async function avisarStockCarritoParcialML(venta) {
+  const pedido = await supabaseService.obtenerPedidoPorNumero(`ML-${venta.pack_id}`);
+  const descontados = new Set((pedido?.ml_stock_descontado || [])
+    .filter((d) => d.sku && !d.sinProducto)
+    .map((d) => String(d.sku).trim().toUpperCase()));
+  const afectados = (venta.order_items || [])
+    .map((it) => ({ sku: String(it.item?.seller_sku || it.item?.seller_custom_field || '').trim(), cantidad: it.quantity || 1 }))
+    .filter((it) => it.sku && descontados.has(it.sku.toUpperCase()));
+  if (afectados.length === 0) return;
+  logService.warning(
+    `[ML stock] ${pedido.numero_pedido}: se canceló parte del carrito (venta ${venta.id}) y su stock ya se había descontado. ` +
+    `Devolver a mano: ${afectados.map((a) => `${a.sku} ×${a.cantidad}`).join(', ')}`
+  );
+}
+
+async function procesarCancelacionML(venta) {
+  if (venta.pack_id) {
+    const delPack = await mercadolibreService.obtenerVentasDelPack(venta.pack_id);
+    const pagas = delPack.filter((o) => o.status === 'paid' || o.status === 'partially_paid');
+    if (pagas.length > 0) {
+      await sincronizarMercadoLibre({ ventasPrecargadas: pagas });
+      logService.info(`[ML] Venta ${venta.id} cancelada: se quitó del carrito ${venta.pack_id}`);
+      avisarStockCarritoParcialML(venta).catch(() => {});
+      return;
+    }
+  }
+
+  const numero = `ML-${venta.pack_id || venta.id}`;
+  const pedido = await supabaseService.obtenerPedidoPorNumero(numero)
+    || await supabaseService.obtenerPedidoPorMlOrderId(venta.id);
+  if (!pedido || pedido.estado === 'cancelado') return;
+
+  if (['despachado', 'enviado'].includes(pedido.estado)) {
+    logService.warning(`[ML] ${pedido.numero_pedido} se canceló en ML pero ya estaba ${pedido.estado}: revisar a mano`);
+    return;
+  }
+
+  await supabaseService.actualizarPedido(pedido.id, { estado: 'cancelado' });
+  logService.info(`[ML] ${pedido.numero_pedido} cancelado en ML: se sacó del panel`);
+}
+
 async function sincronizarMercadoLibre({ horas = 72, ventasPrecargadas = null } = {}) {
-  const ventas = ventasPrecargadas || await mercadolibreService.obtenerVentasRecientes(horas);
+  let ventas = ventasPrecargadas;
+  if (!ventas) {
+    // El barrido del cron también levanta las cancelaciones, como red de
+    // seguridad por si el webhook de la cancelación no llegó.
+    const todas = await mercadolibreService.buscarVentas(horas);
+    ventas = todas.filter((o) => o.status === 'paid' || o.status === 'partially_paid');
+    // Una cancelada con hermanas pagas en el carrito se resuelve sola: el
+    // pedido se resincroniza abajo con los ítems de las pagas.
+    const packsVivos = new Set(ventas.map((o) => o.pack_id).filter(Boolean));
+    const canceladas = todas.filter((o) => o.status === 'cancelled' && !packsVivos.has(o.pack_id));
+    for (const cancelada of canceladas) {
+      try {
+        await procesarCancelacionML(cancelada);
+      } catch (err) {
+        logService.warning(`[ML] No se pudo procesar la cancelación de ${cancelada.id}: ${err.message}`);
+      }
+    }
+  }
   const grupos = agruparVentasPorPaquete(ventas);
 
   const resumen = { nuevos: 0, actualizados: 0, etiquetas: 0, errores: [] };
@@ -3535,6 +4176,95 @@ async function descontarStockVentasML() {
   return resumen;
 }
 
+const USUARIO_CANCELACION_ML = 'cancelación ML';
+
+// Repone el stock de las ventas de ML canceladas. Sólo se devuelve lo que la
+// venta realmente descontó (anterior − nuevo, que puede ser menos que la cantidad
+// si el stock había quedado en 0). Como en el descuento, cada ítem se marca
+// apenas vuelve (`devuelto`), así un pedido que falla a la mitad se reintenta
+// sin reponer dos veces.
+async function devolverStockCancelacionesML() {
+  const resumen = { pedidos: 0, devueltos: [], errores: [], skusAfectados: new Set() };
+
+  let pendientes;
+  try {
+    pendientes = await supabaseService.obtenerPedidosMlCanceladosSinDevolver();
+  } catch (err) {
+    if (/ml_stock_devuelto_at/i.test(String(err?.message || ''))) {
+      logService.warning('Falta la columna ml_stock_devuelto_at — corré sql/add_ml_stock_devuelto.sql');
+      return resumen;
+    }
+    throw err;
+  }
+
+  for (const pedido of pendientes) {
+    const detalle = Array.isArray(pedido.ml_stock_descontado)
+      ? pedido.ml_stock_descontado.map((d) => ({ ...d }))
+      : [];
+    let todoOk = true;
+
+    for (const entrada of detalle) {
+      if (!entrada.sku || entrada.sinProducto) continue;
+      const descontado = Number.isFinite(Number(entrada.anterior)) && Number.isFinite(Number(entrada.nuevo))
+        ? Number(entrada.anterior) - Number(entrada.nuevo)
+        : Number(entrada.cantidad) || 0;
+      const aDevolver = descontado - (Number(entrada.devuelto) || 0);
+      if (aDevolver <= 0) continue;
+
+      const sku = String(entrada.sku).trim();
+      try {
+        const producto = await supabaseService.obtenerProductoPorSku(sku);
+        if (!producto) {
+          // El producto se borró después de la venta: no hay a dónde devolver.
+          entrada.devuelto = descontado;
+          entrada.devuelto_nota = 'sin producto al cancelar';
+          await supabaseService.guardarDetalleStockMl(pedido.id, detalle);
+          continue;
+        }
+
+        const anterior = Number(producto.stock || 0);
+        const nuevo = anterior + aDevolver;
+
+        // Shopify primero (es el master); si falla, no se marca y se reintenta.
+        await shopifyService.fijarStockDisponiblePorSku(String(producto.sku).trim(), nuevo);
+        await supabaseService.actualizarStockPorId(producto.id, nuevo);
+
+        try {
+          await supabaseService.registrarAjusteStockNC({
+            producto_id: producto.id,
+            sku: String(producto.sku).trim(),
+            stock_anterior: anterior,
+            stock_nuevo: nuevo,
+            usuario_id: null,
+            usuario_email: null,
+            usuario_nombre: USUARIO_CANCELACION_ML,
+            origen: 'cancelacion_ml',
+          });
+        } catch (auditErr) {
+          logService.warning(`[ML stock] No se pudo auditar la devolución de ${sku}: ${auditErr.message}`);
+        }
+
+        entrada.devuelto = descontado;
+        entrada.devuelto_at = new Date().toISOString();
+        await supabaseService.guardarDetalleStockMl(pedido.id, detalle);
+        resumen.devueltos.push({ pedido: pedido.numero_pedido, sku, cantidad: aDevolver, anterior, nuevo });
+        resumen.skusAfectados.add(String(producto.sku).trim());
+      } catch (err) {
+        todoOk = false;
+        resumen.errores.push({ pedido: pedido.numero_pedido, sku, error: err.message });
+        logService.error(`[ML stock] Error devolviendo ${sku} del pedido cancelado ${pedido.numero_pedido}`, err);
+      }
+    }
+
+    if (todoOk) {
+      await supabaseService.marcarPedidoMlStockDevuelto(pedido.id);
+      resumen.pedidos += 1;
+    }
+  }
+
+  return resumen;
+}
+
 // Arma el detalle "SKU: antes→ahora" que va al log. Sin esto, una corrida decía
 // sólo "3 publicaciones empujadas" y no había forma de reconstruir después qué
 // se tocó ni por qué.
@@ -3563,14 +4293,25 @@ async function cicloStockML(origen = 'cron') {
   cicloStockEnCurso = true;
   try {
     const descuento = await descontarStockVentasML();
+    const devolucion = await devolverStockCancelacionesML();
     let push = null;
 
-    if (descuento.skusAfectados.size > 0) {
+    if (descuento.skusAfectados.size > 0 || devolucion.skusAfectados.size > 0) {
       // Cantidad absoluta final de cada SKU tocado (si un SKU aparece en varias
-      // ventas, vale el último valor, que es el stock que quedó).
+      // ventas, vale el último valor, que es el stock que quedó). La devolución
+      // corre después del descuento, así que sus valores pisan a los de éste.
       const cantidades = {};
       for (const d of descuento.descontados) cantidades[String(d.sku).trim()] = d.nuevo;
+      for (const d of devolucion.devueltos) cantidades[String(d.sku).trim()] = d.nuevo;
       push = await mercadolibreService.empujarStockDeSkus(cantidades);
+    }
+
+    if (devolucion.devueltos.length > 0 || devolucion.errores.length > 0) {
+      const repuestos = devolucion.devueltos.map((d) => `${d.sku} ${d.anterior}→${d.nuevo}`).join(', ');
+      logService.info(
+        `[ML stock/${origen}] ${devolucion.pedidos} cancelación(es) · stock devuelto: ${repuestos}` +
+        (devolucion.errores.length ? ` · ERRORES: ${devolucion.errores.map((e) => e.sku + ' (' + e.error + ')').join(', ')}` : '')
+      );
     }
 
     if (descuento.descontados.length > 0 || descuento.errores.length > 0) {
@@ -3582,7 +4323,7 @@ async function cicloStockML(origen = 'cron') {
         (descuento.errores.length ? ` · ERRORES: ${descuento.errores.map((e) => e.sku + ' (' + e.error + ')').join(', ')}` : '')
       );
     }
-    return { descuento, push };
+    return { descuento, devolucion, push };
   } finally {
     cicloStockEnCurso = false;
   }
@@ -3766,9 +4507,9 @@ app.get('/api/mercadolibre/etiqueta-pdf/:shipmentId', async (req, res) => {
 
   try {
     const fp = mercadolibreService.rutaEtiquetaLocal(shipmentId);
-    if (forzar || !require('fs').existsSync(fp)) {
-      await mercadolibreService.descargarEtiqueta(shipmentId, { forzar });
-    }
+    // Siempre se pide la versión actual a ML: la etiqueta cambia si ML
+    // reprograma el envío y tiene que coincidir con la de la web de ML.
+    await mercadolibreService.descargarEtiqueta(shipmentId, { forzar, fresca: true });
 
     // El Content-Type se fija explícito porque un middleware global deja todas las
     // respuestas en application/json; sin esto el navegador no abre el visor de PDF.
@@ -3822,11 +4563,12 @@ app.post('/api/mercadolibre/stock/ajustar', requireAuth, requireAdmin, async (re
 // Corrida manual del ciclo de stock (descontar ventas ML + empujar lo movido).
 app.post('/api/mercadolibre/stock/sincronizar', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { descuento, push } = await cicloStockML();
+    const { descuento, devolucion, push } = await cicloStockML();
     res.json({
       success: true,
       ventasProcesadas: descuento.pedidos,
       itemsDescontados: descuento.descontados,
+      itemsDevueltos: devolucion.devueltos,
       sinProducto: descuento.sinProducto,
       errores: descuento.errores,
       publicacionesActualizadas: push ? push.aplicados.length : 0,
@@ -3850,6 +4592,13 @@ app.post('/api/mercadolibre/webhook', (req, res) => {
     try {
       if (topic === 'orders_v2' && orderId) {
         const venta = await mercadolibreService.obtenerVenta(orderId);
+        if (venta.status === 'cancelled') {
+          await procesarCancelacionML(venta);
+          // Repone al instante el stock que la venta había descontado; si el
+          // ciclo está ocupado, lo levanta el cron en la próxima corrida.
+          await cicloStockML('cancelacion');
+          return;
+        }
         if (venta.status !== 'paid' && venta.status !== 'partially_paid') return;
 
         // Si la venta es parte de un carrito hay que traer las hermanas: el
@@ -6102,13 +6851,13 @@ app.post('/api/ues/combinar-pdfs', async (req, res) => {
       if (mMl) {
         const shipmentId = decodeURIComponent(mMl[1]).replace(/\.pdf$/i, '');
         const fp = mercadolibreService.rutaEtiquetaLocal(shipmentId);
-        if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
         try {
-          await mercadolibreService.descargarEtiqueta(shipmentId);
-          if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
+          // Versión actual de ML (coincide con la web); si ML falla, se usa la que haya.
+          await mercadolibreService.descargarEtiqueta(shipmentId, { fresca: true });
         } catch (err) {
           logService.warning(`[combinar-pdfs] ML etiqueta ${shipmentId}: ${err.message}`);
         }
+        if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
         return null;
       }
 
@@ -6584,11 +7333,11 @@ app.post('/api/drive-etiquetas/merge-pdf', async (req, res) => {
       const shipmentId = decodeURIComponent(mMl[1]).replace(/\.pdf$/i, '');
       const fp = mercadolibreService.rutaEtiquetaLocal(shipmentId);
       try {
-        if (!fsLocal.existsSync(fp)) await mercadolibreService.descargarEtiqueta(shipmentId);
-        if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
+        await mercadolibreService.descargarEtiqueta(shipmentId, { fresca: true });
       } catch (err) {
         logService.warning(`[MergePDF] ML etiqueta ${shipmentId}: ${err.message}`);
       }
+      if (fsLocal.existsSync(fp)) return fsLocal.readFileSync(fp);
       return null;
     }
 
@@ -6818,6 +7567,13 @@ app.post('/api/pedidos/:pedidoId/geocodificar', async (req, res) => {
 
     console.log(`✅ [geocodificar] Localidad UES encontrada:`, localidadUes);
 
+    // Si la localidad y el departamento del pedido ya coinciden entre sí en el
+    // catálogo UES, el front los mantiene y sólo advierte la sugerencia de Maps.
+    let pedidoCoincide = supabaseService.buscarLocalidadUesExacta(pedido.localidad, departamentoNombre);
+    if (pedidoCoincide && departamentoIdOverride && String(pedidoCoincide.departamento_id) !== departamentoIdOverride) {
+      pedidoCoincide = null; // el usuario ya eligió otro departamento en el form
+    }
+
     res.json({
       success: true,
       data: {
@@ -6827,6 +7583,7 @@ app.post('/api/pedidos/:pedidoId/geocodificar', async (req, res) => {
         barrioGoogleMaps: geoResult.barrio,
         localidadGoogleMaps: geoResult.localidad,
         direccionFormateada: geoResult.direccionFormateada,
+        pedidoCoincide,
       },
     });
   } catch (error) {
@@ -6990,6 +7747,99 @@ app.post('/api/templates/initialize', async (req, res) => {
   }
 });
 
+// ==================== GUÍA DE ATENCIÓN — CASOS AGREGADOS DESDE EL PANEL ====================
+// Complementan los casos curados en código (src/data/atencionFaq.js). Ver
+// sql/create_atencion_faq_casos.sql — mientras esa tabla no exista, el GET
+// devuelve lista vacía con un aviso en vez de romper el panel.
+
+function esFaltaTablaAtencionFaq(err) {
+  return /atencion_faq_casos/i.test(err?.message || '') &&
+         /does not exist|schema cache|not find/i.test(err?.message || '');
+}
+
+app.get('/api/atencion-faq/casos', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const casos = await supabaseService.obtenerAtencionFaqCasos();
+    res.json({ success: true, data: casos });
+  } catch (error) {
+    if (esFaltaTablaAtencionFaq(error)) {
+      return res.json({
+        success: true,
+        data: [],
+        aviso: 'Falta la tabla atencion_faq_casos. Corré sql/create_atencion_faq_casos.sql en Supabase para poder agregar casos.',
+      });
+    }
+    logService.error('Error al obtener casos de la guía de atención', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/atencion-faq/casos', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const { categoria_id, categoria_nombre, pregunta } = req.body || {};
+    if (!categoria_id || !categoria_nombre || !pregunta) {
+      return res.status(400).json({ success: false, error: 'Categoría y pregunta son requeridas' });
+    }
+
+    // Slug legible a partir de la pregunta, con sufijo si ya existe (usuario-caso, usuario-caso-2, ...).
+    const base = String(pregunta)
+      .toLowerCase()
+      .normalize('NFD').replace(/[̀-ͯ]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'caso';
+
+    const existentes = await supabaseService.obtenerAtencionFaqCasos();
+    const idsExistentes = new Set(existentes.map((c) => c.id));
+    let id = base;
+    let sufijo = 2;
+    while (idsExistentes.has(id)) {
+      id = `${base}-${sufijo}`;
+      sufijo += 1;
+    }
+
+    const caso = await supabaseService.crearAtencionFaqCaso({ ...req.body, id, creado_por: req.user?.email || null });
+    logService.info(`Caso de atención agregado: ${caso.pregunta} (${caso.id})`);
+    res.status(201).json({ success: true, data: caso });
+  } catch (error) {
+    if (esFaltaTablaAtencionFaq(error)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Todavía no se puede guardar: falta preparar la tabla en Supabase. Corré sql/create_atencion_faq_casos.sql y volvé a intentar.',
+      });
+    }
+    logService.error('Error al crear caso de la guía de atención', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.put('/api/atencion-faq/casos/:id', requireAuth, requireAtencion, async (req, res) => {
+  try {
+    const caso = await supabaseService.actualizarAtencionFaqCaso(req.params.id, req.body || {});
+    res.json({ success: true, data: caso });
+  } catch (error) {
+    if (esFaltaTablaAtencionFaq(error)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Todavía no se puede guardar: falta preparar la tabla en Supabase. Corré sql/create_atencion_faq_casos.sql y volvé a intentar.',
+      });
+    }
+    logService.error('Error al actualizar caso de la guía de atención', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/atencion-faq/casos/:id', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await supabaseService.eliminarAtencionFaqCaso(req.params.id);
+    logService.info(`Caso de atención eliminado: ${req.params.id}`);
+    res.json({ success: true, message: 'Caso eliminado' });
+  } catch (error) {
+    logService.error('Error al eliminar caso de la guía de atención', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ── Marco Postal ─────────────────────────────────────────────────────────────
 
 app.post('/api/generar-etiqueta-marcopostal/:pedidoId', requireAuth, async (req, res) => {
@@ -7134,6 +7984,244 @@ app.post('/api/carritos-abandonados/enviar-pendientes', requireAuth, async (req,
   } catch (err) {
     logService.error('Error enviando link a carritos pendientes', { error: err.message });
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Meta Ads (campañas / conjuntos / anuncios) ───────────────────────────────
+
+function responderErrorMetaAds(res, err, contexto) {
+  logService.error(`Meta Ads: ${contexto}`, { error: err.message, detalle: err.detalle, code: err.code });
+  res.status(err.status || 500).json({ success: false, error: err.message, detalle: err.detalle || null });
+}
+
+const FALTA_TABLA_META_ADS = /does not exist|Could not find the table/i;
+
+// GET /api/meta-ads/parametros — valores vigentes (Rulebook + lo editado),
+// definiciones para el editor y la tabla de ofertas.
+app.get('/api/meta-ads/parametros', requireAuth, requireAdmin, async (req, res) => {
+  let fila = null;
+  let sinTabla = false;
+  try {
+    fila = await supabaseService.obtenerParametrosMetaAds();
+  } catch (err) {
+    // Sin tabla el panel funciona igual con los valores del Rulebook.
+    if (!FALTA_TABLA_META_ADS.test(err.message || '')) {
+      logService.error('Meta Ads: leyendo parámetros', { error: err.message });
+      return res.status(500).json({ success: false, error: err.message });
+    }
+    sinTabla = true;
+  }
+  res.json({
+    success: true,
+    parametros: metaAdsParametros.completar(fila?.parametros),
+    definiciones: metaAdsParametros.DEFINICIONES,
+    defectos: { ...metaAdsParametros.DEFECTOS, ofertas: metaAdsParametros.OFERTAS_DEFECTO },
+    actualizadoPor: fila?.actualizado_por || null,
+    actualizadoEn: fila?.updated_at || null,
+    sinTabla,
+  });
+});
+
+// PUT /api/meta-ads/parametros — body { parametros: { clave: valor, ofertas: [...] } }
+app.put('/api/meta-ads/parametros', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const entrada = req.body?.parametros;
+    if (!entrada || typeof entrada !== 'object' || Array.isArray(entrada)) {
+      return res.status(400).json({ success: false, error: 'parametros inválidos' });
+    }
+    const limpios = metaAdsParametros.limpiarParametros(entrada);
+    const fila = await supabaseService.guardarParametrosMetaAds(limpios, req.user?.email);
+    logService.info(`Meta Ads: ${req.user?.email} actualizó los parámetros del piloto`, limpios);
+    res.json({ success: true, parametros: metaAdsParametros.completar(fila.parametros), actualizadoPor: fila.actualizado_por, actualizadoEn: fila.updated_at });
+  } catch (err) {
+    logService.error('Meta Ads: guardando parámetros', { error: err.message });
+    res.status(500).json({
+      success: false,
+      error: FALTA_TABLA_META_ADS.test(err.message || '')
+        ? 'Faltan las tablas del piloto en Supabase. Corré sql/create_meta_ads_piloto.sql.'
+        : err.message,
+    });
+  }
+});
+
+// ── Piloto: propuestas, jobs y actividad ─────────────────────────────────────
+
+function responderErrorPiloto(res, err, contexto) {
+  if (FALTA_TABLA_META_ADS.test(err.message || '')) {
+    return res.status(503).json({ success: false, sinTabla: true, error: 'Faltan las tablas del piloto en Supabase. Corré sql/create_meta_ads_piloto.sql.' });
+  }
+  return responderErrorMetaAds(res, err, contexto);
+}
+
+// GET /api/meta-ads/piloto/inicio — estado de cuenta, creativos top y jobs
+app.get('/api/meta-ads/piloto/inicio', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    res.json({ success: true, ...(await metaAdsPiloto.resumenInicio(req.query.cuenta, { fresco: req.query.fresco === '1' })), jobs: metaAdsPiloto.estadoJobs() });
+  } catch (err) {
+    responderErrorMetaAds(res, err, 'armando el inicio');
+  }
+});
+
+// GET /api/meta-ads/propuestas?vista=pendientes|historial
+app.get('/api/meta-ads/propuestas', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const historial = req.query.vista === 'historial';
+    const propuestas = await supabaseService.listarPropuestasMetaAds(historial
+      ? { estados: ['ejecutada', 'fallida', 'rechazada', 'desactualizada', 'vencida', 'aprobada'], limite: 150, desde: new Date(Date.now() - 30 * 86400000).toISOString() }
+      : { estados: ['pendiente'], limite: 300 });
+    if (historial) propuestas.sort((a, b) => new Date(b.actualizado_at) - new Date(a.actualizado_at));
+    res.json({ success: true, propuestas });
+  } catch (err) {
+    responderErrorPiloto(res, err, 'listando propuestas');
+  }
+});
+
+// POST /api/meta-ads/propuestas/:id/aprobar — revalida y ejecuta en Meta
+app.post('/api/meta-ads/propuestas/:id/aprobar', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const propuesta = await metaAdsPiloto.aprobarPropuesta(Number(req.params.id), req.user?.email, req.body?.cuenta);
+    logService.info(`Meta Ads: ${req.user?.email} aprobó la propuesta ${req.params.id} (${propuesta?.estado})`);
+    res.json({ success: true, propuesta });
+  } catch (err) {
+    responderErrorPiloto(res, err, `aprobando la propuesta ${req.params.id}`);
+  }
+});
+
+// POST /api/meta-ads/propuestas/:id/rechazar — body { motivo? }
+app.post('/api/meta-ads/propuestas/:id/rechazar', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const propuesta = await metaAdsPiloto.rechazarPropuesta(Number(req.params.id), req.user?.email, String(req.body?.motivo || '').slice(0, 300));
+    res.json({ success: true, propuesta });
+  } catch (err) {
+    responderErrorPiloto(res, err, `rechazando la propuesta ${req.params.id}`);
+  }
+});
+
+// GET /api/meta-ads/jobs — estado y última corrida de cada job
+app.get('/api/meta-ads/jobs', requireAuth, requireAdmin, (req, res) => {
+  res.json({ success: true, jobs: metaAdsPiloto.estadoJobs(), cron: process.env.META_ADS_PILOTO_CRON || null });
+});
+
+// POST /api/meta-ads/jobs/:job/ejecutar — corre un job a mano (genera propuestas)
+app.post('/api/meta-ads/jobs/:job/ejecutar', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const r = await metaAdsPiloto.correrJob(req.params.job, { origen: 'manual', usuario: req.user?.email });
+    res.json({ success: true, resumen: r.resumen, observaciones: r.observaciones });
+  } catch (err) {
+    responderErrorPiloto(res, err, `ejecutando el job ${req.params.job}`);
+  }
+});
+
+// GET /api/meta-ads/reportes?job=reporte|auditoria|ganadores — últimas corridas con su resultado
+app.get('/api/meta-ads/reportes', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const job = String(req.query.job || 'reporte');
+    if (!['reporte', 'auditoria', 'ganadores'].includes(job)) return res.status(400).json({ success: false, error: 'job inválido' });
+    const corridas = (await supabaseService.listarActividadMetaAds({ tipos: ['corrida'], limite: 300, desde: new Date(Date.now() - 120 * 86400000).toISOString() }))
+      .filter(a => a.origen === job && a.despues?.extra)
+      .slice(0, 8)
+      .map(a => ({ id: a.id, at: a.at, usuario: a.usuario, detalle: a.detalle, observaciones: a.despues.observaciones || [], resultado: a.despues.extra }));
+    res.json({ success: true, corridas });
+  } catch (err) {
+    responderErrorPiloto(res, err, 'listando reportes');
+  }
+});
+
+// GET /api/meta-ads/actividad?dias=7
+app.get('/api/meta-ads/actividad', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const dias = Math.min(Math.max(Number(req.query.dias) || 7, 1), 90);
+    const actividad = await supabaseService.listarActividadMetaAds({ desde: new Date(Date.now() - dias * 86400000).toISOString(), limite: 500 });
+    res.json({ success: true, actividad });
+  } catch (err) {
+    responderErrorPiloto(res, err, 'listando actividad');
+  }
+});
+
+// GET /api/meta-ads/cuentas — cuentas publicitarias que ve el token
+app.get('/api/meta-ads/cuentas', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    res.json({ success: true, ...(await metaAdsService.listarCuentas()) });
+  } catch (err) {
+    responderErrorMetaAds(res, err, 'listando cuentas');
+  }
+});
+
+// GET /api/meta-ads/campanias?cuenta=act_x&datePreset=last_7d&filtro=activas|todas
+app.get('/api/meta-ads/campanias', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { cuenta, datePreset, filtro } = req.query;
+    res.json({ success: true, ...(await metaAdsService.listarCampanias(cuenta, { datePreset, filtro })) });
+  } catch (err) {
+    responderErrorMetaAds(res, err, 'listando campañas');
+  }
+});
+
+// GET /api/meta-ads/campanias/:id/conjuntos
+app.get('/api/meta-ads/campanias/:id/conjuntos', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { datePreset, filtro } = req.query;
+    res.json({ success: true, ...(await metaAdsService.listarConjuntos(req.params.id, { datePreset, filtro })) });
+  } catch (err) {
+    responderErrorMetaAds(res, err, 'listando conjuntos');
+  }
+});
+
+// GET /api/meta-ads/conjuntos/:id/anuncios
+app.get('/api/meta-ads/conjuntos/:id/anuncios', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { datePreset, filtro } = req.query;
+    res.json({ success: true, ...(await metaAdsService.listarAnuncios(req.params.id, { datePreset, filtro })) });
+  } catch (err) {
+    responderErrorMetaAds(res, err, 'listando anuncios');
+  }
+});
+
+// POST /api/meta-ads/:id/estado — body { estado: 'ACTIVE' | 'PAUSED' }
+app.post('/api/meta-ads/:id/estado', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const r = await metaAdsService.cambiarEstado(req.params.id, req.body?.estado);
+    logService.info(`Meta Ads: ${req.user?.email} puso ${req.params.id} en ${req.body?.estado}`, { nombre: req.body?.nombre });
+    metaAdsPiloto.registrarAccionManual({
+      tipo: r.estado === 'ACTIVE' ? 'activacion' : 'pausa', usuario: req.user?.email, entidadId: req.params.id,
+      entidadNombre: req.body?.nombre || null, titulo: `${r.estado === 'ACTIVE' ? 'Prendido' : 'Apagado'} a mano: ${req.body?.nombre || req.params.id}`,
+      despues: { estado: r.estado, estadoEfectivo: r.estadoEfectivo },
+    });
+    res.json({ success: true, ...r });
+  } catch (err) {
+    responderErrorMetaAds(res, err, `cambiando estado de ${req.params.id}`);
+  }
+});
+
+// POST /api/meta-ads/:id/presupuesto — body { monto } o { porcentaje }
+app.post('/api/meta-ads/:id/presupuesto', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const r = await metaAdsService.cambiarPresupuesto(req.params.id, req.body || {});
+    logService.info(`Meta Ads: ${req.user?.email} cambió presupuesto ${r.tipo} de "${r.nombre}" ${r.anterior} → ${r.nuevo} ${r.moneda}`);
+    metaAdsPiloto.registrarAccionManual({
+      tipo: 'presupuesto', usuario: req.user?.email, entidadId: req.params.id, entidadNombre: r.nombre,
+      titulo: `Presupuesto a mano: ${r.nombre}`, detalle: `${r.anterior} → ${r.nuevo} ${r.moneda} (${r.tipo})`,
+      antes: { presupuesto: r.anterior }, despues: { presupuesto: r.nuevo },
+    });
+    res.json({ success: true, ...r });
+  } catch (err) {
+    responderErrorMetaAds(res, err, `cambiando presupuesto de ${req.params.id}`);
+  }
+});
+
+// POST /api/meta-ads/:id/duplicar — body { tipo: 'campania' | 'conjunto' | 'anuncio' }
+// La copia queda pausada.
+app.post('/api/meta-ads/:id/duplicar', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const r = await metaAdsService.duplicar(req.params.id, { tipo: req.body?.tipo });
+    logService.info(`Meta Ads: ${req.user?.email} duplicó ${req.body?.tipo} ${req.params.id} → ${r.nuevoId}`);
+    metaAdsPiloto.registrarAccionManual({
+      tipo: 'duplicado', usuario: req.user?.email, entidadId: req.params.id, entidadNombre: req.body?.nombre || null,
+      titulo: `Duplicado a mano: ${req.body?.nombre || req.params.id}`, detalle: `Copia ${r.nuevoId} (pausada)`, despues: { nuevoId: r.nuevoId },
+    });
+    res.json({ success: true, ...r });
+  } catch (err) {
+    responderErrorMetaAds(res, err, `duplicando ${req.params.id}`);
   }
 });
 
@@ -7415,6 +8503,29 @@ app.listen(PORT, async () => {
 
   // Cron: refresh diario del cache de tendencias por color (ventana movil de 7 dias).
   // 03:00 AM hora del server. Recalcula los ultimos 7 dias para tolerar pedidos retrasados.
+  // Cron: piloto de Meta Ads (genera propuestas, no ejecuta nada sin aprobación).
+  // Sólo corre si META_ADS_PILOTO_CRON está definido, ej. "10 8 * * *".
+  if (process.env.META_ADS_PILOTO_CRON) {
+    cron.schedule(process.env.META_ADS_PILOTO_CRON, async () => {
+      // Diarios + los de cadencia propia del Rulebook §8: reporte los lunes,
+      // ganadores caídos los miércoles, auditoría de decisiones los días 1 y 15.
+      const hoyUy = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Montevideo' }));
+      const jobs = ['pausa_escalado', 'graduacion'];
+      if (hoyUy.getDay() === 3) jobs.push('ganadores');
+      if ([1, 15].includes(hoyUy.getDate())) jobs.push('auditoria');
+      if (hoyUy.getDay() === 1) jobs.push('reporte');
+      for (const job of jobs) {
+        try {
+          const r = await metaAdsPiloto.correrJob(job, { origen: 'cron' });
+          logService.info(`[cron] Meta Ads ${job}: ${r.resumen.propuestas} propuestas, ${r.resumen.observaciones} en observación`);
+        } catch (err) {
+          logService.error(`[cron] Meta Ads ${job} falló`, { error: err.message });
+        }
+      }
+    }, { timezone: 'America/Montevideo' });
+    console.log(`📣 Cron piloto Meta Ads activo (${process.env.META_ADS_PILOTO_CRON} America/Montevideo)`);
+  }
+
   cron.schedule('0 3 * * *', async () => {
     try {
       const hoy = new Date();

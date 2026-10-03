@@ -1,0 +1,151 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap');
+
+/* Sección Meta Ads con el diseño "Cauce" (mockup D · Inicio). Todo queda
+   acotado a .cauce para no afectar al resto de ecom-eti. */
+.cauce {
+  --c-bg: #0B0C0F;
+  --c-surface: #16171D;
+  --c-surface-2: #1C1D24;
+  --c-text: #ECEDF0;
+  --c-soft: #9BA0AB;
+  --c-muted: #7E8390;
+  --c-faint: #6B7080;
+  --c-border: rgba(255, 255, 255, .08);
+  --c-border-soft: rgba(255, 255, 255, .06);
+  --c-border-strong: rgba(255, 255, 255, .10);
+  --c-hover: rgba(255, 255, 255, .03);
+  --c-hover-strong: rgba(255, 255, 255, .06);
+  --c-accent: #8EA2FF;
+  --c-accent-hover: #B7C3FF;
+  --c-accent-soft: rgba(142, 162, 255, .14);
+  --c-warn: #F2B544;
+  --c-warn-soft: rgba(242, 181, 68, .14);
+  --c-bad: #F07A6E;
+  --c-bad-soft: rgba(240, 122, 110, .14);
+  --c-good: #6FD3A0;
+  --c-good-soft: rgba(111, 211, 160, .13);
+
+  color-scheme: dark;
+  min-height: 100%;
+  /* El layout responde al espacio real (la app tiene su propia barra lateral
+     y paneles), no al ancho de la ventana. */
+  container-type: inline-size;
+  container-name: cauce;
+  background: radial-gradient(1200px 520px at 75% -10%, rgba(110, 130, 255, .10), transparent 60%), var(--c-bg);
+  font-family: 'Geist', ui-sans-serif, system-ui, sans-serif;
+  color: var(--c-text);
+  -webkit-font-smoothing: antialiased;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+.cauce *, .cauce *::before, .cauce *::after { box-sizing: border-box; }
+.cauce-grid { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: 100%; }
+.cauce a { color: inherit; text-decoration: none; cursor: pointer; }
+.cauce a:hover { color: var(--c-accent-hover); }
+.cauce button { font-family: inherit; color: inherit; cursor: pointer; }
+.cauce button:disabled { cursor: default; opacity: .55; }
+.cauce h1, .cauce h2, .cauce h3 { color: var(--c-text); }
+.cauce p { margin: 0; }
+.cauce .num { font-family: 'Geist Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.cauce input, .cauce select, .cauce textarea {
+  font-family: inherit; font-size: 13px; color: var(--c-text);
+  background: var(--c-bg); border: 1px solid var(--c-border-strong); border-radius: 7px;
+  height: 30px; padding: 0 9px;
+}
+.cauce textarea { height: auto; padding: 8px 9px; }
+.cauce input:focus, .cauce select:focus, .cauce textarea:focus { outline: none; border-color: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-soft); }
+.cauce :focus-visible { outline: 2px solid var(--c-accent); outline-offset: 2px; }
+
+/* barra lateral */
+.cauce-side { display: flex; flex-direction: column; gap: 16px; padding: 12px 8px 12px 12px; position: sticky; top: 0; height: 100vh; }
+.cauce-brand { display: flex; align-items: center; gap: 9px; height: 40px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; text-align: left; }
+.cauce-brand-logo { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(145deg, #E7B8A8, #9E5545); color: #16171D; font-size: 11px; font-weight: 600; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.cauce-nav { display: flex; flex-direction: column; gap: 1px; }
+.cauce-nav a { display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 8px; border-radius: 6px; color: var(--c-soft); font-size: 13.5px; }
+.cauce-nav a:hover { background: var(--c-hover-strong); color: var(--c-text); }
+.cauce-nav a[aria-current="page"] { background: var(--c-surface); color: var(--c-text); font-weight: 500; box-shadow: 0 0 0 1px var(--c-border-strong); }
+.cauce-nav a[aria-disabled="true"] { opacity: .45; pointer-events: none; }
+.cauce-nav .cauce-count { margin-left: auto; font-size: 11.5px; color: var(--c-text); font-weight: 500; }
+.cauce-usuario { display: flex; align-items: center; gap: 8px; padding: 4px 8px; }
+.cauce-autonomia { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 10px; background: var(--c-hover-strong); }
+
+/* área principal */
+.cauce-main-wrap { padding: 8px 8px 8px 0; min-width: 0; }
+.cauce-main { container-type: inline-size; container-name: cauce-main; min-height: calc(100vh - 16px); background: var(--c-surface); border-radius: 10px; box-shadow: 0 0 0 1px rgba(255, 255, 255, .07); display: flex; flex-direction: column; min-width: 0; }
+.cauce-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 48px; padding: 0 20px; border-bottom: 1px solid var(--c-border-soft); flex-wrap: wrap; }
+.cauce-body { display: flex; flex-direction: column; gap: 32px; padding: 32px 36px 48px; max-width: 1160px; width: 100%; }
+.cauce-body.wide { max-width: none; }
+
+/* botones */
+.cauce .btn { height: 30px; padding: 0 11px; border: 1px solid var(--c-border-strong); border-radius: 7px; background: var(--c-surface); font-size: 12.5px; font-weight: 500; box-shadow: none; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; color: var(--c-text); }
+.cauce .btn:hover:not(:disabled) { background: var(--c-bg); }
+.cauce .pri { height: 30px; padding: 0 12px; border: 0; border-radius: 7px; background: var(--c-text); color: var(--c-bg); font-size: 12.5px; font-weight: 500; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.cauce .pri:hover:not(:disabled) { background: #fff; }
+.cauce .btn-danger { color: var(--c-bad); }
+.cauce .btn-sm { height: 26px; padding: 0 9px; font-size: 12px; }
+
+/* listas tipo bandeja */
+.cauce .lista { display: flex; flex-direction: column; border: 1px solid var(--c-border); border-radius: 10px; overflow: hidden; }
+.cauce .lista > * + * { border-top: 1px solid var(--c-border-soft); }
+.cauce .fila { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: center; padding: 14px 16px; }
+.cauce .fila:hover { background: var(--c-hover); }
+.cauce .meta-linea { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--c-soft); flex-wrap: wrap; }
+.cauce .seccion-titulo { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.cauce .seccion-titulo h2 { margin: 0; font-size: 13.5px; font-weight: 600; }
+.cauce .seccion-titulo a, .cauce .seccion-titulo .link { font-size: 12.5px; color: var(--c-soft); background: none; border: 0; padding: 0; }
+.cauce .vacio { padding: 22px 16px; color: var(--c-muted); font-size: 13px; text-align: center; }
+
+/* chips */
+.cauce .chip { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: 5px; font-size: 11px; font-weight: 500; background: var(--c-hover-strong); color: var(--c-soft); white-space: nowrap; }
+.cauce .chip.accent { background: var(--c-accent-soft); color: var(--c-accent); }
+.cauce .chip.warn { background: var(--c-warn-soft); color: var(--c-warn); }
+.cauce .chip.bad { background: var(--c-bad-soft); color: var(--c-bad); }
+.cauce .chip.good { background: var(--c-good-soft); color: var(--c-good); }
+.cauce .dot { width: 7px; height: 7px; border-radius: 4px; background: var(--c-accent); display: inline-block; flex-shrink: 0; }
+
+/* avisos */
+.cauce .aviso { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border-radius: 8px; font-size: 12.5px; background: var(--c-warn-soft); color: #F6CF85; }
+.cauce .aviso.bad { background: var(--c-bad-soft); color: #F5A79E; }
+.cauce .aviso.info { background: var(--c-accent-soft); color: #C3CDFF; }
+
+/* tabla */
+.cauce table.tabla { width: 100%; border-collapse: collapse; }
+.cauce table.tabla th { padding: 9px 12px; font-size: 11.5px; font-weight: 500; color: var(--c-muted); text-align: right; white-space: nowrap; border-bottom: 1px solid var(--c-border); }
+.cauce table.tabla td { padding: 9px 12px; font-size: 12.5px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--c-border-soft); vertical-align: top; }
+.cauce table.tabla tr:hover td { background: var(--c-hover); }
+
+/* pestañas */
+.cauce .tabs { display: flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--c-bg); border: 1px solid var(--c-border); }
+.cauce .tabs button { height: 26px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: var(--c-soft); font-size: 12.5px; }
+.cauce .tabs button[aria-selected="true"] { background: var(--c-surface-2); color: var(--c-text); box-shadow: 0 0 0 1px var(--c-border-strong); }
+
+/* creativos */
+.cauce .crea { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
+.cauce .crea-img { position: relative; aspect-ratio: 4 / 5; border-radius: 8px; background: linear-gradient(160deg, #2A2D36, #16171D); background-size: cover; background-position: center; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); overflow: hidden; }
+.cauce .crea-tag { position: absolute; left: 8px; top: 8px; padding: 2px 6px; border-radius: 5px; background: rgba(11, 12, 15, .72); font-size: 11px; font-weight: 500; color: var(--c-text); backdrop-filter: blur(6px); }
+.cauce .crea-fmt { position: absolute; right: 8px; bottom: 8px; padding: 1px 5px; border-radius: 4px; background: rgba(11, 12, 15, .72); color: var(--c-text); font-size: 10.5px; }
+
+/* modal */
+.cauce-modal-fondo { position: fixed; inset: 0; background: rgba(5, 6, 8, .62); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 16px; }
+.cauce-modal { width: min(560px, 100%); max-height: calc(100vh - 32px); overflow: auto; background: var(--c-surface); border-radius: 12px; box-shadow: 0 0 0 1px var(--c-border-strong), 0 24px 60px rgba(0, 0, 0, .5); padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+
+.cauce .two { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 40px; align-items: start; }
+.cauce .estado-cuenta { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 40px; align-items: end; }
+
+@container cauce (max-width: 900px) {
+  .cauce-grid { grid-template-columns: 1fr; }
+  .cauce-side { position: static; height: auto; padding-bottom: 0; }
+  .cauce-side .cauce-nav { flex-direction: row; flex-wrap: wrap; }
+  .cauce-side .cauce-autonomia, .cauce-side .cauce-relleno, .cauce-side .cauce-usuario { display: none; }
+  .cauce-main-wrap { padding: 8px; }
+}
+@container cauce-main (max-width: 860px) {
+  .cauce .two, .cauce .estado-cuenta { grid-template-columns: 1fr; gap: 28px; }
+  .cauce .crea { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .cauce-body { padding: 24px 20px 40px; }
+}
+@container cauce-main (max-width: 520px) {
+  .cauce .crea { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cauce .fila { grid-template-columns: 1fr; }
+  .cauce-body { padding: 20px 16px 36px; }
+}

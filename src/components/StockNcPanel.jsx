@@ -4,6 +4,10 @@ import {
   obtenerStockOtros, sincronizarStockOtros,
 } from '../services/api';
 import { formatFechaHoraUy, parseTimestampUtc } from '../utils/fechas';
+import { cierreFuera } from '../utils/cierreModal';
+import NuevoColorNcModal from './modals/NuevoColorNcModal';
+import CambiarFotoColorModal from './modals/CambiarFotoColorModal';
+import StockTiendaVsDeposito from './StockTiendaVsDeposito';
 
 // Subcategorías del panel: "colores" (NC/BSA/MRT/BSJ) y "otros" (base coat, top
 // coat, tratamientos). Comparten toda la mecánica de conteo/guardado; sólo cambia
@@ -24,6 +28,13 @@ const TABS = [
     sub: 'Base coat, top coat y tratamientos: mismo mecanismo que el stock de colores (sincronizar, contar y guardar).',
     columnaNombre: 'Artículo',
     vacio: 'No hay otros artículos para mostrar',
+  },
+  // Sólo admin: comparación tienda (Shopify) vs depósito (StockPlanner). Tiene su
+  // propio componente; no usa la mecánica de conteo de las otras dos.
+  {
+    id: 'deposito',
+    label: 'Tienda vs depósito',
+    soloAdmin: true,
   },
 ];
 
@@ -49,9 +60,11 @@ const COLUMNAS = [
   { campo: 'updated_at', label: 'Actualizado',       dirInicial: 'desc' },
 ];
 
-export default function StockNcPanel({ mostrarToast }) {
+export default function StockNcPanel({ mostrarToast, esAdmin = false }) {
   const [tab, setTab] = useState('colores');
-  const tabActiva = TABS.find((t) => t.id === tab) || TABS[0];
+  const tabsVisibles = TABS.filter((t) => !t.soloAdmin || esAdmin);
+  const tabActiva = tabsVisibles.find((t) => t.id === tab) || TABS[0];
+  const esDeposito = tabActiva.id === 'deposito';
   const [productos, setProductos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [sincronizando, setSincronizando] = useState(false);
@@ -66,8 +79,15 @@ export default function StockNcPanel({ mostrarToast }) {
   const [guardandoTodo, setGuardandoTodo] = useState(false);
   // Orden de la tabla. Por defecto, lo último modificado va primero.
   const [orden, setOrden] = useState({ campo: 'updated_at', dir: 'desc' });
+  // Alta de un color nuevo en Shopify + ML (sólo admin).
+  const [nuevoColorAbierto, setNuevoColorAbierto] = useState(false);
+  // Color cuya foto se está cambiando (sólo admin, sólo SKU NC): producto | null
+  const [fotoColor, setFotoColor] = useState(null);
+  // La alerta de stock bajo arranca colapsada: con decenas de productos ocupaba media pantalla.
+  const [alertaBajoAbierta, setAlertaBajoAbierta] = useState(false);
 
   const cargar = useCallback(async () => {
+    if (tab === 'deposito') return; // la carga la hace StockTiendaVsDeposito
     setLoading(true);
     try {
       const data = tab === 'colores' ? await obtenerStockNC() : await obtenerStockOtros();
@@ -229,6 +249,7 @@ export default function StockNcPanel({ mostrarToast }) {
   const productosBajos = useMemo(() => (
     productos.filter((p) => p.activo !== false && Number(p.stock) <= umbralBajo(p))
   ), [productos]);
+  const sinStock = productosBajos.filter((p) => Number(p.stock) <= 0).length;
 
   const filtrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase();
@@ -280,7 +301,7 @@ export default function StockNcPanel({ mostrarToast }) {
   return (
     <div className="stocknc-panel">
       <div className="admin-tabs">
-        {TABS.map((t) => (
+        {tabsVisibles.map((t) => (
           <button
             key={t.id}
             type="button"
@@ -293,12 +314,21 @@ export default function StockNcPanel({ mostrarToast }) {
         ))}
       </div>
 
+      {esDeposito ? (
+        <StockTiendaVsDeposito mostrarToast={mostrarToast} />
+      ) : (
+      <>
       <div className="stocknc-header">
         <div>
           <h2 className="stocknc-title">{tabActiva.titulo}</h2>
           <p className="stocknc-sub">{tabActiva.sub}</p>
         </div>
         <div className="stocknc-header-actions">
+          {esAdmin && tab === 'colores' && (
+            <button className="btn btn-secondary btn-sm" onClick={() => setNuevoColorAbierto(true)} disabled={loading || sincronizando || guardandoTodo}>
+              ➕ Agregar color nuevo
+            </button>
+          )}
           <button className="btn btn-secondary btn-sm" onClick={cargar} disabled={loading || sincronizando || guardandoTodo}>
             🔄 Actualizar
           </button>
@@ -310,16 +340,29 @@ export default function StockNcPanel({ mostrarToast }) {
 
       {productosBajos.length > 0 && (
         <div className="stocknc-alerta-bajo" role="alert">
-          <span className="stocknc-alerta-bajo-icono">⚠</span>
-          <div className="stocknc-alerta-bajo-texto">
-            <strong>Stock bajo ({productosBajos.length}):</strong>{' '}
-            {productosBajos.map((p, i) => (
-              <span key={p.id}>
-                {i > 0 && ' · '}
-                {p.nombre} (SKU {p.sku}) llegó a {p.stock} unidad{Number(p.stock) === 1 ? '' : 'es'}
-              </span>
-            ))}
-          </div>
+          <button
+            type="button"
+            className="stocknc-alerta-bajo-resumen"
+            onClick={() => setAlertaBajoAbierta((a) => !a)}
+            aria-expanded={alertaBajoAbierta}
+          >
+            <span className="stocknc-alerta-bajo-icono">⚠</span>
+            <strong>Stock bajo: {productosBajos.length} producto{productosBajos.length === 1 ? '' : 's'}</strong>
+            {sinStock > 0 && <span> · {sinStock} sin stock</span>}
+            <span className="stocknc-alerta-bajo-toggle">
+              {alertaBajoAbierta ? 'Ocultar detalle ▴' : 'Ver detalle ▾'}
+            </span>
+          </button>
+          {alertaBajoAbierta && (
+            <div className="stocknc-alerta-bajo-texto">
+              {productosBajos.map((p, i) => (
+                <span key={p.id}>
+                  {i > 0 && ' · '}
+                  {p.nombre} (SKU {p.sku}) llegó a {p.stock} unidad{Number(p.stock) === 1 ? '' : 'es'}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -409,7 +452,17 @@ export default function StockNcPanel({ mostrarToast }) {
                     )}
                   </td>
                   <td className="stocknc-fecha">{formatFecha(p.updated_at)}</td>
-                  <td>
+                  <td className="stocknc-acciones">
+                    {esAdmin && tab === 'colores' && /^NC\d/i.test(String(p.sku || '').trim()) && (
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => setFotoColor(p)}
+                        disabled={guardandoTodo}
+                        title="Cambiar la foto de este color en Shopify y MercadoLibre"
+                      >
+                        📷
+                      </button>
+                    )}
                     <button
                       className="btn btn-primary btn-sm"
                       onClick={() => solicitarGuardar(p)}
@@ -431,9 +484,32 @@ export default function StockNcPanel({ mostrarToast }) {
           </tbody>
         </table>
       </div>
+      </>
+      )}
+
+      {nuevoColorAbierto && (
+        <NuevoColorNcModal
+          onClose={() => setNuevoColorAbierto(false)}
+          onCreado={cargar}
+          mostrarToast={mostrarToast}
+        />
+      )}
+
+      {fotoColor && (
+        <CambiarFotoColorModal
+          producto={fotoColor}
+          onClose={() => setFotoColor(null)}
+          mostrarToast={mostrarToast}
+        />
+      )}
 
       {confirmData && (
-        <div className="modal modal-open" onClick={() => setConfirmData(null)}>
+        <div
+          className="modal modal-open"
+          {...cierreFuera(() => setConfirmData(null), {
+            mensaje: '¿Cerrar sin actualizar el stock? El conteo no se guarda.',
+          })}
+        >
           <div
             className="modal-content modal-medium"
             onClick={(e) => e.stopPropagation()}
@@ -491,7 +567,12 @@ export default function StockNcPanel({ mostrarToast }) {
       )}
 
       {bulkConfirm && (
-        <div className="modal modal-open" onClick={() => setBulkConfirm(null)}>
+        <div
+          className="modal modal-open"
+          {...cierreFuera(() => setBulkConfirm(null), {
+            mensaje: '¿Cerrar sin actualizar el stock? Los conteos no se guardan.',
+          })}
+        >
           <div
             className="modal-content modal-medium"
             onClick={(e) => e.stopPropagation()}

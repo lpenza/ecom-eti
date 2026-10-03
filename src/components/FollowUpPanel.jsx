@@ -7,6 +7,7 @@ import {
   obtenerPedidosFollowUp,
 } from '../services/api';
 import { formatFechaLargaUy, formatFechaUy, formatUy } from '../utils/fechas';
+import { cierreFuera } from '../utils/cierreModal';
 
 const TASK_STATUS_STORAGE_KEY = 'velinne_followup_task_status_v1';
 const CUSTOMER_STATES = [
@@ -847,7 +848,10 @@ function FollowUpPanel({
       </div>
 
       {notesPanel.open && (
-        <div className="customer-notes-overlay" onClick={closeNotes}>
+        <div
+          className="customer-notes-overlay"
+          {...cierreFuera(closeNotes, { mensaje: '¿Cerrar las notas? Lo que no guardaste se pierde.' })}
+        >
           <div className="customer-notes-panel" onClick={(e) => e.stopPropagation()}>
             <div className="customer-notes-header">
               <div>

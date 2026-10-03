@@ -20,12 +20,14 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'foco-respuesta',
+        tags: ['foco en la clienta', 'no vender por vender', 'terminar con una pregunta'],
         pregunta: 'El foco de toda respuesta',
         regla: 'Dos criterios que Bryan repite: el foco va en la clienta, no en el producto, y no se vende por vender. Cuando alguien escribe con un problema, primero se entiende qué le pasó. Y conviene terminar siempre con una pregunta, para que la conversación siga.',
         fuente: '09/07, 14/07 y 12/08',
       },
       {
         id: 'horarios-atencion',
+        tags: ['horario de atencion', 'que hora atienden', 'horario pickup', 'atienden el sabado'],
         pregunta: 'Días y horarios de atención',
         regla: 'Atención al cliente: lunes a viernes de 9 a 18, sábados hasta las 12. El Pickup tiene otro horario: lunes a viernes de 9 a 18, pero sábados de 10 a 14 (queda abierto dos horas después de que cierra la atención — si hay un problema un sábado a esa hora, no hay nadie para responder en el momento).',
         variantes: [
@@ -37,6 +39,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'orden-bandeja',
+        tags: ['orden de trabajo', 'que respondo primero', 'comentarios o mensajes', 'prioridad de bandeja'],
         pregunta: 'En qué orden se trabaja la bandeja',
         regla: 'Primero los comentarios de redes (están a la vista de todo el mundo), después los mensajes directos, y el WhatsApp al final.',
         fuente: '21/06',
@@ -51,6 +54,7 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'seis-tipos-clienta',
+        tags: ['tipos de clienta', 'clienta nueva', 'clienta recurrente', 'trato diferencial', 'clienta vip', 'influencer', 'ugc'],
         pregunta: 'Los tipos de clienta y qué cambia en cada uno',
         regla: 'No se diferencia el trato por tipo de clienta: se trata a todas por igual. Lo que cambia es el énfasis del seguimiento según el caso. No existe una categoría de "clienta VIP".',
         variantes: [
@@ -64,6 +68,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'senales-de-reclamo',
+        tags: ['clienta va a reclamar', 'antes de vender', 'clienta dudosa', 'prevenir un reclamo'],
         pregunta: 'La clienta da señales de que va a reclamar',
         regla: 'No se la rechaza: se le vende después de asegurarse de que entendió. Tres puntos a dejar claros antes de cerrar: que se usan al ras de la uña natural y no alargan, que duran de 10 a 14 días, y que las primeras colocaciones son un proceso de aprendizaje. Si dice que entendió y quiere igual, se cierra la venta tranquila.',
         respuesta: 'Antes de que la hagas te cuento tres cosas para que no te lleves una sorpresa 💜 • Se colocan al ras de tu uña natural: no alargan ni funcionan como extensión. • Duran entre 10 y 14 días con una buena preparación. • Las primeras veces cuesta un poco agarrarle la mano, es normal. Si te cierra así, seguimos 💗',
@@ -71,6 +76,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'gesto-comercial-cuando-corresponde',
+        tags: ['gesto comercial', 'cuando compensar', 'compensacion', 'acepta el diagnostico'],
         pregunta: 'Cuándo el gesto comercial corresponde y cuándo no',
         regla: 'Condición que Bryan repite: el gesto se ofrece si la clienta está de buena y, sobre todo, si acepta el diagnóstico («siempre y cuando entienda que es tema de práctica, no de que el producto salió mal»).',
         variantes: [
@@ -89,6 +95,7 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'cuando-llega-montevideo',
+        tags: ['cuando llega el pedido', 'tiempo de entrega montevideo', 'demora envio montevideo', 'no llega el pedido montevideo'],
         pregunta: '¿Cuándo me llega el pedido? (Montevideo)',
         regla: 'Despacho dentro de las 24 a 48 horas hábiles, entrega entre las 17 y las 21, por Marcopostal. Hasta las 15 se preparan los pedidos del día; entre las 15 y las 16 pasa la cadetería a buscarlos. Después de las 16, todo queda para el día siguiente. El fin de semana no cuenta: son horas hábiles. Importante: comprar antes de las 15 hace que SE INTENTE despachar ese mismo día, pero no es una garantía de entrega en el día — esa garantía es justamente el diferencial del envío express, y no hay que prometer lo mismo para el envío común.',
         variantes: [
@@ -101,6 +108,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'horario-puntual',
+        tags: ['horario de entrega', 'coordinar entrega', 'franja horaria', 'entrega puntual', 'entrega en un horario especifico'],
         pregunta: 'Necesito que me llegue en un horario puntual',
         regla: 'Se puede coordinar día y franja, pero no para el día siguiente: queda para el subsiguiente día hábil, siempre contando en días hábiles. Ejemplo: si compra un lunes a las 16 hs, se puede coordinar para el miércoles de 9 a 18 hs (el martes ya no entra porque el corte de las 15 del lunes quedó pasado). Se anota en el despacho. Hay casos resueltos con franjas de 8 a 16, antes de las 18 y de 9 a 18:30.',
         respuesta: 'Sí, se puede coordinar 💜 Te aviso que en ese caso la entrega no sale para mañana sino para el día hábil siguiente a ese, porque hay que agendarla con la cadetería. Pasame la dirección y en qué franja podés recibirlo y lo dejo anotado.',
@@ -109,6 +117,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'porteria-trabajo-tercero',
+        tags: ['dejar en porteria', 'entregar en el trabajo', 'a nombre de otra persona', 'que lo reciba otra persona'],
         pregunta: 'Que lo dejen en portería, en mi trabajo o a nombre de otra persona',
         regla: 'Se acepta sin vueltas. Se anota en el despacho junto con la dirección, igual que una franja horaria. Sirve para portería electrónica, oficinas, o entrega a nombre de un tercero.',
         respuesta: 'Sí, sin problema 💜 Decime a nombre de quién queda o dónde prefieren que lo dejen y lo anoto en el despacho.',
@@ -117,6 +126,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'cuando-llega-interior',
+        tags: ['cuando llega al interior', 'demora interior', 'canelones', 'no llega interior'],
         pregunta: '¿Cuándo me llega al interior?',
         regla: 'Despacho entre 24 y 72 horas hábiles, por agencia UES. Sin franja horaria y sin posibilidad de comprometer un día exacto. Todo Canelones cuenta como interior, incluida Ciudad de la Costa: no hay envío en el día ni reparto con franja.',
         respuesta: 'Al interior el pedido se despacha dentro de las 24 a 72 horas hábiles y viaja por agencia UES 💜 Fuera de Montevideo no manejamos franja horaria, así que no te puedo confirmar una hora exacta. Apenas salga te paso el número de seguimiento.',
@@ -125,6 +135,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'otra-agencia-dac-turil-nossar',
+        tags: ['otra agencia de envios', 'dac', 'turil', 'nossar', 'no trabajan con ues'],
         pregunta: '¿Me lo mandan por DAC / Turil / Nossar?',
         regla: 'Solo se trabaja con UES. Ninguna otra agencia. Si la clienta pide otra, se le explica y se le ofrecen dos salidas.',
         variantes: [
@@ -136,6 +147,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'retirar-agencia-puntual',
+        tags: ['retirar en una agencia', 'sucursal de ues', 'cambiar sucursal de retiro'],
         pregunta: 'Quiero retirarlo en una agencia puntual',
         regla: 'Se puede. En la dirección del pedido va «Retiro UES [ciudad]». Se necesita el número de pedido para modificarlo.',
         respuesta: 'Sí, se puede 💜 Decime en qué agencia de UES te queda cómodo retirar y te lo dejamos ahí. Pasame también tu número de pedido así lo modifico.',
@@ -144,6 +156,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'cuanto-sale-envio',
+        tags: ['precio del envio', 'costo del envio', 'envio gratis', 'envio express', 'cuanto sale el envio'],
         pregunta: '¿Cuánto sale el envío?',
         regla: 'Envío común: $150 a todo el país, gratis superando $1.760. Express: se compra antes de las 15 y llega ese día entre las 17 y las 21. Por mayor no aplica el envío gratis: $150 Montevideo, $250 interior.',
         variantes: [
@@ -157,6 +170,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'cupon-cobra-envio',
+        tags: ['el cupon cobra el envio', 'descuento y envio', 'envio no queda gratis con el cupon'],
         pregunta: 'Puse el cupón y ahora me cobra el envío',
         regla: 'Es el comportamiento normal. El cupón descuenta del total y, si eso deja la compra por debajo de $1.760, el envío vuelve a cobrarse. Se le explica y se le deja elegir qué le conviene.',
         respuesta: 'Sí, es normal 💜 El cupón descuenta sobre el total y al aplicarlo tu compra queda por debajo del monto mínimo para el envío gratis, así que el sistema vuelve a cobrarlo. Fijate cuál te conviene más: usar el 10% y pagar el envío, o dejar el cupón para otra compra y que este te salga sin costo.',
@@ -164,6 +178,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'no-estaba-para-recibir',
+        tags: ['no estaba en casa', 'no habia nadie para recibir', 'reintentar la entrega', 'no atendieron la puerta'],
         pregunta: 'Vinieron a entregar y yo no estaba',
         regla: 'Se intenta dos veces y se intenta contactar a la clienta al momento de entregar. Si en los dos intentos no hay nadie, el paquete queda para retirar y hay que recoordinar el envío. Si quiere que se lo reintenten enviar (en vez de retirarlo), tiene que abonar un envío nuevo — no importa si el primero fue gratis.',
         variantes: [
@@ -175,6 +190,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'cambiar-direccion',
+        tags: ['cambiar la direccion', 'direccion equivocada', 'direccion incorrecta', 'cambio de domicilio del pedido'],
         pregunta: 'Quiero cambiar la dirección',
         regla: 'Depende de en qué punto está el pedido. Una vez despachado, no se puede cambiar la dirección en el camino: hay que esperar a que el pedido vuelva por error de entrega. Cuando vuelve, se cobra un envío nuevo y se rearma el pedido, si el stock lo permite.',
         variantes: [
@@ -189,6 +205,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'seguimiento-no-actualiza',
+        tags: ['el seguimiento no actualiza', 'tracking parado', 'el numero de guia no avanza', 'no se mueve el pedido'],
         pregunta: 'El seguimiento no se actualiza hace días',
         regla: 'Es un problema de la agencia, no del despacho. Se pide el número de pedido, se verifica el seguimiento y se escala para que se reclame a UES. No dejarla sin respuesta.',
         respuesta: 'Perdón por la demora 🙈 Pasame tu número de pedido así lo miro en el seguimiento y hago el reclamo a la agencia. Te confirmo apenas tenga novedades 💜',
@@ -197,6 +214,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'paquete-perdido',
+        tags: ['el paquete se perdio', 'se perdio el envio', 'nunca llego el pedido', 'pedido extraviado'],
         pregunta: 'El paquete se perdió',
         regla: 'Se repone apenas se confirma que se perdió, si hay stock. No se hace esperar a la clienta por el reclamo a UES: se reenvía y el reclamo sigue por atrás. Si no hay stock, se le explica y se espera la reposición.',
         respuesta: 'Lamento muchísimo lo que pasó 😔 Ya lo estamos gestionando con la agencia y te lo reenviamos sin costo. Te aviso apenas salga con el nuevo seguimiento 💜',
@@ -213,6 +231,7 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'que-es-pickup',
+        tags: ['que es el pickup', 'donde queda el pickup', 'punto de retiro', 'direccion del pickup'],
         pregunta: '¿Qué es el Pickup y dónde queda?',
         regla: 'Es el punto de retiro, en Miguelete 1977 a 1981 (comparten número de puerta), zona del Cordón. No es un local de VELINNE ni queda en Tres Cruces: es una empresa que presta el servicio de pickup. No se atiende ni se arma el pedido ahí: solo se retira lo que ya está preparado. Teléfono del lugar: 092 250 144.',
         respuesta: 'El Pickup es nuestro punto de retiro, queda en Miguelete 1977 a 1981, zona del Cordón 💜 Horario: lunes a viernes de 9 a 18 hs, y sábados de 10 a 14 hs. No es un local nuestro, así que el pedido se retira ya armado: cuando esté pronto te avisamos y pasás cuando te quede cómodo.',
@@ -220,6 +239,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'cuando-puedo-retirar',
+        tags: ['cuando puedo retirar', 'ya esta pronto para retirar', 'listo para retirar'],
         pregunta: '¿Cuándo puedo pasar a retirar?',
         regla: 'El pedido queda listo en 24 horas hábiles y disponible después de las 17. Compra hoy, retira mañana a partir de las 17. Cuando está pronto le llega el aviso por mail con el número de guía.',
         respuesta: 'Los pedidos para retirar quedan prontos dentro de las 24 horas hábiles, a partir de las 17 hs 💜 Cuando esté disponible te llega un mail con el aviso y el número de guía, y con eso pasás a buscarlo.',
@@ -228,6 +248,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'otra-persona-retira',
+        tags: ['puede retirar otra persona', 'puede ir alguien mas a buscarlo', 'retiro con numero de guia'],
         pregunta: '¿Puede pasar a retirarlo otra persona?',
         regla: 'Sí. Tiene que ir con el número de guía que se manda cuando el pedido queda pronto.',
         respuesta: 'Sí, lo puede retirar otra persona 💜 Solo tiene que ir con el número de guía que te enviamos cuando el pedido queda pronto.',
@@ -235,6 +256,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'fui-y-no-habia-nadie',
+        tags: ['no habia nadie en el pickup', 'el pickup estaba cerrado', 'nadie me atendio en el retiro'],
         pregunta: 'Fui al Pickup y no había nadie',
         regla: 'Se pide disculpas y se le pasa el teléfono del lugar: 092 250 144, aclarando que puede llamar cuando esté ahí. La entrada es por el portón, entre Miguelete 1977 y 1981. Verificar también que haya ido dentro del horario: lunes a viernes de 9 a 18, sábados de 10 a 14.',
         respuesta: 'Perdón por eso 😔 Te paso el contacto directo del punto de retiro: 092 250 144. Cuando estés ahí podés llamarlos sin problema, la entrada es por el portón, entre el 1977 y el 1981. El horario es de lunes a viernes de 9 a 18 y sábados de 10 a 14 💜',
@@ -242,6 +264,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'cambiar-pickup-por-envio',
+        tags: ['cambiar el retiro por envio', 'ahora quiero que me lo envien', 'ya no quiero retirar'],
         pregunta: 'Compré para retirar pero quiero que me lo envíen',
         regla: 'Se puede cambiar. Si lo quiere el mismo día tiene que pagar el express antes de las 15. Si el paquete ya está en el Pickup, hay que explicárselo antes de cobrarle nada.',
         variantes: [
@@ -254,6 +277,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'compra-hoy-retira-manana-mediodia',
+        tags: ['retirar al otro dia', 'esta pronto al mediodia', 'compre hoy cuando puedo retirar'],
         pregunta: 'Hice el pedido hoy, ¿lo tengo mañana al mediodía?',
         regla: 'No. Los Pickup quedan prontos después de las 17. Conviene decirlo de entrada para que no vaya al lugar por nada.',
         respuesta: 'Te cuento para que no vayas al pedo 🙈 los pedidos para retirar quedan prontos después de las 17 hs, así que mañana al mediodía todavía no va a estar. A partir de esa hora sí 💜',
@@ -269,6 +293,7 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'ya-salio',
+        tags: ['ya salio mi pedido', 'esta despachado', 'estado del pedido', 'mi pedido ya se envio'],
         pregunta: '¿Mi pedido ya salió?',
         regla: 'Siempre se pide el número de pedido primero. Si no lo tiene, sirve el nombre completo o el correo con el que compró. Con ese dato Bryan confirma el estado y la franja.',
         respuesta: 'Pasame tu número de pedido por favor así lo miro 💜 (Si no lo tenés a mano, decime tu nombre completo o el correo con el que hiciste la compra.)',
@@ -277,6 +302,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'no-llego-aviso-pronto',
+        tags: ['no me llego el aviso de que estaba pronto', 'no me avisaron', 'no recibi la notificacion'],
         pregunta: 'No me llegó el aviso de que estaba pronto',
         regla: 'El aviso va al correo con el que hizo la compra. Antes de dar por hecho que falló, hay que verificar cuál es ese correo: muchas veces está mal escrito o es una cuenta que no revisa. El seguimiento y el aviso de despacho van por mail y WhatsApp.',
         respuesta: 'El aviso te lo mandamos al correo con el que hiciste la compra. ¿Me confirmás cuál es? Así verifico que lo tengamos bien cargado 💜',
@@ -285,6 +311,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'mensajes-de-no-pague',
+        tags: ['me siguen pidiendo el comprobante', 'ya pague y me siguen escribiendo', 'mensaje de pago pendiente', 'dice que no pague y ya pague'],
         pregunta: 'Me siguen llegando mensajes de que no pagué',
         regla: 'Dos causas: el comprobante todavía no se marcó como recibido, o hizo dos pedidos iguales y uno quedó sin pagar. Se revisa cuál es, se cancela el duplicado y dejan de llegar. Mientras el duplicado viva, los automáticos siguen saliendo.',
         variantes: [
@@ -297,6 +324,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'carrito-abandonado-error',
+        tags: ['carrito abandonado', 'mensaje automatico por error', 'me llego un mensaje sin haber hecho nada'],
         pregunta: 'Le llegó el mensaje del carrito abandonado por error',
         regla: 'Pasa con las automatizaciones. Se pide disculpas y se sigue la conversación con normalidad.',
         respuesta: 'Perdón, ese mensaje se envió de forma automática por error 🙈 Contame en qué te puedo ayudar 💜',
@@ -312,6 +340,7 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'como-pagar',
+        tags: ['como pago', 'medios de pago', 'formas de pago', 'con que puedo pagar'],
         pregunta: '¿Cómo puedo pagar?',
         regla: 'Dos formas: Mercado Pago (crédito, débito y cuotas con cualquier tarjeta) o transferencia bancaria desde cualquier banco o billetera, Prex incluido. Las tarjetas solo van por Mercado Pago.',
         respuesta: 'Podés pagar con Mercado Pago (crédito, débito o en cuotas) o por transferencia bancaria 💜 Si vas por transferencia, hacés la compra normal y al momento de elegir el pago seleccionás «Transferencia bancaria».',
@@ -319,6 +348,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'efectivo-abitab-redpagos',
+        tags: ['pagar en efectivo', 'abitab', 'red pagos', 'giro'],
         pregunta: 'Tengo efectivo, ¿puedo pagar en Abitab o Red Pagos?',
         regla: 'Sí. Eligiendo Mercado Pago aparece la opción de pagar en efectivo en Abitab o Red Pagos: es lo que algunas clientas llaman «giro». Si no le aparece, la alternativa es transferencia.',
         respuesta: 'Sí 💜 Cuando vayas a pagar elegí Mercado Pago y ahí te da la opción de abonar en efectivo en Abitab o Red Pagos. Si no te aparece, también podés hacer una transferencia y me pasás el comprobante.',
@@ -326,6 +356,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'pago-contraentrega',
+        tags: ['pago contra entrega', 'pagar al recibir', 'pagar en la puerta', 'pagar cuando llegue'],
         pregunta: '¿Puedo pagar cuando me lo entreguen?',
         regla: 'No. El pago se hace siempre en el carrito, antes del despacho.',
         respuesta: 'El pago se hace al momento de la compra, en el carrito 💜 No manejamos pago contra entrega, pero podés elegir transferencia, Mercado Pago o pagar en efectivo por Abitab / Red Pagos.',
@@ -333,6 +364,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'perdi-datos-transferencia',
+        tags: ['perdi los datos para transferir', 'necesito los datos de la cuenta', 'numero de cuenta'],
         pregunta: 'Perdí los datos para transferir',
         regla: 'Se le vuelven a pasar los datos de la cuenta junto con el monto exacto. Cuando la transferencia se verifica, a la clienta le llega un WhatsApp confirmando el pedido.',
         respuesta: 'Claro 💜 Te paso los datos y el monto por acá. Cuando transfieras, mandame el comprobante y te confirmo enseguida.',
@@ -341,6 +373,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'prex-caido',
+        tags: ['prex no funciona', 'prex esta caido', 'no me deja pagar con prex'],
         pregunta: 'Prex está caído / no me deja pagar',
         regla: 'Si Prex no funciona, se le ofrece un link de Mercado Pago para pagar con débito, que es equivalente. Si lo que falla es la página de Mercado Pago, es un problema de ellos: que pruebe de nuevo más tarde.',
         variantes: [
@@ -352,6 +385,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'les-llego-mi-pago',
+        tags: ['llego mi pago', 'confirmar la transferencia', 'recibieron mi pago', 'ya transferi'],
         pregunta: '¿Les llegó mi pago?',
         regla: 'No se confirma de memoria ni solo por el nombre: hay clientas con nombres parecidos y ya hubo confusiones. Se pide nombre completo, número de pedido y comprobante.',
         respuesta: 'Dejame verificarlo 💜 Pasame tu nombre completo y el número de pedido, y si tenés el comprobante a mano mandámelo por acá así te confirmo enseguida.',
@@ -360,6 +394,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'factura-con-rut',
+        tags: ['necesito factura', 'factura con rut', 'me hacen factura'],
         pregunta: '¿Me hacen factura con RUT?',
         regla: 'Sí, se emite a quien la pida. Se pide el RUT y la razón social.',
         respuesta: 'Sí, sin problema 💜 Pasame el RUT y la razón social y te la emitimos.',
@@ -376,6 +411,7 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'kits-que-traen',
+        tags: ['que trae el kit', 'kit de inicio', 'kit studio', 'diferencia entre los kits', 'kit signature'],
         pregunta: '¿Qué kits hay y qué trae cada uno?',
         regla: 'Kit de inicio — $1.490. El básico, no incluye lápiz removedor. Kit Studio — $1.890, incluye lámpara UV 18W, 1 pack de tiras de gel, lima doble cara, palito de naranjo, lápiz removedor, set de manicura y toallitas. A cualquiera se le pueden sumar colores.',
         variantes: [
@@ -388,12 +424,14 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'links-kits-cruzados',
+        tags: ['el link del kit esta mal', 'kit equivocado en la web', 'links cruzados'],
         pregunta: 'Ojo con los links de los kits',
         regla: 'Los links están cruzados y es fácil equivocarse. El link que dice "starter-kit" es el Kit de inicio ($1.490). El link que dice "kit-de-inicio" es el Kit Studio ($1.890). Antes de mandar un link, verificá el precio, no el nombre de la URL.',
         fuente: 'verificado en la tienda',
       },
       {
         id: 'cuanto-sale-color',
+        tags: ['precio de un color', 'cuanto sale un color', 'cuanto cuesta un color'],
         pregunta: '¿Cuánto sale un color?',
         regla: 'Cada pack trae 20 uñas de distintos tamaños y 2 toallitas.',
         variantes: [
@@ -406,6 +444,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'renova-mejor-precio',
+        tags: ['renova tu coleccion', 'precio para clienta recurrente', 'descuento por ser clienta'],
         pregunta: 'Ya soy clienta, ¿tengo mejor precio?',
         regla: 'Sí: Renova tu colección, colores a $690. Primero se le cuenta el beneficio; el link se pasa cuando ya quiere comprar, no antes. Cuantos más colores lleva, mejor queda el precio.',
         respuesta: 'Como ya sos clienta tenés Renova tu colección 💜 Es un precio preferencial para sumar colores: te quedan en $690 cada uno, y cuantos más llevás, mejor te queda. ¿Querés que te pase el link?',
@@ -413,6 +452,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'nombre-de-un-color',
+        tags: ['nombre de un color', 'como se llama este color', 'cual es este tono'],
         pregunta: '¿Cómo se llama este color?',
         regla: 'Los más consultados: French pure (blancas), baby blush (rosadas), mauve silk (malva), rosewood (parecido pero más claro), wine touch (bordó), full clear (transparente). Catálogo completo en velinneuy.com/pages/colores.',
         respuesta: 'Ese es el [nombre] 💜 Si querés te paso el link para verlo con más fotos: velinneuy.com/pages/colores',
@@ -420,6 +460,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'unas-kids',
+        tags: ['unas kids', 'unas para ninias', 'velinne kids'],
         pregunta: 'Uñas kids',
         regla: '$690, cinco diseños: Pandi, Lulú, Frutillita, Cherry Pop y Sweet Dreams. No llevan lámpara. Pasan a incluir toallitas. De 14 años en adelante ya sirven las comunes. No hay kids lisas, solo con diseño, y los diseños nuevos dependen del proveedor.',
         respuesta: 'Las Velinne Kids salen $690 💜 Vienen con diseño y no llevan lámpara, así que son súper fáciles de poner. De 14 años en adelante ya le sirven las comunes.',
@@ -427,6 +468,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'uv-free-cuando-ofrecer',
+        tags: ['uv free', 'sin lampara', 'no quiere usar lampara', 'alternativa sin lampara'],
         pregunta: 'Velinne UV-Free: cuándo ofrecerlas',
         regla: '$590, cinco colores: Dusty Mauve, Classic French, Baby French, Mushroom y Cabernet. No necesitan lámpara. Mismo procedimiento de colocación, pero al no curar, duran menos. Se ofrecen cada vez que alguien duda por la lámpara: si pregunta si es obligatoria, o si el precio del kit la frena.',
         respuesta: 'Si no querés usar lámpara, tenemos las Velinne UV-Free 💜 Salen $590 y se colocan casi igual, solo que sin curado. Te soy sincera en una cosa: al no curarse con lámpara, duran un poco menos que las normales. Pero quedan igual de lindas ✨',
@@ -434,12 +476,14 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'precios-accesorios',
+        tags: ['precio de la lampara', 'precio del removedor', 'precio de los tratamientos', 'precio de accesorios'],
         pregunta: 'Precios de accesorios y tratamientos',
         regla: 'Lámpara UV 18W $830 · Lápiz removedor $270 · Base Coat $490 · Top Coat $490 · Kit Manicura Esencial $390 · Kit Limas Soft Touch $190 · Repujador de cutícula $290 · Guantes UV $290. Los siete tratamientos salen $390 cada uno: Concealer Base, Crema Revividora, Esencia Reparadora, Esencia Ultra Hidratante, Iluminador, Loción Nutritiva y Revitalizante.',
         fuente: 'precios de la tienda al 22/09',
       },
       {
         id: 'que-trae-pack-color',
+        tags: ['que trae el pack de color', 'contenido del pack', 'que viene en la cajita'],
         pregunta: '¿Qué trae un pack de color?',
         regla: '20 uñas de distintos tamaños y 2 toallitas de alcohol, dentro de su propia cajita. La lima y el palito de naranjo vienen dentro de la cajita del color — ahí es donde no los encuentran y creen que faltan. Los pads de limpieza contienen acetona; el resto no.',
         respuesta: 'Cada pack trae 20 uñas de diferentes tamaños y 2 toallitas de alcohol 💜 Fijate bien adentro de la cajita del color, porque ahí vienen también la lima y el palito de naranjo.',
@@ -447,6 +491,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'caja-de-regalo',
+        tags: ['viene de regalo', 'packaging de regalo', 'caja para regalar'],
         pregunta: '¿Viene en caja de regalo?',
         regla: 'El kit viene en una bolsita de ecommerce con la marca. No hay packaging especial para regalo. Se aclara antes de la compra, no después.',
         respuesta: 'Te cuento para que lo tengas en cuenta 💜 el kit viene en una bolsita de ecommerce con la marca, no tenemos por ahora un packaging especial para regalo.',
@@ -454,6 +499,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'packs-10-o-para-pies',
+        tags: ['pack de 10 unias', 'unias para pies'],
         pregunta: '¿Venden packs de 10 uñas? ¿Para pies?',
         regla: 'No a las dos cosas. Los packs son de 20 uñas y por ahora no hay uñas para pies. Los diseños vienen por defecto: no se mandan a hacer.',
         respuesta: 'Por ahora los packs son de 20 uñas, no tenemos de 10 💜 Y para pies todavía no estamos vendiendo, pero es algo que tenemos en mente 💗',
@@ -461,6 +507,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'compra-por-mayor',
+        tags: ['compra mayorista', 'precio por mayor', 'condiciones de mayorista'],
         pregunta: 'Quiero comprar por mayor',
         regla: 'A partir de 10 unidades: cada pack $355, incluyendo lima, palito de naranjo y pads. Lámpara $300 en compras de más de 10. No aplica envío gratis: retira por el Pickup o paga $150 Montevideo / $250 interior.',
         respuesta: 'Te paso las condiciones por mayor 💜 • A partir de 10 unidades, cada pack queda en $355 e incluye los accesorios (lima, palito de naranjo y pads). • La lámpara, en compras de más de 10 unidades, queda en $300. • Por mayor no aplica el envío gratis: podés retirar por nuestro punto del Cordón o abonar el envío ($150 Montevideo, $250 interior).',
@@ -469,6 +516,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'manicura-mayorista',
+        tags: ['soy manicura', 'uso profesional', 'quiero revender', 'trabajo en un salon'],
         pregunta: 'Soy manicura y quiero usarlo con mis clientas',
         regla: 'Se le pasan las condiciones de mayorista. Es una oportunidad comercial, no una objeción. Si además pregunta por el uso en salón, la postura es que cada profesional conoce las normas de su lugar de trabajo.',
         respuesta: '¡Qué bueno! 💜 Te paso las condiciones por mayor: a partir de 10 unidades cada pack queda en $355 con los accesorios incluidos, y la lámpara en $300. Contame qué colores te interesan y armamos el pedido.',
@@ -484,6 +532,7 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'dejarlas-mas-largas',
+        tags: ['dejarlas mas largas', 'alargar la unia', 'usar como extension', 'unias largas'],
         pregunta: '¿Puedo dejarlas más largas que mi uña?',
         regla: 'No. Se usan siempre al ras de la uña natural. No sirven para alargar ni funcionan como extensión. Es la política más repetida de todo el chat (aparece 21 veces) y es la raíz de buena parte de los reclamos.',
         respuesta: 'Velinne se usa al ras de tu uña natural 💜 No alargan ni funcionan como extensión: la idea es que acompañen tu uña con un acabado tipo salón. Si las dejás más largas que tu uña natural se despegan enseguida, así que ese paso es importante ✨',
@@ -492,6 +541,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'no-quedan-duras',
+        tags: ['no quedan duras', 'quedan blandas', 'flexibilidad del gel', 'no es como el acrilico'],
         pregunta: 'No me quedan duras como el acrílico',
         regla: 'No quedan 100% rígidas y es a propósito. Es gel semicurado: tiene cierta flexibilidad una vez curado. Si quedara rígido se partiría o quedaría cuadrado. Si viene de otra marca y dice que «demoran en endurecer», puede ser por la potencia de la lámpara anterior.',
         respuesta: 'Nuestras tiras de gel quedan con cierta flexibilidad una vez curadas, no 100% rígidas como el acrílico 💜 Es así a propósito: si quedaran totalmente duras se partirían o se verían cuadradas.',
@@ -499,6 +549,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'cuanto-duran',
+        tags: ['cuanto duran', 'duracion de las unias', 'cuantos dias duran'],
         pregunta: '¿Cuánto duran?',
         regla: 'Entre 10 y 14 días con una correcta preparación. Es el número oficial. El top coat ayuda a que duren más, sobre todo si trabaja mucho con las manos.',
         respuesta: 'Duran entre 10 y 14 días con una correcta preparación 💜 Si querés estirarlas un poco más, el top coat ayuda bastante ✨',
@@ -506,6 +557,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'se-pueden-reutilizar',
+        tags: ['reutilizar', 'usar de nuevo', 'se pueden volver a usar', 'un solo uso'],
         pregunta: '¿Se pueden reutilizar?',
         regla: 'No: son de un solo uso. Una vez retiradas no vuelven a adherir.',
         respuesta: 'Son de un solo uso 💜 Una vez que las retirás ya no vuelven a pegarse bien.',
@@ -513,6 +565,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'hay-que-elegir-talle',
+        tags: ['elegir talle', 'medida de la unia', 'talle de unia', 'que numero uso'],
         pregunta: '¿Hay que elegir talle?',
         regla: 'No se elige talle. Cada pack trae 20 uñas de distintos tamaños. Es normal que en las primeras colocaciones cueste encontrar la medida, sobre todo en el meñique. No están pensadas para recortar de los costados; sí se recorta y lima el excedente del largo, y eso va antes de curar.',
         respuesta: 'No tenés que elegir talle 💜 Cada pack trae 20 uñas de diferentes tamaños que se adaptan a cada dedo. Es normal que las primeras veces cueste encontrar la medida justa, sobre todo en los dedos más chicos. Con la práctica se hace re fácil 💗',
@@ -521,6 +574,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'lampara-obligatoria',
+        tags: ['la lampara es obligatoria', 'necesito lampara', 'se puede sin lampara'],
         pregunta: '¿Hay que usar sí o sí la lámpara?',
         regla: 'Sí, para las normales. Es UV (no LED), 18W, se usa enchufada (no funciona a batería) y entran 2 o 3 dedos por vez. Si no quiere usar lámpara, ahí entran las UV-Free.',
         variantes: [
@@ -532,6 +586,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'tiempo-en-lampara',
+        tags: ['cuanto tiempo en la lampara', 'cuanto tiempo curar', 'segundos en la lampara'],
         pregunta: '¿Cuánto tiempo en la lámpara?',
         regla: 'Entre 60 y 120 segundos en total. Cada vez que se enciende son unos 45 segundos y se apaga sola: se pone la mano, se espera, y se repite una vez más. El tip que va siempre: poner, sacar y apretar los bordes con el palito.',
         respuesta: 'Entre 60 y 120 segundos en total 💜 Cada vez que la prendés son unos 45 segundos y se apaga sola: ponés la mano, esperás a que se apague, y la volvés a meter una vez más. Un tip que ayuda un montón: después de curar, presioná bien los bordes con el palito de naranjo 💗',
@@ -539,6 +594,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'lampara-no-prende',
+        tags: ['la lampara no prende', 'la lampara no enciende', 'la lampara no funciona', 'lampara rota'],
         pregunta: 'La lámpara no me prende',
         regla: 'Los botones encienden la luz UV. Primero que pruebe con otra ficha y otro cable. Si aun así no prende, se procesa la garantía: se le pide un video donde se vea la lámpara enchufada e intentando encenderla. Con eso se despacha una nueva enseguida, sin esperar a que devuelva la fallada. La garantía es de uso: cubre fallas de fábrica mientras se use normalmente, sin plazo fijo.',
         variantes: [
@@ -551,6 +607,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'base-top-coat-obligatorios',
+        tags: ['base coat', 'top coat', 'son obligatorios los coats'],
         pregunta: '¿El base coat y el top coat son obligatorios?',
         regla: 'Ninguno es obligatorio. El base coat mejora la adherencia. El top coat da brillo y durabilidad y va encima del sticker. Los dos se retiran normal con el lápiz removedor.',
         respuesta: 'Ninguno de los dos es obligatorio 💜 El base coat ayuda a que el gel se adhiera mejor, y el top coat le da más brillo y durabilidad. Si querés que te duren más, el top coat hace bastante diferencia 💗',
@@ -558,6 +615,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'que-es-el-lapiz-removedor',
+        tags: ['lapiz removedor', 'que es el removedor', 'para que sirve el lapiz'],
         pregunta: '¿Qué es el lápiz removedor?',
         regla: 'Es aceite de cutícula en formato lápiz: la forma permite meterlo por debajo de la uña. No es imprescindible: sirve aceite de cutícula común y el palito de naranjo.',
         respuesta: 'El lápiz removedor es aceite de cutícula en formato lápiz 💜 Por la forma podés meterlo por debajo de la uña y el aceite penetra mejor. Igual no es imprescindible: con aceite de cutícula común y el palito también se sacan, solo que lleva más paciencia.',
@@ -565,6 +623,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'como-usar-tratamientos',
+        tags: ['como se usan los tratamientos', 'tratamientos velinne', 'esencias y cremas'],
         pregunta: '¿Cómo se usan los tratamientos?',
         regla: 'Se aplican sobre la uña natural, 2 o 3 horas antes de colocar el sticker, para que penetren. Después se hace la colocación normal. El top coat va arriba del sticker. Son siete y cada uno trabaja sobre algo distinto.',
         respuesta: 'Los tratamientos se colocan sobre la uña natural y hay que dejarlos actuar 2 o 3 horas 💜 Después hacés la colocación normal de la uña, y si usás top coat va arriba del sticker.',
@@ -572,6 +631,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'alergia-al-semipermanente',
+        tags: ['alergia', 'hema free', 'reaccion alergica', 'piel sensible'],
         pregunta: 'Tengo alergia al semipermanente',
         regla: 'Las uñas son HEMA free (el componente del semipermanente que suele dar alergia) y hay clientas con alergias que las usan sin problema. No se hace test de alergia. Existe un certificado de SGS con HEMA «no detectado», pero solo se manda si hay una alergia concreta o si insiste; no incluye la fórmula completa.',
         respuesta: 'Nuestras uñas son HEMA free, que es justamente el componente del semipermanente que suele generar alergia 💜 Tenemos clientas con alergias que las usan sin inconvenientes. Igual, como cada piel es distinta, si tenés dudas te recomiendo consultarlo con tu dermatólogo ✨',
@@ -580,6 +640,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'embarazo-lactancia',
+        tags: ['embarazo', 'lactancia', 'estoy embarazada', 'puedo usarlas embarazada'],
         pregunta: 'Estoy embarazada o en lactancia',
         regla: 'Se puede usar, pero se le recomienda consultar con su médico. Mismo criterio que con las alergias: no se cierra la puerta ni se asume un riesgo que no corresponde.',
         respuesta: 'Se pueden usar sin problema 💜 Igual, como en cualquier producto cosmético, te recomiendo consultarlo con tu médico para quedarte tranquila ✨',
@@ -587,6 +648,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'aceites-manos-mojadas',
+        tags: ['trabajo con aceites', 'manos mojadas todo el dia', 'mucho contacto con agua'],
         pregunta: 'Trabajo con aceites o me mojo mucho las manos',
         regla: 'No hay un problema real, pero se recomienda no tener contacto con aceites ni líquidos las primeras 2 horas. El top coat ayuda en esos casos.',
         respuesta: 'No hay drama 💜 Lo único que recomendamos es que no tengan contacto con aceites ni líquidos durante las primeras 2 horas después de colocarlas. Y si trabajás mucho con las manos, el top coat te va a ayudar a que duren más 💗',
@@ -594,6 +656,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'soft-gel-poligel',
+        tags: ['soft gel', 'poligel', 'colocar arriba de otro esmalte'],
         pregunta: '¿Se pueden poner arriba de soft gel o poligel?',
         regla: 'Se recomienda el uso sobre la uña natural. Sobre esmalte o soft gel no se garantiza la adhesión. Tampoco se recomienda sacarse la cutícula.',
         respuesta: 'Nosotras recomendamos usarlas sobre la uña natural 💜 Sobre soft gel o esmalte no te podemos garantizar que el gel adhiera bien, así que no te lo aseguro.',
@@ -601,6 +664,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'recuperar-unas-danadas',
+        tags: ['unias daniadas', 'recuperar las unias', 'unias debiles o quebradizas'],
         pregunta: '¿Me ayudan a recuperar las uñas dañadas?',
         regla: 'Los tratamientos son para uñas dañadas y cada uno trabaja sobre algo distinto, pero no se promete que solucionen un problema concreto.',
         respuesta: 'Tenemos tratamientos pensados para uñas dañadas y cada uno trabaja sobre algo distinto 💜 Contame un poco qué te pasa con las uñas y te digo cuál te puede servir más.',
@@ -617,6 +681,7 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'escalera-soluciones',
+        tags: ['escalera de soluciones', 'orden para resolver un reclamo', 'que ofrecer primero'],
         pregunta: 'La escalera: en qué orden se ofrecen las soluciones',
         regla: 'Ante cualquier reclamo de calidad, el orden es siempre el mismo. Es igual para una clienta nueva que para una recurrente (a la recurrente se le suma un accesorio de regalo). El gesto corresponde si acepta el diagnóstico; si sostiene que el producto es malo y discute la explicación, no se compensa.',
         variantes: [
@@ -628,6 +693,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'despegaron-duraron-poco',
+        tags: ['se despegaron', 'duraron poco', 'no me duraron nada', 'las 6 preguntas'],
         pregunta: 'Se me despegaron / me duraron poco',
         regla: 'Antes de ofrecer nada hay que entender qué pasó. Siempre pedir fotos. La pregunta número 3 (cortar y limar antes de curar) es la que más veces explicó el problema.',
         respuesta: 'Qué bajón que te haya pasado 😔 Vamos a ver juntas qué puede haber sido, contame por favor: – ¿Cómo preparaste la uña antes de aplicar? – ¿Cuánto tiempo las dejaste en la lámpara? – ¿Cortaste y limaste el excedente antes de curar? – ¿Presionaste bien los bordes con el palito de naranjo? – ¿Las colocaste al ras de tu uña natural? – Después de colocarlas, ¿tuviste bastante contacto con agua, crema o aceites? Si podés mandame una fotito de cómo quedaron 💜',
@@ -635,6 +701,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'despego-un-borde',
+        tags: ['se despego un borde', 'un lado despegado', 'se levanto de una punta'],
         pregunta: 'Se me despegó una sola uña de un borde',
         regla: 'Si se despegó solo un borde, no hay que sacarla: se pasa un poco de lápiz removedor por debajo para ablandar, se hace presión y se vuelve a colocar presionando con más énfasis ese borde (y se vuelve a pasar por la lámpara). Si ya se despegó entera, el rescate es pasar el lápiz removedor, dejar actuar y limpiar bien antes de volver a pegarla. Igual, una vez despegada del todo es difícil que agarre.',
         variantes: [
@@ -646,6 +713,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'color-costo-cero',
+        tags: ['color gratis', 'color a costo cero', 'reponer un color sin cobrar'],
         pregunta: 'Color a costo cero: cuándo corresponde',
         regla: 'Se ofrece a una clienta de Montevideo que tuvo un inconveniente y va a volver a probar. En el interior la salida es el saldo a favor. Truco útil: si va a comprar de nuevo, conviene dejarle el color a favor en vez de mandarlo solo, así no paga envío por una sola unidad.',
         variantes: [
@@ -658,6 +726,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'quiere-cambiar-producto',
+        tags: ['quiere cambiar el producto', 'cambio de producto', 'cambiar de color o modelo'],
         pregunta: 'Quiere cambiar el producto',
         regla: 'El cambio corresponde cuando el producto está cerrado y quiere otro color o modelo. Una vez abierto no se puede gestionar. Lo más importante: apenas menciona la palabra «cambio», avisarle que no lo abra.',
         variantes: [
@@ -669,6 +738,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'me-falto-una-pieza',
+        tags: ['me falto una pieza', 'pedido incompleto', 'no vino algo en la caja'],
         pregunta: 'Me faltó una pieza',
         regla: 'Antes de reponer: número de pedido y foto de lo recibido. La mayoría de las veces no falta nada: la lima y el palito vienen dentro de la cajita del color, y el lápiz removedor son las dos cajitas del medio. Ojo también: el Kit de inicio no incluye removedor; el Studio sí.',
         respuesta: 'Vamos a revisarlo 💜 Pasame tu número de pedido y, si podés, una foto de todo lo que recibiste. Un dato por las dudas: la lima y el palito de naranjo vienen adentro de la cajita del color, y el lápiz removedor son las cajitas del medio. Fijate si no están ahí 💗',
@@ -677,6 +747,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'color-no-coincide-foto',
+        tags: ['el color no coincide con la foto', 'distinto a la foto de la web', 'se ve distinto en la pantalla'],
         pregunta: 'El color no coincide con la foto de la web',
         regla: 'Las fotos se tomaron de la uña real. La foto puede engañar por la luz o la pantalla. Si el reclamo se repite con el mismo color, puede ser una tanda fallada: ahí se dice que se consulta con la encargada mientras se resuelve.',
         variantes: [
@@ -689,6 +760,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'llego-color-incorrecto',
+        tags: ['color mal', 'color incorrecto', 'llego otro color', 'error de color', 'me mandaron el color equivocado', 'no es el color que pedi'],
         pregunta: 'Llegó un color incorrecto, ¿qué procede?',
         regla: 'Primero se valida si efectivamente el color es incorrecto (pedir foto de lo que llegó y compararlo con lo que dice el pedido). A partir de ahí depende de cuántos colores compró, si ya lo abrió/usó, y de la zona. Si el error fue nuestro, el cambio o reenvío va a costo nuestro.',
         variantes: [
@@ -702,7 +774,22 @@ export const atencionFaqCategorias = [
         fuente: 'agregado por Bryan · 23/09',
       },
       {
+        id: 'llego-pedido-danado',
+        tags: ['pedido dañado', 'llego roto', 'llego dañado', 'producto dañado', 'se rompio en el envio', 'llego golpeado', 'caja dañada', 'llego en mal estado'],
+        pregunta: 'Llegó un pedido dañado, ¿qué procede?',
+        regla: 'Se pide el número de pedido y se evalúa qué tan dañado llegó: si el producto se puede seguir usando o no. Ante dudas de cómo resolverlo, se eleva la consulta puntual a Bryan — y el criterio para escalar también depende del humor de la clienta (si está "en la mala" o no).',
+        variantes: [
+          { condicion: 'Daño leve, el producto se puede usar igual', respuesta: 'Se le explica que funciona igual y se sigue normal, salvo que la clienta esté disconforme con eso.' },
+          { condicion: 'Daño real, no se puede usar', respuesta: 'Se evalúa reponer o cambiar el producto con Bryan.' },
+          { condicion: 'Hay dudas de cómo resolverlo', respuesta: 'Se eleva la consulta puntual a Bryan. Si la clienta está "en la mala" (de mal humor), se escala antes de prometer nada; si está de buena, se puede manejar con más margen en el momento.' },
+        ],
+        respuesta: 'Uy, qué bajón 😔 Pasame tu número de pedido y una foto de cómo llegó, así vemos juntas qué tan dañado está y si se puede seguir usando o no. Con eso te confirmo cómo lo resolvemos 💜',
+        escalar: 'Ante cualquier duda de cómo resolverlo, se eleva la consulta puntual a Bryan — con más razón si la clienta está de mal humor.',
+        fuente: 'agregado por Bryan · 24/09',
+      },
+      {
         id: 'devolucion-de-dinero',
+        tags: ['devolver la plata', 'reembolso', 'quiere el dinero de vuelta', 'quiere que le devuelvan el pago'],
         pregunta: 'Quiere que le devuelvan la plata',
         regla: 'Es la última instancia. Primero se verifica si el pedido está en camino, porque muchos reclamos de devolución son en realidad demoras. Después se ofrece toda la escalera. Solo si la exige y ya se ofreció todo lo demás se avanza con la devolución.',
         respuesta: 'Dejame revisarlo y te confirmo enseguida 💜 Pasame tu número de pedido así miro en qué estado está.',
@@ -711,6 +798,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'dice-estafa-agresiva',
+        tags: ['dice que es una estafa', 'clienta agresiva', 'clienta enojada', 'insultos', 'cliente violento'],
         pregunta: 'Dice que es una estafa o se pone agresiva',
         regla: 'Postura firme y respetuosa. Se aclara que la información está en la página, en las guías y en los videos, y que no se promete ningún resultado que el producto no dé. Criterio de corte: cuando ya se explicó y la persona no va a cambiar de posición, se deja ahí («dejala por esa, nunca te va a dar la razón»).',
         respuesta: 'Lamento que te hayas quedado con esa sensación 😓 Quiero aclararte con total respeto que Velinne no es una estafa. En todas nuestras publicaciones explicamos al detalle cómo funciona el sistema, cómo se usa y todas las indicaciones necesarias. No prometemos ningún resultado que el producto no dé. Si querés, contame qué pasó con tu pedido y vemos cómo ayudarte 💜',
@@ -727,6 +815,7 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'hay-stock-de-este-color',
+        tags: ['hay stock de ese color', 'queda ese color', 'disponibilidad de un color'],
         pregunta: '¿Hay stock de este color?',
         regla: 'Nunca se vende un producto sin stock real. Si el color no tiene stock, no se ofrece ni se vende: se consulta con el equipo la fecha de la próxima importación, se le avisa a la clienta y se anota para avisarle apenas ingrese.',
         variantes: [
@@ -740,6 +829,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'me-lo-pueden-reservar',
+        tags: ['reservar un color', 'reserva de stock', 'guardarme un color'],
         pregunta: '¿Me lo pueden reservar?',
         regla: 'Sí: se puede reservar stock por 24 horas cuando la clienta está por comprar y quiere asegurar el color. Lo podés ofrecer vos, sin consultar. Sirve sobre todo con los colores de poco stock.',
         respuesta: 'Te lo reservo por 24 horas así no lo perdés 💜 Cuando quieras avanzá con la compra y queda tuyo ✨',
@@ -747,6 +837,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'cuando-reponen-color',
+        tags: ['cuando reponen ese color', 'reposicion de color', 'cuando llega ese color de nuevo'],
         pregunta: '¿Cuándo reponen ese color?',
         regla: 'Las reposiciones entran por importación y la fecha se mueve. Cuando entra una reposición se carga al stock de la web y los precios se actualizan. No hay preventa ni seña: solo el aviso.',
         respuesta: 'Estamos reponiendo stock en estos días 💜 Te lo anoto y te aviso apenas ingrese ese color, así lo agarrás de una.',
@@ -755,6 +846,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'avisame-cuando-entre',
+        tags: ['avisenme cuando entre', 'aviso de reingreso de un color'],
         pregunta: 'Avisame cuando entre',
         regla: 'Se responde usando la palabra «aviso» en el mensaje. Es la marca acordada que después permite encontrar esas conversaciones y mandar el mensaje de reingreso.',
         respuesta: 'Dale, te dejo el aviso anotado 💜 Apenas ingrese ese color te escribo por acá.',
@@ -770,6 +862,7 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'comentario-precio-guia',
+        tags: ['comentario pidiendo precio', 'comentario pidiendo la guia'],
         pregunta: 'Alguien comenta pidiendo precio o la guía',
         regla: 'Hay automatizaciones para palabras clave como PRECIO o GUÍA: responden el comentario y mandan el mensaje privado. Si no se dispara, se hace a mano: se responde el comentario y se pasa a privado, las dos cosas.',
         respuesta: '¡Hola! 💜 Te mandamos toda la info por mensaje privado ✨',
@@ -777,6 +870,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'comentario-con-reclamo',
+        tags: ['comentario con un reclamo', 'reclamo publico en redes'],
         pregunta: 'Un comentario con un reclamo',
         regla: 'Se responde en el comentario, con respeto y sin entrar en discusión, y se lleva la conversación a privado pidiendo el número de pedido. Criterio de fondo: siempre buscar evitar la confrontación.',
         respuesta: 'Lamento mucho lo que te pasó 💜 Te escribo por privado así lo vemos en detalle y lo resolvemos ✨',
@@ -784,6 +878,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'ocultar-o-borrar-comentario',
+        tags: ['borrar un comentario', 'ocultar un comentario'],
         pregunta: 'Cuándo se oculta o se borra un comentario',
         regla: 'Se borra u oculta cuando es agresivo, insultante, o cuando se repite el mismo reclamo muchas veces. Antes de borrar conviene haberla contactado por privado, para tener el respaldo de haber intentado resolverlo. Instagram a veces oculta solo los comentarios que detecta como agresivos.',
         escalar: 'Avisale a Bryan antes de borrar, salvo que sea un insulto evidente.',
@@ -791,6 +886,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'otra-marca-mejor',
+        tags: ['otra marca es mejor', 'comparacion con otra marca', 'le gusto mas otra marca'],
         pregunta: '«Otra marca me resultó mejor»',
         regla: 'No se entra en comparación. Se lleva a privado y ahí se le pregunta qué diferencias notó puntualmente — para entender su caso, no para comparar productos. Después se agradece el comentario, se explica cómo funciona el producto (al ras de la uña natural, gel flexible) y se deja abierta la puerta.',
         variantes: [
@@ -802,12 +898,14 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'facebook-no-deja-responder',
+        tags: ['facebook no me deja responder', 'no puedo responder el comentario de facebook'],
         pregunta: 'Facebook no me deja responder el comentario',
         regla: 'Es una limitación de Kommo con Facebook. Los comentarios de Facebook se responden por mensaje directo.',
         fuente: '10/06 y 01/09',
       },
       {
         id: 'manda-fotos-resultado',
+        tags: ['manda fotos del resultado', 'fotos de como quedaron', 'pedir permiso para usar en redes'],
         pregunta: 'Manda fotos de cómo le quedaron',
         regla: 'Se le agradece, se le dice que quedaron lindas y se le pide permiso para compartirlo. El contenido se guarda en la carpeta de UGC en Drive. Y se le pasa el Renova para la próxima compra.',
         respuesta: '¡Ay, quedaron divinas! 💜✨ Gracias por compartirlo. Si no te molesta, ¿nos darías permiso para mostrar tu experiencia en nuestras redes? 💗',
@@ -823,12 +921,14 @@ export const atencionFaqCategorias = [
     situaciones: [
       {
         id: 'ventana-24-horas',
+        tags: ['ventana de 24 horas', 'no puedo escribirle', 'plantilla de whatsapp', 'meta bloqueo el chat'],
         pregunta: 'No me deja escribirle: pasaron más de 24 horas',
         regla: 'Es una restricción de Meta, no de Kommo: si pasaron más de 24 horas desde el último mensaje de la clienta, no se puede escribir libremente. Para eso hay plantillas aprobadas en Kommo («contacto inicial – cómo estás», la de Velinne Kids, la de respuesta positiva). Detalle importante: mandar la plantilla no abre el canal; el chat queda habilitado recién cuando la clienta responde.',
         fuente: '15/06, 31/08, 02/09',
       },
       {
         id: 'mensaje-error-kommo',
+        tags: ['error al mandar el mensaje en kommo', 'el mensaje no se envia', 'mensaje muy largo'],
         pregunta: 'El mensaje da error en Kommo',
         regla: 'Dos causas frecuentes: pasó la ventana de 24 horas (usar plantilla), o el mensaje tiene más de 1.000 caracteres (partirlo en dos). También conviene esperar a que cargue antes de reenviar, porque se duplican los mensajes.',
         variantes: [
@@ -839,6 +939,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'catalogo-whatsapp',
+        tags: ['catalogo de whatsapp', 'comprar por el catalogo', 'carrito de whatsapp'],
         pregunta: 'Quiere comprar por el catálogo de WhatsApp',
         regla: 'El catálogo de WhatsApp está disponible: la clienta puede verlo directamente ahí y consultar todo lo que hay disponible.',
         respuesta: 'Sí, podés ver nuestro catálogo directo acá en WhatsApp 💜 Fijate los colores y modelos disponibles, y contame cuáles te interesan para armarte el pedido.',
@@ -847,6 +948,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'pagina-mal-o-cupon-no-carga',
+        tags: ['la pagina no carga', 'el cupon no funciona', 'error en la web'],
         pregunta: 'La página se ve mal o no le carga el cupón',
         regla: 'Que pruebe en una ventana de incógnito: suele ser que la página quedó cargada mal. Si lo que falla es la pasarela de Mercado Pago, es un problema de ellos y conviene que reintente más tarde.',
         respuesta: 'Probá abrir la página en una ventana de incógnito 💜 A veces queda cargada mal y con eso se arregla. Si sigue igual, contame y lo vemos ✨',
@@ -854,6 +956,7 @@ export const atencionFaqCategorias = [
       },
       {
         id: 'productos-precio-raro',
+        tags: ['precio raro en la web', 'producto a 0 pesos', 'error de precio en la tienda'],
         pregunta: 'Le aparecen productos a $0 o un precio raro',
         regla: 'Ya pasó dos veces por un error del sitio. No se cancela el pedido de prepo: se le escribe, se le explica el error con disculpas y se corrige el pedido. En septiembre el caso fue el Kit Signature mostrando 11 colores a $0 cuando incluye uno solo.',
         respuesta: 'Hola 😊 Por acá Flor de Velinne 💅 Te queríamos comentar que ese precio se trata de un error de nuestro sitio web. Disculpá la confusión 💗 Ya lo estamos corrigiendo y te confirmo cómo queda tu pedido.',

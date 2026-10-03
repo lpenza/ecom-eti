@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { formatFechaHoraCompletaUy, hoyIsoUy } from '../utils/fechas';
+import { cierreFuera } from '../utils/cierreModal';
 
 const API = '/api';
 
@@ -1568,7 +1569,12 @@ export default function AdminPanel() {
 
           {/* Modal de edición */}
           {pedidoEditando && (
-            <div className="admin-modal-overlay" onClick={() => setPedidoEditando(null)}>
+            <div
+              className="admin-modal-overlay"
+              {...cierreFuera(() => setPedidoEditando(null), {
+                mensaje: '¿Cerrar sin guardar los cambios del pedido?',
+              })}
+            >
               <div className="admin-modal" onClick={(e) => e.stopPropagation()}>
                 <div className="admin-modal-header">
                   <h3>Editar pedido #{pedidoEditando.numero_pedido}</h3>

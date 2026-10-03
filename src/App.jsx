@@ -6,6 +6,7 @@ import DatosPreviewModal from './components/modals/DatosPreviewModal';
 import MarcoPostalPreviewModal from './components/modals/MarcoPostalPreviewModal';
 import ValidarEtiquetasMPModal from './components/modals/ValidarEtiquetasMPModal';
 import PDFPreviewModal from './components/modals/PDFPreviewModal';
+import EmailContactoPreviewModal from './components/modals/EmailContactoPreviewModal';
 import LoadingModal from './components/modals/LoadingModal';
 import Toast from './components/Toast';
 import NotificacionesPanel from './components/NotificacionesPanel';
@@ -20,6 +21,7 @@ import { useAuth } from './context/AuthContext';
 import { useTheme } from './context/ThemeContext';
 // import BotControlPanel from './components/BotControlPanel'; // deshabilitado (no se usa)
 import CarritosAbandonadosPanel from './components/CarritosAbandonadosPanel';
+import MetaAdsApp from './components/metaAds/MetaAdsApp';
 // import FeedbackDashboardPanel from './components/FeedbackDashboardPanel'; // deshabilitado (no se usa)
 // import ColorTrendsPanel from './components/ColorTrendsPanel'; // deshabilitado (no se usa)
 import { usePedidos } from './hooks/usePedidos';
@@ -222,6 +224,7 @@ function AppContent({ user, logout }) {
   const [activeTemplateId, setActiveTemplateId] = useState('');
   const [activeTrackingTemplateId, setActiveTrackingTemplateId] = useState('');
   const [activeHtmlTemplateId, setActiveHtmlTemplateId] = useState('');
+  const [emailContactoPedido, setEmailContactoPedido] = useState(null); // preview del email individual
   const [colForm, setColForm] = useState({
     cliente_nombre: '',
     cliente_email: '',
@@ -1335,6 +1338,37 @@ function AppContent({ user, logout }) {
     mostrarToast(`WhatsApp abierto con plantilla: ${activeTemplate?.name || 'Mensaje por defecto'}`, 'success');
   };
 
+  // Email individual de "Pendientes de Contacto": abre el preview con la plantilla
+  // HTML seleccionada; el envío se hace desde el modal.
+  const handleEmailContactoPendiente = (pedidoId) => {
+    const pedido = pedidos.find((p) => p.id === pedidoId);
+    if (!pedido) {
+      mostrarToast('No se encontro el pedido seleccionado', 'error');
+      return;
+    }
+    if (!templatesHtml.some((t) => t.id === activeHtmlTemplateId)) {
+      mostrarToast('Selecciona o crea una plantilla HTML en la sección Plantillas', 'warning');
+      return;
+    }
+    setEmailContactoPedido(pedido);
+  };
+
+  const handleEnviarEmailContactoIndividual = async (pedido, plantilla, subjectTemplate) => {
+    const resultado = await enviarEmailMasivoPendientesContacto({
+      pedidoIds: [pedido.id],
+      subjectTemplate,
+      htmlTemplate: plantilla?.content || '',
+      onlyWithoutPhone: false,
+    });
+    const envio = resultado.data?.[0];
+    if (!resultado.success || !envio?.success) {
+      mostrarToast(resultado.error || envio?.error || 'No se pudo enviar el email', 'error');
+      return false;
+    }
+    mostrarToast(`✉️ Email enviado a ${envio.email}`, 'success');
+    return true;
+  };
+
   const handleEnviarEmailPendientesContacto = async () => {
     if (tableFilter !== 'pendientesContacto') {
       mostrarToast('Esta acción está disponible en Pendientes de Contacto', 'warning');
@@ -1354,7 +1388,7 @@ function AppContent({ user, logout }) {
     }
     const subjectDefault = 'Seguimiento de tu pedido #{{numero_pedido}}';
     const subjectTemplate = window.prompt(
-      'Asunto del email (podés usar {{numero_pedido}} y {{cliente_nombre}}):',
+      `Se enviará desde info@ con su firma, usando la plantilla "${activeTemplate.name}".\n\nAsunto del email (podés usar {{numero_pedido}} y {{cliente_nombre}}):`,
       subjectDefault
     );
 
@@ -2432,6 +2466,14 @@ function AppContent({ user, logout }) {
               </button>
               <button
                 type="button"
+                className={`side-nav-item ${activeView === 'metaAds' ? 'side-nav-item-active' : ''}`}
+                onClick={() => setActiveView('metaAds')}
+              >
+                <span className="side-nav-icon">📣</span>
+                Meta Ads
+              </button>
+              <button
+                type="button"
                 className={`side-nav-item ${activeView === 'facturacion' ? 'side-nav-item-active' : ''}`}
                 onClick={() => setActiveView('facturacion')}
               >
@@ -3071,6 +3113,7 @@ function AppContent({ user, logout }) {
               onToggleSelectAll={(lista) => toggleSelectAll(lista)}
               onReenviarNotificacion={handleReenviarNotificacion}
               onContactarPendiente={handleContactarPendienteRapido}
+              onEmailContactoPendiente={handleEmailContactoPendiente}
               onMarcarNotificado={async (pedidoId) => { await marcarPedidoNotificado(pedidoId); cargarPedidosEnviados(); cargarPedidosDespachados(); }}
               onDescargarEtiqueta={handleDescargarEtiqueta}
               onDescartarEtiqueta={handleDescartarEtiqueta}
@@ -3309,6 +3352,10 @@ function AppContent({ user, logout }) {
         <CarritosAbandonadosPanel mostrarToast={mostrarToast} />
       )}
 
+      {activeView === 'metaAds' && user.role === 'admin' && (
+        <MetaAdsApp mostrarToast={mostrarToast} user={user} />
+      )}
+
       {activeView === 'facturacion' && user.role === 'admin' && (
         <FacturacionPanel mostrarToast={mostrarToast} />
       )}
@@ -3322,7 +3369,7 @@ function AppContent({ user, logout }) {
       )}
 
       {activeView === 'stockNc' && !esAtencion && (
-        <StockNcPanel mostrarToast={mostrarToast} />
+        <StockNcPanel mostrarToast={mostrarToast} esAdmin={esAdmin} />
       )}
 
       {activeView === 'cadeteria' && !esAtencion && (
@@ -3340,7 +3387,7 @@ function AppContent({ user, logout }) {
       )}
 
       {activeView === 'faq' && (esAdmin || esAtencion) && (
-        <FaqAtencionPanel mostrarToast={mostrarToast} />
+        <FaqAtencionPanel mostrarToast={mostrarToast} esAdmin={esAdmin} />
       )}
 
       {activeView === 'pedidos' && esAtencion && (
@@ -3390,6 +3437,19 @@ function AppContent({ user, logout }) {
           onConfirm={handleConfirmarEtiquetasMP}
         />
       )}
+
+      {emailContactoPedido && (() => {
+        const plantilla = templatesHtml.find((t) => t.id === activeHtmlTemplateId);
+        return (
+          <EmailContactoPreviewModal
+            pedido={emailContactoPedido}
+            plantilla={plantilla}
+            onEnviar={(asunto) => handleEnviarEmailContactoIndividual(emailContactoPedido, plantilla, asunto)}
+            onClose={() => setEmailContactoPedido(null)}
+            mostrarToast={mostrarToast}
+          />
+        );
+      })()}
 
       {/* Modal de vista previa de PDF */}
       {showPDFModal && (

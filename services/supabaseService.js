@@ -300,6 +300,24 @@ class SupabaseService {
     return this.buscarLocalidadUes(localidad, departamentoRef);
   }
 
+  // Coincidencia exacta (sin fuzzy) de localidad + departamento contra el catálogo UES.
+  // Devuelve null si el departamento o la localidad no coinciden tal cual.
+  buscarLocalidadUesExacta(localidad, departamento) {
+    const locKey = normalizeText(localidad);
+    const depKey = normalizeText(departamento);
+    if (!locKey || !depKey) return null;
+    const snapshot = getUesDepartamentosLocalidadesSnapshot();
+    const dep = snapshot.find((d) => normalizeText(d.departamento_nombre) === depKey);
+    if (!dep) return null;
+    const loc = (dep.localidades || []).find((l) => normalizeText(l.localidad_nombre) === locKey);
+    if (!loc) return null;
+    return {
+      ues_id: String(loc.localidad_id),
+      departamento_id: Number(dep.departamento_id),
+      nombre: loc.localidad_nombre,
+    };
+  }
+
   // Buscar localidad UES por nombre para obtener IDs requeridos por dispatcher.
   async buscarLocalidadUes(localidad, departamento) {
     if (!localidad) {
@@ -524,6 +542,7 @@ class SupabaseService {
         .select('*')
         .neq('estado', 'enviado')
         .neq('estado', 'despachado')
+        .neq('estado', 'cancelado')
         // Rama estándar: estándar (o sin tipo), excluyendo express y reclamos, que tienen
         // su propio flujo. Rama especial: Pick-UP y Recibilo Hoy entran sólo cuando ya
         // tienen la etiqueta generada, para pasar a la card "Etiquetas Generadas" como el
@@ -598,7 +617,7 @@ class SupabaseService {
         .from('pedidos')
         .select('*')
         .eq('es_reenvio', true)
-        .not('estado', 'in', '("enviado","despachado")')
+        .not('estado', 'in', '("enviado","despachado","cancelado")')
         .order('created_at', { ascending: false });
 
       if (error) throw error;
@@ -640,7 +659,7 @@ class SupabaseService {
         .from('pedidos')
         .select('*')
         .eq('tipo_envio', 'pickup_local')
-        .not('estado', 'in', '("enviado","despachado")')
+        .not('estado', 'in', '("enviado","despachado","cancelado")')
         .or('etiqueta_generada.is.null,etiqueta_generada.eq.false')
         .order('created_at', { ascending: false });
 
@@ -660,7 +679,7 @@ class SupabaseService {
         .from('pedidos')
         .select('*')
         .eq('tipo_envio', 'recibilo_hoy')
-        .not('estado', 'in', '("enviado","despachado")')
+        .not('estado', 'in', '("enviado","despachado","cancelado")')
         .or('etiqueta_generada.is.null,etiqueta_generada.eq.false')
         .order('created_at', { ascending: false });
 
@@ -683,6 +702,7 @@ class SupabaseService {
         .is('notificacion_enviada_at', null)
         .neq('estado', 'enviado')
         .neq('estado', 'despachado')
+        .neq('estado', 'cancelado')
         .order('created_at', { ascending: true });
 
       if (error) throw error;
@@ -751,7 +771,7 @@ class SupabaseService {
         .from('pedidos')
         .select('*')
         .eq('es_reenvio', true)
-        .not('estado', 'in', '("enviado","despachado")')
+        .not('estado', 'in', '("enviado","despachado","cancelado")')
         .order('created_at', { ascending: false });
 
       if (error) throw error;
@@ -782,6 +802,7 @@ class SupabaseService {
       .eq('etiqueta_generada', true)
       .not('numero_seguimiento_ues', 'is', null)
       .neq('estado', 'enviado')
+      .neq('estado', 'cancelado')
       .order('created_at', { ascending: true });
 
     if (error) throw error;
@@ -851,6 +872,7 @@ class SupabaseService {
       .is('notificacion_enviada_at', null)
       .neq('estado', 'despachado')
       .neq('estado', 'enviado')
+      .neq('estado', 'cancelado')
       .or(
         `numero_pedido.ilike.%${term}%,cliente_nombre.ilike.%${term}%,numero_seguimiento_ues.ilike.%${term}%`
       )
@@ -1511,6 +1533,85 @@ class SupabaseService {
     }
   }
 
+  // ==================== GUÍA DE ATENCIÓN — CASOS AGREGADOS DESDE EL PANEL ====================
+  // Complementa (no reemplaza) los ~90 casos curados en src/data/atencionFaq.js.
+  // Ver sql/create_atencion_faq_casos.sql.
+
+  async obtenerAtencionFaqCasos() {
+    try {
+      const { data, error } = await supabase
+        .from('atencion_faq_casos')
+        .select('*')
+        .order('created_at', { ascending: true });
+      if (error) throw error;
+      return data || [];
+    } catch (error) {
+      console.error('Error al obtener casos de la guía de atención:', error);
+      throw error;
+    }
+  }
+
+  async crearAtencionFaqCaso(caso) {
+    try {
+      const { data, error } = await supabase
+        .from('atencion_faq_casos')
+        .insert({
+          id: caso.id,
+          categoria_id: caso.categoria_id,
+          categoria_nombre: caso.categoria_nombre,
+          categoria_icon: caso.categoria_icon || '❓',
+          categoria_descripcion: caso.categoria_descripcion || null,
+          pregunta: caso.pregunta,
+          regla: caso.regla || null,
+          respuesta: caso.respuesta || null,
+          variantes: caso.variantes || [],
+          escalar: caso.escalar || null,
+          no_prometer: caso.no_prometer || null,
+          dato_a_confirmar: caso.dato_a_confirmar || null,
+          tags: caso.tags || [],
+          fuente: caso.fuente || null,
+          creado_por: caso.creado_por || null,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .select();
+      if (error) throw error;
+      return data[0];
+    } catch (error) {
+      console.error('Error al crear caso de la guía de atención:', error);
+      throw error;
+    }
+  }
+
+  async actualizarAtencionFaqCaso(id, cambios) {
+    try {
+      const { data, error } = await supabase
+        .from('atencion_faq_casos')
+        .update({ ...cambios, updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .select();
+      if (error) throw error;
+      return data[0];
+    } catch (error) {
+      console.error('Error al actualizar caso de la guía de atención:', error);
+      throw error;
+    }
+  }
+
+  async eliminarAtencionFaqCaso(id) {
+    try {
+      const { error } = await supabase
+        .from('atencion_faq_casos')
+        .delete()
+        .eq('id', id);
+      if (error) throw error;
+      return { success: true };
+    } catch (error) {
+      console.error('Error al eliminar caso de la guía de atención:', error);
+      throw error;
+    }
+  }
+
   // ── Auth helpers ─────────────────────────────────────────────────────────────
   async buscarUsuarioPorEmail(email) {
     const { data, error } = await supabase
@@ -2137,6 +2238,80 @@ class SupabaseService {
       .single();
     if (error) throw error;
     return data;
+  }
+
+  // ── Parámetros de reglas Meta Ads (fila única) ───────────────────────────────
+
+  async obtenerParametrosMetaAds() {
+    const { data, error } = await supabase
+      .from('meta_ads_parametros')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async guardarParametrosMetaAds(parametros, actualizadoPor) {
+    const { data, error } = await supabase
+      .from('meta_ads_parametros')
+      .upsert({ id: 1, parametros, actualizado_por: actualizadoPor || null, updated_at: new Date().toISOString() }, { onConflict: 'id' })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  // ── Piloto Meta Ads: propuestas y actividad ──────────────────────────────────
+
+  async listarPropuestasMetaAds({ estados, job, limite = 200, desde } = {}) {
+    let q = supabase.from('meta_ads_propuestas').select('*');
+    if (estados?.length) q = q.in('estado', estados);
+    if (job) q = q.eq('job', job);
+    if (desde) q = q.gte('actualizado_at', desde);
+    const { data, error } = await q.order('prioridad', { ascending: true }).order('creado_at', { ascending: true }).limit(limite);
+    if (error) throw error;
+    return data || [];
+  }
+
+  async obtenerPropuestaMetaAds(id) {
+    const { data, error } = await supabase.from('meta_ads_propuestas').select('*').eq('id', id).maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async insertarPropuestaMetaAds(fila) {
+    const { data, error } = await supabase.from('meta_ads_propuestas').insert(fila).select().single();
+    if (error) throw error;
+    return data;
+  }
+
+  // `soloSiEstado` evita carreras: sólo actualiza si la propuesta sigue en ese
+  // estado (ej. dos admins aprobando la misma a la vez). Devuelve null si no.
+  async actualizarPropuestaMetaAds(id, cambios, soloSiEstado) {
+    let q = supabase.from('meta_ads_propuestas')
+      .update({ ...cambios, actualizado_at: new Date().toISOString() })
+      .eq('id', id);
+    if (soloSiEstado) q = q.eq('estado', soloSiEstado);
+    const { data, error } = await q.select().maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async registrarActividadMetaAds(fila) {
+    const { data, error } = await supabase.from('meta_ads_actividad').insert(fila).select().single();
+    if (error) throw error;
+    return data;
+  }
+
+  async listarActividadMetaAds({ desde, limite = 300, entidadId, tipos } = {}) {
+    let q = supabase.from('meta_ads_actividad').select('*');
+    if (desde) q = q.gte('at', desde);
+    if (entidadId) q = q.eq('entidad_id', entidadId);
+    if (tipos?.length) q = q.in('tipo', tipos);
+    const { data, error } = await q.order('at', { ascending: false }).limit(limite);
+    if (error) throw error;
+    return data || [];
   }
 
   // ── Notificaciones del sistema ───────────────────────────────────────────────
@@ -3057,6 +3232,37 @@ class SupabaseService {
     const { error } = await supabase
       .from('pedidos')
       .update({ ml_stock_descontado_at: new Date().toISOString() })
+      .eq('id', pedidoId);
+    if (error) throw error;
+  }
+
+  // Ventas de ML canceladas que todavía no devolvieron el stock que descontaron.
+  async obtenerPedidosMlCanceladosSinDevolver(limite = 100) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('id, numero_pedido, ml_stock_descontado')
+      .eq('origen', 'mercadolibre')
+      .eq('estado', 'cancelado')
+      .is('ml_stock_devuelto_at', null)
+      .order('updated_at', { ascending: true })
+      .limit(limite);
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Reescribe el detalle de descuentos (con las marcas de `devuelto` por ítem).
+  async guardarDetalleStockMl(pedidoId, detalle) {
+    const { error } = await supabase
+      .from('pedidos')
+      .update({ ml_stock_descontado: detalle })
+      .eq('id', pedidoId);
+    if (error) throw error;
+  }
+
+  async marcarPedidoMlStockDevuelto(pedidoId) {
+    const { error } = await supabase
+      .from('pedidos')
+      .update({ ml_stock_devuelto_at: new Date().toISOString() })
       .eq('id', pedidoId);
     if (error) throw error;
   }

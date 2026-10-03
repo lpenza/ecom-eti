@@ -1020,6 +1020,421 @@ class ShopifyService {
     return { sku: skuLimpio, anterior, nuevo, variantes: items.length, ajustadas: changes.length };
   }
 
+  // ── Alta de un color nuevo en todos los productos NC ──────────────────────────
+  // Estas llamadas usan 2025-01: productVariantsBulkCreate con optionValues,
+  // inventoryQuantities y media no existen con esa forma en 2024-01.
+  async graphql2025(query, variables = {}) {
+    const response = await axios.post(
+      `https://${this.domain}/admin/api/2025-01/graphql.json`,
+      { query, variables },
+      { headers: this.getHeaders() }
+    );
+    const topErrors = response.data?.errors;
+    if (Array.isArray(topErrors) && topErrors.length > 0) {
+      throw new Error(`Shopify GraphQL: ${JSON.stringify(topErrors)}`);
+    }
+    return response.data?.data;
+  }
+
+  // Productos que tienen al menos una variante con SKU del prefijo (hoy: kits,
+  // sets y "agregá tus tonos"). De cada uno devuelve lo que hace falta para
+  // clonar una variante: nombre de la opción de color, precio, precio tachado y
+  // política de inventario (se copian de la primera variante del prefijo; en
+  // todos los productos actuales son iguales entre variantes).
+  async listarProductosConPrefijoSku(prefijo = 'NC') {
+    const pref = String(prefijo).trim().toUpperCase();
+    const query = `query productosNC($q: String!, $cursor: String) {
+      products(first: 50, after: $cursor, query: $q) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id title status
+          options { name linkedMetafield { namespace key } }
+          variants(first: 250) {
+            nodes { sku title price compareAtPrice inventoryPolicy taxable }
+          }
+        }
+      }
+    }`;
+
+    const productos = [];
+    let cursor = null;
+    let paginas = 0;
+    do {
+      const data = await this.graphql2025(query, { q: `sku:${pref}*`, cursor });
+      const conn = data?.products;
+      for (const p of conn?.nodes || []) {
+        const variantes = p.variants?.nodes || [];
+        const delPrefijo = variantes.filter((v) => String(v.sku || '').trim().toUpperCase().startsWith(pref));
+        if (delPrefijo.length === 0) continue;
+        const base = delPrefijo[0];
+        productos.push({
+          id: p.id,
+          titulo: p.title,
+          estado: p.status,
+          // Hoy todos tienen una sola opción ("Color"); si algún producto tuviera
+          // más, clonar la variante necesitaría elegir el resto de los valores.
+          opciones: (p.options || []).map((o) => o.name),
+          // La opción Color está vinculada al metaobjeto shopify--color-pattern: el valor
+          // nuevo no se crea por nombre sino apuntando a una entrada de ese metaobjeto.
+          opcionVinculada: Boolean(p.options?.[0]?.linkedMetafield),
+          precio: base.price,
+          precioTachado: base.compareAtPrice,
+          politica: base.inventoryPolicy,
+          taxable: base.taxable,
+          cantidadVariantes: variantes.length,
+          skus: variantes.map((v) => String(v.sku || '').trim().toUpperCase()).filter(Boolean),
+          nombresColor: variantes.map((v) => String(v.title || '').trim().toLowerCase()),
+        });
+      }
+      cursor = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
+      paginas += 1;
+    } while (cursor && paginas < 20);
+
+    return productos;
+  }
+
+  // ── Entradas de color (metaobjeto shopify--color-pattern) ──
+  // Cada color de la tienda es una entrada compartida por todos los productos.
+  // Campos obligatorios: nombre, color base y patrón, ambos de la taxonomía de
+  // Shopify (los ids de TaxonomyValue son fijos).
+  static COLORES_BASE = [
+    { id: 'gid://shopify/TaxonomyValue/6', nombre: 'Beige' },
+    { id: 'gid://shopify/TaxonomyValue/1', nombre: 'Negro' },
+    { id: 'gid://shopify/TaxonomyValue/2', nombre: 'Azul' },
+    { id: 'gid://shopify/TaxonomyValue/657', nombre: 'Bronce' },
+    { id: 'gid://shopify/TaxonomyValue/7', nombre: 'Marrón' },
+    { id: 'gid://shopify/TaxonomyValue/17', nombre: 'Transparente' },
+    { id: 'gid://shopify/TaxonomyValue/4', nombre: 'Dorado' },
+    { id: 'gid://shopify/TaxonomyValue/8', nombre: 'Gris' },
+    { id: 'gid://shopify/TaxonomyValue/9', nombre: 'Verde' },
+    { id: 'gid://shopify/TaxonomyValue/2865', nombre: 'Multicolor' },
+    { id: 'gid://shopify/TaxonomyValue/15', nombre: 'Azul marino' },
+    { id: 'gid://shopify/TaxonomyValue/10', nombre: 'Naranja' },
+    { id: 'gid://shopify/TaxonomyValue/11', nombre: 'Rosa' },
+    { id: 'gid://shopify/TaxonomyValue/12', nombre: 'Violeta' },
+    { id: 'gid://shopify/TaxonomyValue/13', nombre: 'Rojo' },
+    { id: 'gid://shopify/TaxonomyValue/16', nombre: 'Oro rosa' },
+    { id: 'gid://shopify/TaxonomyValue/5', nombre: 'Plateado' },
+    { id: 'gid://shopify/TaxonomyValue/3', nombre: 'Blanco' },
+    { id: 'gid://shopify/TaxonomyValue/14', nombre: 'Amarillo' },
+  ];
+
+  // Los que ya usa la tienda (Solid en 80 de 84 colores); el primero es el default.
+  static PATRONES = [
+    { id: 'gid://shopify/TaxonomyValue/2874', nombre: 'Liso' },
+    { id: 'gid://shopify/TaxonomyValue/2870', nombre: 'Puntos' },
+    { id: 'gid://shopify/TaxonomyValue/2871', nombre: 'Floral' },
+    { id: 'gid://shopify/TaxonomyValue/24478', nombre: 'Animal' },
+    { id: 'gid://shopify/TaxonomyValue/24509', nombre: 'Otro' },
+  ];
+
+  // Busca la entrada de color por nombre (sin distinguir mayúsculas). Si alguien
+  // ya la creó a mano en Shopify, se reutiliza en vez de duplicarla.
+  async buscarColorShopify(nombre) {
+    const buscado = String(nombre || '').trim().toLowerCase();
+    let cursor = null;
+    let paginas = 0;
+    do {
+      const data = await this.graphql2025(`query coloresShopify($cursor: String) {
+        metaobjects(type: "shopify--color-pattern", first: 250, after: $cursor) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id displayName hex: field(key: "color") { value } base: field(key: "color_taxonomy_reference") { value } }
+        }
+      }`, { cursor });
+      const conn = data?.metaobjects;
+      const hallado = (conn?.nodes || []).find((n) => String(n.displayName || '').trim().toLowerCase() === buscado);
+      if (hallado) {
+        const baseIds = (() => { try { return JSON.parse(hallado.base?.value || '[]'); } catch { return []; } })();
+        return {
+          id: hallado.id,
+          nombre: hallado.displayName,
+          hex: hallado.hex?.value || null,
+          colorBase: baseIds.map((id) => ShopifyService.COLORES_BASE.find((c) => c.id === id)?.nombre || id),
+        };
+      }
+      cursor = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
+      paginas += 1;
+    } while (cursor && paginas < 10);
+    return null;
+  }
+
+  async crearColorShopify({ nombre, colorBase, patron, hex }) {
+    const bases = (Array.isArray(colorBase) ? colorBase : [colorBase]).filter(Boolean);
+    if (!bases.every((id) => ShopifyService.COLORES_BASE.some((c) => c.id === id)) || bases.length === 0) {
+      throw new Error('Color base inválido');
+    }
+    const patronId = patron || ShopifyService.PATRONES[0].id;
+    if (!ShopifyService.PATRONES.some((p) => p.id === patronId)) throw new Error('Patrón inválido');
+
+    const fields = [
+      { key: 'label', value: nombre },
+      { key: 'color_taxonomy_reference', value: JSON.stringify(bases) },
+      { key: 'pattern_taxonomy_reference', value: patronId },
+    ];
+    if (hex && /^#[0-9a-f]{6}$/i.test(hex)) fields.push({ key: 'color', value: hex.toLowerCase() });
+
+    const data = await this.graphql2025(`mutation crearColor($metaobject: MetaobjectCreateInput!) {
+      metaobjectCreate(metaobject: $metaobject) {
+        metaobject { id handle displayName }
+        userErrors { field message code }
+      }
+    }`, { metaobject: { type: 'shopify--color-pattern', fields } });
+    const res = data?.metaobjectCreate;
+    if (res?.userErrors?.length) {
+      throw new Error(`No se pudo crear el color en Shopify: ${res.userErrors.map((e) => e.message).join('; ')}`);
+    }
+    return res.metaobject;
+  }
+
+  // Sube una imagen a Shopify (staged upload) y devuelve la URL que después se
+  // usa como `originalSource` al crear las variantes. Se sube una sola vez y se
+  // reutiliza en todos los productos.
+  async subirImagenStaged(buffer, filename, mimeType) {
+    const FormData = require('form-data');
+    const data = await this.graphql2025(`mutation staged($input: [StagedUploadInput!]!) {
+      stagedUploadsCreate(input: $input) {
+        stagedTargets { url resourceUrl parameters { name value } }
+        userErrors { field message }
+      }
+    }`, {
+      input: [{
+        resource: 'IMAGE',
+        filename,
+        mimeType,
+        httpMethod: 'POST',
+        fileSize: String(buffer.length),
+      }],
+    });
+    const res = data?.stagedUploadsCreate;
+    if (res?.userErrors?.length) {
+      throw new Error(`Shopify stagedUploadsCreate: ${JSON.stringify(res.userErrors)}`);
+    }
+    const target = res?.stagedTargets?.[0];
+    if (!target) throw new Error('Shopify no devolvió destino para subir la imagen');
+
+    const form = new FormData();
+    for (const p of target.parameters) form.append(p.name, p.value);
+    form.append('file', buffer, { filename, contentType: mimeType });
+    await axios.post(target.url, form, { headers: form.getHeaders(), maxBodyLength: Infinity });
+    return target.resourceUrl;
+  }
+
+  // Crea la variante de un color en UN producto, con el stock inicial en la
+  // locación principal y la foto del color. Precio, tachado y política se
+  // copian del producto (ver listarProductosConPrefijoSku).
+  async crearVarianteColor(producto, { nombre, sku, stock, imagenSrc, colorId }) {
+    if (producto.opcionVinculada && !colorId) {
+      throw new Error('Falta la entrada de color de Shopify para vincular la variante');
+    }
+    const location = await this.obtenerLocationPrincipal();
+    // Con la opción vinculada, la variante no puede crear el valor: tiene que
+    // existir antes en la opción del producto y la variante lo referencia por id.
+    const valorOpcion = producto.opcionVinculada
+      ? await this.asegurarValorColor(producto.id, colorId)
+      : { optionName: producto.opciones[0], name: nombre };
+    const variante = {
+      optionValues: [valorOpcion],
+      price: producto.precio,
+      compareAtPrice: producto.precioTachado,
+      inventoryPolicy: producto.politica,
+      taxable: producto.taxable,
+      inventoryItem: { sku, tracked: true },
+      inventoryQuantities: [{ locationId: location.gid, availableQuantity: Number(stock) || 0 }],
+    };
+    if (imagenSrc) variante.mediaSrc = [imagenSrc];
+
+    const data = await this.graphql2025(`mutation nuevaVariante($productId: ID!, $variants: [ProductVariantsBulkInput!]!, $media: [CreateMediaInput!]) {
+      productVariantsBulkCreate(productId: $productId, variants: $variants, media: $media) {
+        productVariants { id title sku }
+        userErrors { field message }
+      }
+    }`, {
+      productId: producto.id,
+      variants: [variante],
+      media: imagenSrc ? [{ originalSource: imagenSrc, mediaContentType: 'IMAGE', alt: nombre }] : null,
+    });
+    const res = data?.productVariantsBulkCreate;
+    if (res?.userErrors?.length) {
+      throw new Error(res.userErrors.map((e) => e.message).join('; '));
+    }
+    return res?.productVariants?.[0] || null;
+  }
+
+  // Devuelve { optionId, id } del valor de la opción Color vinculado a la entrada
+  // de color (la variante necesita los dos);
+  // si el producto todavía no lo tiene, lo agrega (sin crear variantes). Un
+  // intento anterior que falló después de este paso deja el valor ya creado:
+  // por eso primero se busca.
+  async asegurarValorColor(productId, colorId) {
+    const buscarEn = (opciones) => {
+      for (const o of opciones || []) {
+        const v = (o.optionValues || []).find((x) => x.linkedMetafieldValue === colorId);
+        if (v) return { optionId: o.id, id: v.id };
+      }
+      return null;
+    };
+
+    const data = await this.graphql2025(`query opcionColor($id: ID!) {
+      product(id: $id) { options { id name optionValues { id name linkedMetafieldValue } } }
+    }`, { id: productId });
+    const opciones = data?.product?.options || [];
+    const existente = buscarEn(opciones);
+    if (existente) return existente;
+
+    const d = await this.graphql2025(`mutation agregarValor($productId: ID!, $option: OptionUpdateInput!, $optionValuesToAdd: [OptionValueCreateInput!]) {
+      productOptionUpdate(productId: $productId, option: $option, optionValuesToAdd: $optionValuesToAdd, variantStrategy: LEAVE_AS_IS) {
+        product { options { id name optionValues { id name linkedMetafieldValue } } }
+        userErrors { field message code }
+      }
+    }`, {
+      productId,
+      option: { id: opciones[0].id },
+      optionValuesToAdd: [{ linkedMetafieldValue: colorId }],
+    });
+    const res = d?.productOptionUpdate;
+    if (res?.userErrors?.length) {
+      throw new Error(`No se pudo agregar el color a la opción: ${res.userErrors.map((e) => e.message).join('; ')}`);
+    }
+    const nuevo = buscarEn(res?.product?.options);
+    if (!nuevo) throw new Error('Shopify no devolvió el valor de color agregado');
+    return nuevo;
+  }
+
+  // ── Cambio de foto de un color existente ─────────────────────────────────────
+
+  // Variantes con el SKU exacto, agrupadas por producto, con la foto actual.
+  async productosConSku(sku) {
+    const skuUp = String(sku || '').trim().toUpperCase();
+    const data = await this.graphql2025(`query variantesSku($q: String!) {
+      productVariants(first: 50, query: $q) {
+        nodes {
+          id sku title
+          product { id title status }
+          media(first: 1) { nodes { ... on MediaImage { image { url } } } }
+        }
+      }
+    }`, { q: `sku:${skuUp}` });
+
+    const porProducto = new Map();
+    for (const v of data?.productVariants?.nodes || []) {
+      // La búsqueda sku:XXX puede traer coincidencias parciales; exigimos SKU exacto.
+      if (String(v.sku || '').trim().toUpperCase() !== skuUp) continue;
+      if (!porProducto.has(v.product.id)) {
+        porProducto.set(v.product.id, {
+          id: v.product.id,
+          titulo: v.product.title,
+          estado: v.product.status,
+          color: v.title,
+          fotoActual: v.media?.nodes?.[0]?.image?.url || null,
+        });
+      }
+    }
+    return [...porProducto.values()];
+  }
+
+  // Cambia la foto de las variantes de un SKU dentro de UN producto:
+  //   1. suelta la foto vieja de la variante,
+  //   2. crea la nueva y se la asigna,
+  //   3. la ubica en la galería donde estaba la vieja,
+  //   4. saca la vieja del producto. Con fileUpdate (no productDeleteMedia) el
+  //      archivo queda en Contenido → Archivos: sirve de respaldo.
+  // Una foto vieja que usa OTRA variante (ej. "French Pure" y "French-Pure-Old"
+  // comparten imagen) no se saca del producto.
+  async reemplazarFotoVariantes(productId, sku, imagenSrc, alt) {
+    const skuUp = String(sku || '').trim().toUpperCase();
+    const data = await this.graphql2025(`query fotosProducto($id: ID!) {
+      product(id: $id) {
+        media(first: 250) { nodes { id } }
+        variants(first: 250) { nodes { id sku media(first: 5) { nodes { id } } } }
+      }
+    }`, { id: productId });
+
+    const variantes = data?.product?.variants?.nodes || [];
+    const objetivo = variantes.filter((v) => String(v.sku || '').trim().toUpperCase() === skuUp);
+    if (objetivo.length === 0) throw new Error(`El producto no tiene variantes con SKU ${skuUp}`);
+
+    const viejas = new Set(objetivo.flatMap((v) => v.media.nodes.map((m) => m.id)));
+    const usadasPorOtras = new Set(
+      variantes.filter((v) => !objetivo.includes(v)).flatMap((v) => v.media.nodes.map((m) => m.id))
+    );
+    const aQuitar = [...viejas].filter((id) => !usadasPorOtras.has(id));
+    const galeria = (data?.product?.media?.nodes || []).map((m) => m.id);
+    const posicion = galeria.findIndex((id) => viejas.has(id));
+
+    const conFoto = objetivo.filter((v) => v.media.nodes.length > 0);
+    const variantMedia = conFoto.map((v) => ({ variantId: v.id, mediaIds: v.media.nodes.map((m) => m.id) }));
+
+    if (variantMedia.length > 0) {
+      const d = await this.graphql2025(`mutation detach($productId: ID!, $variantMedia: [ProductVariantDetachMediaInput!]!) {
+        productVariantDetachMedia(productId: $productId, variantMedia: $variantMedia) {
+          userErrors { field message }
+        }
+      }`, { productId, variantMedia });
+      const errs = d?.productVariantDetachMedia?.userErrors || [];
+      if (errs.length) throw new Error(`No se pudo soltar la foto vieja: ${errs.map((e) => e.message).join('; ')}`);
+    }
+
+    let nuevaId = null;
+    try {
+      const d = await this.graphql2025(`mutation cambiarFoto($productId: ID!, $variants: [ProductVariantsBulkInput!]!, $media: [CreateMediaInput!]) {
+        productVariantsBulkUpdate(productId: $productId, variants: $variants, media: $media) {
+          productVariants { id media(first: 1) { nodes { id } } }
+          userErrors { field message }
+        }
+      }`, {
+        productId,
+        variants: objetivo.map((v) => ({ id: v.id, mediaSrc: [imagenSrc] })),
+        media: [{ originalSource: imagenSrc, mediaContentType: 'IMAGE', alt }],
+      });
+      const res = d?.productVariantsBulkUpdate;
+      if (res?.userErrors?.length) throw new Error(res.userErrors.map((e) => e.message).join('; '));
+      nuevaId = res?.productVariants?.[0]?.media?.nodes?.[0]?.id || null;
+    } catch (err) {
+      // Sin la foto nueva, la variante quedaría sin ninguna: se le devuelve la vieja.
+      if (variantMedia.length > 0) {
+        await this.graphql2025(`mutation append($productId: ID!, $variantMedia: [ProductVariantAppendMediaInput!]!) {
+          productVariantAppendMedia(productId: $productId, variantMedia: $variantMedia) {
+            userErrors { field message }
+          }
+        }`, { productId, variantMedia }).catch(() => {});
+      }
+      throw new Error(`No se pudo asignar la foto nueva (se restauró la anterior): ${err.message}`);
+    }
+
+    const avisos = [];
+    // La media nueva entra al final de la galería; se la lleva al lugar de la vieja.
+    if (nuevaId && posicion >= 0) {
+      try {
+        const d = await this.graphql2025(`mutation reordenar($id: ID!, $moves: [MoveInput!]!) {
+          productReorderMedia(id: $id, moves: $moves) { mediaUserErrors { field message } }
+        }`, { id: productId, moves: [{ id: nuevaId, newPosition: String(posicion) }] });
+        const errs = d?.productReorderMedia?.mediaUserErrors || [];
+        if (errs.length) avisos.push(`No se pudo reordenar la galería: ${errs.map((e) => e.message).join('; ')}`);
+      } catch (err) {
+        avisos.push(`No se pudo reordenar la galería: ${err.message}`);
+      }
+    }
+
+    if (aQuitar.length > 0) {
+      try {
+        const d = await this.graphql2025(`mutation quitarDelProducto($files: [FileUpdateInput!]!) {
+          fileUpdate(files: $files) { userErrors { field message code } }
+        }`, { files: aQuitar.map((id) => ({ id, referencesToRemove: [productId] })) });
+        const errs = d?.fileUpdate?.userErrors || [];
+        if (errs.length) avisos.push(`La foto vieja quedó en la galería: ${errs.map((e) => e.message).join('; ')}`);
+      } catch (err) {
+        avisos.push(`La foto vieja quedó en la galería: ${err.message}`);
+      }
+    }
+
+    return {
+      variantes: objetivo.length,
+      quitadas: aQuitar.length,
+      conservadas: viejas.size - aQuitar.length,
+      avisos,
+    };
+  }
+
   // Crear nota en orden
   async agregarNota(orderId, nota) {
     try {

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { obtenerEmailAliases, obtenerEmails, obtenerEmail, enviarEmail, obtenerFirmasEmail, guardarFirmaEmail, descargarAdjunto } from '../services/api';
+import { cierreFuera } from '../utils/cierreModal';
 
 const MAX_ADJUNTOS_BYTES = 12 * 1024 * 1024; // ~12 MB (queda bajo el límite de 15mb del server)
 
@@ -68,7 +69,8 @@ const POLL_MS = 45000; // auto-actualización de la bandeja
 // Firma por defecto si el alias todavía no tiene una cargada en la base.
 // Usa el wordmark VELINNE (imagen alojada) + datos, con tablas y estilos inline
 // (lo más compatible con Gmail/Outlook). alt="VELINNE" cubre el caso en que el
-// cliente bloquee imágenes.
+// cliente bloquee imágenes. Copia en services/firmaEmailDefault.js (la usa el
+// email masivo de pendientes de contacto): si cambia una, cambiar la otra.
 function firmaPorDefecto(/* alias */) {
   return `<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;margin-top:18px;background:#fff8fb;">
   <tr>
@@ -503,7 +505,13 @@ export default function EmailsPanel({ mostrarToast }) {
       </div>
 
       {compose && (
-        <div className="emails-compose-overlay" onClick={(e) => { if (e.target === e.currentTarget) setCompose(null); }}>
+        <div
+          className="emails-compose-overlay"
+          {...cierreFuera(() => setCompose(null), {
+            bloqueado: enviando,
+            mensaje: '¿Descartar el correo? Lo que escribiste se pierde.',
+          })}
+        >
           <div className="emails-compose">
             <div className="emails-compose-head">
               <h3>{compose.inReplyTo ? 'Responder' : 'Nuevo correo'}</h3>
@@ -600,7 +608,12 @@ export default function EmailsPanel({ mostrarToast }) {
       )}
 
       {firmasDraft && (
-        <div className="emails-compose-overlay" onClick={(e) => { if (e.target === e.currentTarget) setFirmasDraft(null); }}>
+        <div
+          className="emails-compose-overlay"
+          {...cierreFuera(() => setFirmasDraft(null), {
+            mensaje: '¿Cerrar sin guardar las firmas?',
+          })}
+        >
           <div className="emails-compose emails-firmas-editor">
             <div className="emails-compose-head">
               <h3>✍️ Firmas por alias</h3>

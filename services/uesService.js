@@ -355,10 +355,22 @@ class UESService {
       };
       logService.info('Saltando validación de localidad (vendrá de overrides del usuario)');
     } else {
-      localidadUes = await supabaseService.buscarLocalidadUes(
-        determinarLocalidad(pedido),
-        pedido.departamento
-      );
+      const localidadTexto = determinarLocalidad(pedido);
+      try {
+        localidadUes = await supabaseService.buscarLocalidadUes(localidadTexto, pedido.departamento);
+      } catch (error) {
+        // El cliente a veces escribe "Ciudad de la Costa, Solymar": probar cada parte
+        // (el barrio primero, que es más específico) antes de dar el error.
+        const partes = String(localidadTexto || '').split(/[,/]/).map((p) => p.trim()).filter(Boolean);
+        if (partes.length < 2) throw error;
+        for (const parte of partes.reverse()) {
+          try {
+            localidadUes = await supabaseService.buscarLocalidadUes(parte, pedido.departamento);
+            break;
+          } catch (_) { /* probar la siguiente */ }
+        }
+        if (!localidadUes) throw error;
+      }
     }
     
     // Observaciones solo desde el parser de dirección (no usar pedido.notas)

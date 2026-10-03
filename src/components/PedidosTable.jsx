@@ -135,6 +135,7 @@ function PedidosTable({
   onToggleSelectAll,
   onReenviarNotificacion,
   onContactarPendiente,
+  onEmailContactoPendiente,
   onMarcarNotificado,
   onDescargarEtiqueta,
   onDescartarEtiqueta,
@@ -261,6 +262,7 @@ function PedidosTable({
                     onToggleSelect={handleToggle}
                     onReenviarNotificacion={onReenviarNotificacion}
                     onContactarPendiente={onContactarPendiente}
+                    onEmailContactoPendiente={onEmailContactoPendiente}
                     onMarcarNotificado={onMarcarNotificado}
                     onDescargarEtiqueta={onDescargarEtiqueta}
                     onDescartarEtiqueta={onDescartarEtiqueta}
@@ -296,6 +298,7 @@ function PedidoRow({
   onToggleSelect,
   onReenviarNotificacion,
   onContactarPendiente,
+  onEmailContactoPendiente,
   onMarcarNotificado,
   onDescargarEtiqueta,
   onDescartarEtiqueta,
@@ -512,18 +515,23 @@ function PedidoRow({
               </span>
             ) : modoPendienteContacto ? (
               <>
-                {tienePhone ? (
+                {tienePhone && (
                   <button
                     className="btn btn-secondary btn-sm"
                     onClick={handleContactoRapido}
                     title={`Abrir WhatsApp con plantilla: ${activeContactTemplate?.name || 'Mensaje por defecto'}`}
                   >
-                    💬 Contactar
+                    💬 WhatsApp
                   </button>
-                ) : (
-                  <span className="pedido-email-label" title="Se enviará por email masivo">
+                )}
+                {tieneEmail && (
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => onEmailContactoPendiente?.(pedido.id)}
+                    title={`Ver el email a ${pedido.cliente_email} antes de enviarlo`}
+                  >
                     ✉️ Email
-                  </span>
+                  </button>
                 )}
                 {ultimoContactoAt && (
                   <span className="pedido-notified-label" title={`Ultimo contacto: ${formatUltimoContacto(ultimoContactoAt)}`}>

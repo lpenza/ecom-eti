@@ -81,6 +81,58 @@ async function fetchAPI(url, options = {}) {
   }
 }
 
+/**
+ * Igual que fetchAPI, pero para endpoints que informan progreso en vivo
+ * (ver progresoNdjson en server.js): llama a onProgreso con cada paso
+ * ({ mensaje, hechos, total, item? }) y devuelve la respuesta final.
+ */
+async function fetchAPIConProgreso(url, options = {}, onProgreso) {
+  const response = await fetch(`${API_BASE}${url}`, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Progreso': 'ndjson',
+      ...getAuthHeaders(),
+      ...options.headers,
+    },
+  });
+
+  // Validaciones previas al primer paso: JSON común.
+  if (!(response.headers.get('content-type') || '').includes('ndjson')) {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.message || data?.error || `HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let final = null;
+  const procesar = (linea) => {
+    if (!linea.trim()) return;
+    const evento = JSON.parse(linea);
+    if (evento.tipo === 'progreso') onProgreso?.(evento);
+    else final = evento;
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lineas = buffer.split('\n');
+    buffer = lineas.pop();
+    lineas.forEach(procesar);
+  }
+  procesar(buffer + decoder.decode());
+
+  if (!final) throw new Error('Se cortó la conexión antes de terminar. Revisá qué quedó creado antes de reintentar.');
+  if (final.tipo === 'error') throw new Error(final.error || 'Error en el servidor');
+  return final;
+}
+
 // ==================== EMAILS (buzón de la empresa) ====================
 
 /** Alias que el usuario puede leer/usar como remitente. */
@@ -276,6 +328,16 @@ export async function enviarEmailMasivoPendientesContacto({ pedidoIds = null, su
   return await fetchAPI('/pedidos/revision-contacto/email-masivo', {
     method: 'POST',
     body: JSON.stringify({ pedidoIds, subjectTemplate, htmlTemplate, onlyWithoutPhone }),
+  });
+}
+
+/**
+ * Preview del email de contacto de un pedido (remitente, asunto y cuerpo con firma), sin enviar
+ */
+export async function previewEmailContacto(pedidoId, { subjectTemplate = '', htmlTemplate = '' } = {}) {
+  return await fetchAPI(`/pedidos/${pedidoId}/revision-contacto/email-preview`, {
+    method: 'POST',
+    body: JSON.stringify({ subjectTemplate, htmlTemplate }),
   });
 }
 
@@ -551,6 +613,34 @@ export async function activarPlantilla(id) {
 export async function inicializarPlantillas() {
   const response = await fetchAPI('/templates/initialize', { method: 'POST' });
   return response.data || [];
+}
+
+// ==================== GUÍA DE ATENCIÓN — CASOS AGREGADOS DESDE EL PANEL ====================
+
+/** Casos que el equipo agregó desde el panel (complementan los casos curados en código). */
+export async function obtenerAtencionFaqCasos() {
+  const response = await fetchAPI('/atencion-faq/casos', { method: 'GET' });
+  return response;
+}
+
+export async function crearAtencionFaqCaso(caso) {
+  const response = await fetchAPI('/atencion-faq/casos', {
+    method: 'POST',
+    body: JSON.stringify(caso),
+  });
+  return response.data;
+}
+
+export async function actualizarAtencionFaqCaso(id, cambios) {
+  const response = await fetchAPI(`/atencion-faq/casos/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(cambios),
+  });
+  return response.data;
+}
+
+export async function eliminarAtencionFaqCaso(id) {
+  return await fetchAPI(`/atencion-faq/casos/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 // ── Carritos Abandonados ──────────────────────────────────────────────────────
@@ -855,6 +945,61 @@ export async function actualizarStockNC(id, sku, stock) {
   });
 }
 
+/**
+ * Plan del alta de un color NC nuevo: qué productos de Shopify y qué familias de
+ * ML se tocarían (y cuáles se saltean porque ya lo tienen). No escribe nada.
+ */
+export async function planNuevoColorNC(nombre, sku) {
+  return await fetchAPI('/armador/stock-nc/nuevo-color/plan', {
+    method: 'POST',
+    body: JSON.stringify({ nombre, sku }),
+  });
+}
+
+/**
+ * Alta de un color NC nuevo: crea la variante en los productos de Shopify
+ * elegidos, las publicaciones en las familias de ML elegidas y el producto en la BD.
+ * `imagen` es { base64, mimeType, filename }. `colorShopify` ({ colorBase, patron, hex })
+ * sólo hace falta cuando el color todavía no existe en los colores de Shopify.
+ */
+export async function crearNuevoColorNC({ nombre, sku, stock, imagen, productosShopify, familiasML, colorShopify }, onProgreso) {
+  return await fetchAPIConProgreso('/armador/stock-nc/nuevo-color', {
+    method: 'POST',
+    body: JSON.stringify({ nombre, sku, stock, imagen, productosShopify, familiasML, colorShopify }),
+  }, onProgreso);
+}
+
+/**
+ * Plan del cambio de foto de un color NC: productos de Shopify y publicaciones
+ * de ML que lo tienen, con su foto actual. No escribe nada.
+ */
+export async function planFotoColorNC(sku) {
+  return await fetchAPI('/armador/stock-nc/foto/plan', {
+    method: 'POST',
+    body: JSON.stringify({ sku }),
+  });
+}
+
+/**
+ * Cambia la foto de un color NC en los productos de Shopify y las publicaciones
+ * de ML elegidos. `imagen` es { base64, mimeType, filename }.
+ */
+export async function cambiarFotoColorNC({ sku, imagen, productosShopify, publicacionesML }, onProgreso) {
+  return await fetchAPIConProgreso('/armador/stock-nc/foto', {
+    method: 'POST',
+    body: JSON.stringify({ sku, imagen, productosShopify, publicacionesML }),
+  }, onProgreso);
+}
+
+/**
+ * Comparación tienda (Shopify) vs depósito (StockPlanner) de los colores. Sólo admin.
+ */
+export async function obtenerStockTiendaVsDeposito() {
+  const data = await fetchAPI('/admin/stock-nc/deposito', { method: 'GET' });
+  if (data && data.success === false) throw new Error(data.error || 'Error leyendo el depósito');
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
 // ==================== STOCK OTROS ARTÍCULOS (base coat, top coat, tratamientos) ====================
 // Misma mecánica que stock NC (arriba), acotada a otra lista de prefijos de SKU en el backend.
 
@@ -962,4 +1107,98 @@ export async function obtenerEstadoLevanteAutomatico() {
 
 export async function ejecutarLevanteAutomatico() {
   return await fetchAPI('/ues/levante-automatico/ejecutar', { method: 'POST' });
+}
+
+// ── Meta Ads ────────────────────────────────────────────────────────────────
+
+export async function obtenerCuentasMetaAds() {
+  return fetchAPI('/meta-ads/cuentas');
+}
+
+export async function obtenerCampaniasMetaAds({ cuenta, datePreset, filtro }) {
+  const q = new URLSearchParams({ cuenta: cuenta || '', datePreset, filtro });
+  return fetchAPI(`/meta-ads/campanias?${q}`);
+}
+
+export async function obtenerConjuntosMetaAds(campaniaId, { datePreset, filtro }) {
+  const q = new URLSearchParams({ datePreset, filtro });
+  return fetchAPI(`/meta-ads/campanias/${campaniaId}/conjuntos?${q}`);
+}
+
+export async function obtenerAnunciosMetaAds(conjuntoId, { datePreset, filtro }) {
+  const q = new URLSearchParams({ datePreset, filtro });
+  return fetchAPI(`/meta-ads/conjuntos/${conjuntoId}/anuncios?${q}`);
+}
+
+export async function cambiarEstadoMetaAds(id, estado, nombre) {
+  return fetchAPI(`/meta-ads/${id}/estado`, { method: 'POST', body: JSON.stringify({ estado, nombre }) });
+}
+
+// cambio = { monto } (monto nuevo en la moneda de la cuenta) o { porcentaje } (+20, -15...)
+export async function cambiarPresupuestoMetaAds(id, cambio) {
+  return fetchAPI(`/meta-ads/${id}/presupuesto`, { method: 'POST', body: JSON.stringify(cambio) });
+}
+
+export async function duplicarMetaAds(id, tipo) {
+  return fetchAPI(`/meta-ads/${id}/duplicar`, { method: 'POST', body: JSON.stringify({ tipo }) });
+}
+
+export async function obtenerParametrosMetaAds() {
+  return fetchAPI('/meta-ads/parametros');
+}
+
+export async function guardarParametrosMetaAds(parametros) {
+  return fetchAPI('/meta-ads/parametros', { method: 'PUT', body: JSON.stringify({ parametros }) });
+}
+
+// ── Meta Ads: piloto con aprobación ─────────────────────────────────────────
+
+export async function obtenerInicioMetaAds() {
+  return fetchAPI('/meta-ads/piloto/inicio');
+}
+
+// vista: 'pendientes' | 'historial'
+export async function obtenerPropuestasMetaAds(vista = 'pendientes') {
+  return fetchAPI(`/meta-ads/propuestas?vista=${vista}`);
+}
+
+export async function aprobarPropuestaMetaAds(id) {
+  return fetchAPI(`/meta-ads/propuestas/${id}/aprobar`, { method: 'POST', body: JSON.stringify({}) });
+}
+
+export async function rechazarPropuestaMetaAds(id, motivo) {
+  return fetchAPI(`/meta-ads/propuestas/${id}/rechazar`, { method: 'POST', body: JSON.stringify({ motivo }) });
+}
+
+export async function obtenerJobsMetaAds() {
+  return fetchAPI('/meta-ads/jobs');
+}
+
+export async function ejecutarJobMetaAds(job) {
+  return fetchAPI(`/meta-ads/jobs/${job}/ejecutar`, { method: 'POST', body: JSON.stringify({}) });
+}
+
+export async function obtenerActividadMetaAds(dias = 7) {
+  return fetchAPI(`/meta-ads/actividad?dias=${dias}`);
+}
+
+export async function obtenerTandasMetaAds(fresco = false) {
+  return fetchAPI(`/meta-ads/tandas${fresco ? '?fresco=1' : ''}`);
+}
+
+// Ángulo o VELn para un archivo de Drive que no los trae en la carpeta/nombre.
+export async function asignarCreativoMetaAds(fileId, { angulo, veln }) {
+  return fetchAPI(`/meta-ads/creativos/${encodeURIComponent(fileId)}/asignacion`, { method: 'PUT', body: JSON.stringify({ angulo, veln }) });
+}
+
+// Miniatura de Drive como blob (el endpoint pide el token, así que no sirve un <img src> directo).
+export async function obtenerMiniaturaCreativo(fileId) {
+  const response = await fetch(`${API_BASE}/meta-ads/creativos/${encodeURIComponent(fileId)}/miniatura`, { headers: getAuthHeaders() });
+  if (!response.ok) return null;
+  return response.blob();
+}
+
+// job: 'reporte' | 'auditoria' | 'ganadores'
+export async function obtenerReportesMetaAds(job) {
+  return fetchAPI(`/meta-ads/reportes?job=${job}`);
 }

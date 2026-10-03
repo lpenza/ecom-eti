@@ -11,6 +11,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "@supabase/supabase-js": "^2.26.0",
     "axios": "^1.6.5",
     "axios-cookiejar-support": "^7.0.0",

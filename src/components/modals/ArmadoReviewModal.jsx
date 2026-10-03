@@ -4,21 +4,29 @@ import { obtenerDetallePedido } from '../../services/api';
 // ID sintético para cada pieza de contenido físico fijo de un kit (no tiene line item).
 const fijoId = (kitLineId, idx) => `fijo:${kitLineId}:${idx}`;
 
+// Un ítem con cantidad N se muestra como N filas (una por unidad) para que el
+// armador tilde cada unidad física. Con cantidad 1 se conserva el ID original.
+function unitIds(id, quantity) {
+  const n = Math.max(1, parseInt(quantity, 10) || 1);
+  if (n === 1) return [id];
+  return Array.from({ length: n }, (_, i) => `${id}#u${i + 1}`);
+}
+
 // Lista plana de todos los IDs que hay que tildar para dar por armado un pedido:
-// line items reales + una entrada por cada pieza física fija de cada kit.
+// una entrada por unidad de cada line item real + de cada pieza física fija de cada kit.
 function buildCheckableIds(lineItems, desglose) {
   if (desglose) {
     const ids = [];
     for (const k of desglose.kits) {
-      if (k.colorBase) ids.push(k.colorBase.id);
-      for (const c of k.colores || []) ids.push(c.id);
-      for (const a of k.adicionales || []) ids.push(a.id);
-      (k.fijos || []).forEach((_, i) => ids.push(fijoId(k.kitLineId, i)));
+      if (k.colorBase) ids.push(...unitIds(k.colorBase.id, k.colorBase.quantity));
+      for (const c of k.colores || []) ids.push(...unitIds(c.id, c.quantity));
+      for (const a of k.adicionales || []) ids.push(...unitIds(a.id, a.quantity));
+      (k.fijos || []).forEach((f, i) => ids.push(...unitIds(fijoId(k.kitLineId, i), f.cantidad)));
     }
-    for (const s of desglose.sueltos || []) ids.push(s.id);
+    for (const s of desglose.sueltos || []) ids.push(...unitIds(s.id, s.quantity));
     return ids;
   }
-  return (lineItems || []).map((i) => i.id);
+  return (lineItems || []).flatMap((i) => unitIds(i.id, i.quantity));
 }
 
 export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirmarListos, onImprimirEtiqueta, onClose }) {
@@ -199,7 +207,15 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
   };
 
   // Fila tildeable reutilizable (line item real o pieza física fija del kit).
-  const renderRow = ({ checkId, title, subtitle, sku, fromPedido, quantity, tag }) => {
+  // Si la cantidad es > 1, se replica la fila una vez por unidad (cada una con su
+  // propio check) y en lugar de "xN" se muestra "k/N".
+  const renderRow = (params) => {
+    const ids = unitIds(params.checkId, params.quantity);
+    if (ids.length === 1) return renderUnitRow(params);
+    return ids.map((id, i) => renderUnitRow({ ...params, checkId: id, unitLabel: `${i + 1}/${ids.length}` }));
+  };
+
+  const renderUnitRow = ({ checkId, title, subtitle, sku, fromPedido, quantity, tag, unitLabel }) => {
     const done = checked.has(checkId);
     const tagColor = tag ? TAG_COLORS[tag] : null;
     return (
@@ -230,7 +246,9 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
               <span style={{ display: 'block', fontSize: '0.72rem', color: '#b45309', fontWeight: 600 }}>Pedido #{fromPedido}</span>
             )}
           </span>
-          {quantity != null && (
+          {unitLabel ? (
+            <span style={{ fontWeight: 700, color: done ? '#7b2f4d' : 'var(--brand-primary)', whiteSpace: 'nowrap' }}>{unitLabel}</span>
+          ) : quantity != null && (
             <span style={{ fontWeight: 700, color: done ? '#7b2f4d' : 'var(--brand-primary)', whiteSpace: 'nowrap' }}>x{quantity}</span>
           )}
         </label>

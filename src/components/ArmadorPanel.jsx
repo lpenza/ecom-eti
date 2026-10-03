@@ -1,47 +1,53 @@
 import React, { useMemo, useState } from 'react';
 import ArmadoReviewModal from './modals/ArmadoReviewModal';
 
-// Etiqueta de tipo de entrega. Montevideo se despacha por MarcoPostal (no UES);
-// se detecta por el link de etiqueta MarcoPostal o por departamento = Montevideo.
+// Venta de ML con Mercado Envíos: la etiqueta la emite ML. Una venta de ML SIN
+// envío asignado sigue el flujo normal (UES/MarcoPostal).
+function esVentaMlConEnvio(pedido) {
+  return pedido?.origen === 'mercadolibre' && Boolean(pedido?.ml_shipment_id);
+}
+
+// Mercado Envíos Flex (logistic_type self_service): la entrega la hacemos nosotros
+// y la lleva MarcoPostal. El resto de Mercado Envíos se lleva a un punto de ML.
+function esMlFlex(pedido) {
+  return esVentaMlConEnvio(pedido) && String(pedido?.ml_logistic_type || '') === 'self_service';
+}
+
 function getTipoEnvioLabel(pedido) {
   const tipoEnvio = pedido?.tipo_envio;
   if (tipoEnvio === 'pickup_local') return 'Pick-Up';
   if (tipoEnvio === 'recibilo_hoy') return 'Recibilo Hoy';
-  // Venta de ML con Mercado Envíos: la etiqueta y el transporte son de ML. Sin
-  // esto caía en "Envio UES" por descarte y el armador lo despachaba mal.
-  // Una venta de ML SIN envío asignado sí sigue el flujo normal (UES/MarcoPostal).
-  if (pedido?.origen === 'mercadolibre' && pedido?.ml_shipment_id) return 'MERCADOLIBRE';
-  const link = String(pedido?.link_etiqueta_drive || '').toLowerCase();
-  const esMarcoPostal = /marcopostal|etiquetas-marcopostal/.test(link)
-    || String(pedido?.departamento || '').trim().toLowerCase() === 'montevideo';
-  if (esMarcoPostal) return 'MarcoPostal';
-  return 'Envio UES';
+  if (pedido?.es_envio_express) return 'Express';
+  if (esVentaMlConEnvio(pedido)) return esMlFlex(pedido) ? 'ML Flex' : 'ML — despachar en punto';
+  if (esMontevideo(pedido)) return 'Montevideo';
+  return 'Envio común';
 }
 
-// Couriers que emiten etiqueta. El armador imprime por courier porque cada lote
-// sale distinto: MarcoPostal se renderiza on-demand y tarda, ML viaja con etiqueta
-// de Mercado Envíos y UES es el PDF que queda en Drive.
+function esMontevideo(pedido) {
+  return String(pedido?.departamento || '').trim().toLowerCase() === 'montevideo';
+}
+
+// Grupos del armador. Cada lote sale distinto: MarcoPostal retira Montevideo,
+// Pick-Up, Express y Flex de ML; UES lleva el interior; el resto de ML se lleva a
+// un punto de ML.
 const COURIERS = [
   { key: 'marcopostal', label: 'MarcoPostal', icon: '📮' },
   { key: 'ues', label: 'UES', icon: '🚚' },
-  { key: 'mercadolibre', label: 'Mercado Libre', icon: '🛒' },
+  { key: 'ml_punto', label: 'ML a punto', icon: '🛒' },
 ];
 
-// Courier real de la etiqueta. Se decide por el link del PDF, que es la fuente más
-// confiable: Pick-UP y Recibilo Hoy también se etiquetan por MarcoPostal, así que
-// el tipo de entrega solo no alcanza. Si el pedido todavía no tiene etiqueta caemos
-// a la heurística de origen/tipo/destino para poder agruparlo igual.
+// El grupo se decide por tipo de entrega, no por el link del PDF: un Flex viaja con
+// etiqueta de ML pero lo retira MarcoPostal. Para el interior miramos también el
+// link, por si el pedido se etiquetó igual por MarcoPostal (p.ej. un reenvío).
 function getCourier(pedido) {
-  const link = String(pedido?.link_etiqueta_drive || '').toLowerCase();
-  if (link) {
-    if (/mercadolibre/.test(link)) return 'mercadolibre';
-    if (/marcopostal/.test(link)) return 'marcopostal';
-    return 'ues';
-  }
-  if (pedido?.origen === 'mercadolibre' && pedido?.ml_shipment_id) return 'mercadolibre';
   const tipoEnvio = pedido?.tipo_envio;
-  if (tipoEnvio === 'pickup_local' || tipoEnvio === 'recibilo_hoy') return 'marcopostal';
-  if (String(pedido?.departamento || '').trim().toLowerCase() === 'montevideo') return 'marcopostal';
+  if (tipoEnvio === 'pickup_local' || tipoEnvio === 'recibilo_hoy' || pedido?.es_envio_express) {
+    return 'marcopostal';
+  }
+  if (esVentaMlConEnvio(pedido)) return esMlFlex(pedido) ? 'marcopostal' : 'ml_punto';
+  if (esMontevideo(pedido)) return 'marcopostal';
+  const link = String(pedido?.link_etiqueta_drive || '').toLowerCase();
+  if (/marcopostal/.test(link)) return 'marcopostal';
   return 'ues';
 }
 
@@ -246,11 +252,13 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                       {p.origen === 'mercadolibre' && (
                         <span
                           className="pedido-ml-badge"
-                          title={p.ml_shipment_id
-                            ? 'Venta de MercadoLibre — viaja con etiqueta de Mercado Envíos'
-                            : 'Venta de MercadoLibre — se despacha por nuestra cuenta'}
+                          title={!p.ml_shipment_id
+                            ? 'Venta de MercadoLibre — se despacha por nuestra cuenta'
+                            : esMlFlex(p)
+                              ? 'Venta de MercadoLibre Flex — etiqueta de ML, la lleva MarcoPostal'
+                              : 'Venta de MercadoLibre — etiqueta de ML, se lleva a un punto de despacho'}
                         >
-                          🛒 MERCADOLIBRE
+                          🛒 {!p.ml_shipment_id ? 'MERCADOLIBRE' : esMlFlex(p) ? 'ML FLEX' : 'ML PUNTO'}
                         </span>
                       )}
                       {p.es_reclamo && (
@@ -267,6 +275,9 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                     <td>
                       <span className={'armador-courier-badge armador-courier-badge--' + courier.key}>
                         {courier.icon} {courier.label}
+                        {courier.key === 'marcopostal' && (
+                          <span className="armador-courier-badge-tipo">· {getTipoEnvioLabel(p)}</span>
+                        )}
                       </span>
                     </td>
                     <td>{getTipoEnvioLabel(p)}</td>

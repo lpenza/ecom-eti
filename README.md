@@ -102,6 +102,15 @@ TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
 # Meta WhatsApp Cloud API (si WHATSAPP_PROVIDER=meta)
 WHATSAPP_META_TOKEN=xxxx
 WHATSAPP_META_PHONE_NUMBER_ID=xxxx
+
+# Meta Ads (panel "Meta Ads": campañas, conjuntos y anuncios)
+# Token de usuario de sistema con permisos ads_read + ads_management y la
+# cuenta publicitaria asignada. Si falta, se intenta con WHATSAPP_ACCESS_TOKEN.
+META_ADS_ACCESS_TOKEN=xxxx
+META_AD_ACCOUNT_ID=act_xxxx   # obligatorio con token de usuario de sistema (no lista sus cuentas)
+# Piloto con aprobación (sql/create_meta_ads_piloto.sql): horario de los chequeos
+# que generan propuestas. Sin esta variable sólo se corren a mano desde el panel.
+META_ADS_PILOTO_CRON="10 8 * * *"
 ```
 
 ### 3. Iniciar Backend (Terminal 1)

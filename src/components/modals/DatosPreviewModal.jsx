@@ -8,6 +8,7 @@ import {
   previewGuiaMarcoPostal,
 } from '../../services/api';
 import { formatFechaUy } from '../../utils/fechas';
+import SearchableSelect from '../SearchableSelect';
 
 function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex = 0, onReviewedChange, onClose, onConfirm, isReclamoMode = false, onUpdateRevisionContacto }) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
@@ -290,6 +291,10 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
       if (!viaMP) {
         if (!String(form.payloadDireccion?.departamento_id || '').trim()) blockers.push('Falta departamento');
         if (!String(form.payloadDireccion?.localidad_id || '').trim()) blockers.push('Falta localidad');
+        const alt = form.localidadAlternativa;
+        if (alt && String(form.payloadDireccion?.localidad_id || '') !== alt.ues_id) {
+          warnings.push(`La localidad puede ser ${alt.nombre} (sugerencia Google Maps)`);
+        }
       }
     } else if (tipoEntrega === 'pickup') {
       if (!form.puntoRetiroId) blockers.push('Falta seleccionar punto de retiro');
@@ -497,8 +502,10 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
               nombre_recibe: pedidoData.cliente_nombre || '',
               telefono_recibe: pedidoData.cliente_telefono || '',
               email_recibe: pedidoData.cliente_email || '',
-              servicio_id: '1473',
-              direccion_remitente_id: '24225033',
+              // Vacíos a propósito: el backend usa UES_SERVICIO_ID / UES_DIRECCION_REMITENTE_ID
+              // (mergePayload ignora overrides vacíos). Hardcodear acá pisaba el servicio real.
+              servicio_id: '',
+              direccion_remitente_id: '',
             },
             guia: {
               comentario: pedidoData.numero_pedido ? `Pedido #${pedidoData.numero_pedido}` : '',
@@ -538,8 +545,11 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     // Solo aplicar si: hay resultado ok, el form está listo, y aún no se aplicó
     if (!geo?.ok || !geo.ues_id || !form) return;
     if (geoAplicadoByPedidoId[currentPedido.id]) return;
-    const depId = String(geo.departamento_id);
-    const locId = String(geo.ues_id);
+    // Si localidad y departamento del pedido coinciden entre sí en UES, se respetan;
+    // lo que sugiere Google Maps queda sólo como advertencia.
+    const base = geo.pedidoCoincide || geo;
+    const depId = String(base.departamento_id);
+    const locId = String(base.ues_id);
     // Marcar como aplicado antes de actualizar para evitar loops
     setGeoAplicadoByPedidoId((prev) => ({ ...prev, [currentPedido.id]: true }));
     loadLocalidades(depId).then(() => {
@@ -550,6 +560,9 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
           ...prev,
           [currentPedido.id]: {
             ...existing,
+            localidadAlternativa: geo.pedidoCoincide && String(geo.ues_id) !== locId
+              ? { ues_id: String(geo.ues_id), nombre: geo.nombre }
+              : null,
             payloadDireccion: {
               ...existing.payloadDireccion,
               departamento_id: depId,
@@ -560,6 +573,28 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
       });
     });
   }, [currentPedido?.id, geoResultadoByPedidoId[currentPedido?.id], formsByPedidoId[currentPedido?.id]]);
+
+  const aplicarLocalidadGeo = async (geo) => {
+    if (!currentPedido?.id || !geo?.ues_id) return;
+    const pedidoId = currentPedido.id;
+    const depId = String(geo.departamento_id);
+    await loadLocalidades(depId);
+    setFormsByPedidoId((prev) => {
+      const existing = prev[pedidoId];
+      if (!existing) return prev;
+      return {
+        ...prev,
+        [pedidoId]: {
+          ...existing,
+          payloadDireccion: {
+            ...existing.payloadDireccion,
+            departamento_id: depId,
+            localidad_id: String(geo.ues_id),
+          },
+        },
+      };
+    });
+  };
 
   useEffect(() => {
     if (!currentDepartamentoId) return;
@@ -1368,8 +1403,24 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                       )}
                       {!geo.ok
                         ? <span style={{ color: '#c62828', fontSize: '13px' }}>⚠️ {geo.error}</span>
-                        : <span style={{ color: '#2e7d32', fontSize: '13px' }}>✅ <strong>{geo.nombre}</strong> (ID: {geo.ues_id}, Dep: {geo.departamento_id})</span>
+                        : geo.pedidoCoincide
+                          ? <span style={{ color: '#2e7d32', fontSize: '13px' }}>✅ <strong>{geo.pedidoCoincide.nombre}</strong> — coincide con el pedido, se mantiene</span>
+                          : <span style={{ color: '#2e7d32', fontSize: '13px' }}>✅ <strong>{geo.nombre}</strong></span>
                       }
+                      {geo.ok && geo.pedidoCoincide && String(geo.ues_id) !== String(geo.pedidoCoincide.ues_id) && (
+                        <div style={{ background: '#fff3cd', border: '1px solid #ff9800', borderRadius: '4px', padding: '6px 8px', fontSize: '12px', color: '#7a4b00' }}>
+                          ⚠️ La localidad puede ser otra: la coincidencia más cercana según Google Maps es <strong>{geo.nombre}</strong>.
+                          {String(currentForm?.payloadDireccion?.localidad_id || '') !== String(geo.ues_id) && (
+                            <button
+                              type="button"
+                              onClick={() => aplicarLocalidadGeo(geo)}
+                              style={{ marginLeft: '8px', padding: '2px 8px', fontSize: '12px', cursor: 'pointer' }}
+                            >
+                              Usar {geo.nombre}
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -1492,38 +1543,40 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
                     />
                   </div>
                   <div className="preview-field">
-                    <strong>Departamento ID:</strong>
-                    <select
+                    <strong>Departamento:</strong>
+                    <SearchableSelect
                       value={currentForm.payloadDireccion?.departamento_id || ''}
-                      onChange={(e) => handleDepartamentoChange(e.target.value)}
-                    >
-                      <option value="">Seleccionar departamento</option>
-                      {departamentoDetectadoId && !departamentoEnOpciones && (
-                        <option value={departamentoDetectadoId}>Detectado ({departamentoDetectadoId})</option>
-                      )}
-                      {departamentos.map((dep) => (
-                        <option key={dep.id} value={dep.id}>{dep.id} - {dep.nombre}</option>
-                      ))}
-                    </select>
+                      onChange={handleDepartamentoChange}
+                      placeholder="Buscar departamento..."
+                      options={[
+                        ...(departamentoDetectadoId && !departamentoEnOpciones
+                          ? [{ value: departamentoDetectadoId, label: `Detectado: ${departamentoRefNombre}` }]
+                          : []),
+                        ...departamentos.map((dep) => ({ value: String(dep.id), label: dep.nombre })),
+                      ]}
+                    />
                     <span className="preview-ref">Ref: {departamentoRefNombre}</span>
                   </div>
                   <div className="preview-field">
-                    <strong>Localidad ID:</strong>
-                    <select
+                    <strong>Localidad:</strong>
+                    <SearchableSelect
                       value={currentForm.payloadDireccion?.localidad_id || ''}
-                      onChange={(e) => updateCurrentForm('payloadDireccion', 'localidad_id', e.target.value)}
-                    >
-                      <option value="">Seleccionar localidad</option>
-                      {localidadDetectadaId && !localidadEnOpciones && (
-                        <option value={localidadDetectadaId}>Detectada ({localidadDetectadaId})</option>
-                      )}
-                      {localidadesActuales.map((loc) => (
-                        <option key={loc.id} value={loc.id}>{loc.id} - {loc.nombre}</option>
-                      ))}
-                    </select>
+                      onChange={(v) => updateCurrentForm('payloadDireccion', 'localidad_id', v)}
+                      placeholder="Buscar localidad..."
+                      options={[
+                        ...(localidadDetectadaId && !localidadEnOpciones
+                          ? [{ value: localidadDetectadaId, label: `Detectada: ${localidadRefNombre}` }]
+                          : []),
+                        ...localidadesActuales.map((loc) => ({ value: String(loc.id), label: loc.nombre })),
+                      ]}
+                    />
                     {localidadSugerida && currentPreview?.error ? (
                       <span className="preview-ref" style={{color: '#1976d2', fontWeight: 'bold'}}>
                         💡 Sug: {localidadSugerida.nombre} ({Math.round(localidadSugerida.score)}% match)
+                      </span>
+                    ) : currentForm.localidadAlternativa && String(currentForm.payloadDireccion?.localidad_id || '') !== currentForm.localidadAlternativa.ues_id ? (
+                      <span className="preview-ref" style={{color: '#ff9800', fontWeight: 'bold'}}>
+                        ⚠️ Posible: {currentForm.localidadAlternativa.nombre}
                       </span>
                     ) : (
                       <span className="preview-ref">Ref: {localidadRefNombre}</span>

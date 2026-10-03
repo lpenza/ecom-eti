@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { buscarProductosAtencion, crearPedidoAtencion } from '../../services/api';
+import { cierreFuera } from '../../utils/cierreModal';
 
 // Modal para que atención al cliente arme un pedido eligiendo productos del catálogo de
 // Shopify y obtenga el link de checkout (invoice_url del Draft Order) para pasárselo al cliente.
@@ -121,7 +122,10 @@ export default function CrearPedidoModal({ onClose, mostrarToast }) {
   };
 
   return (
-    <div className="modal modal-open" onClick={onClose}>
+    <div
+      className="modal modal-open"
+      {...cierreFuera(onClose, { mensaje: '¿Cerrar sin crear el pedido? Se pierde lo que cargaste.' })}
+    >
       <div className="modal-content modal-medium" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <h3>🛒 Crear pedido en Shopify</h3>
