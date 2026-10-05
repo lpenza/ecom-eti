@@ -10509,3 +10509,80 @@ button.stockdep-card:hover { box-shadow: var(--brand-shadow-soft); }
 :root[data-theme="dark"] .stockdep-row-ambar td { background: rgba(120, 90, 10, 0.25); }
 .stockdep-transito { white-space: nowrap; }
 .stockdep-llegada, .stockdep-inactivo { font-size: 0.78rem; color: var(--brand-text-soft); }
+
+/* ── Modal traslado depósito → tienda ── */
+.traslado-modal { text-align: left; }
+.traslado-body { display: flex; flex-direction: column; gap: 0.8rem; max-height: 70vh; overflow-y: auto; }
+.traslado-cargando { color: var(--brand-text-soft); font-size: 0.9rem; text-align: center; padding: 1.5rem 0; margin: 0; }
+.traslado-explica { font-size: 0.85rem; color: var(--brand-text-soft); margin: 0; }
+.traslado-aviso {
+  padding: 0.5rem 0.8rem; border: 1px solid #fde047; background: #fef9c3; color: #92400e;
+  border-radius: var(--radius-md); font-size: 0.85rem;
+}
+:root[data-theme="dark"] .traslado-aviso { background: rgba(120, 90, 10, 0.25); border-color: rgba(253, 224, 71, 0.4); color: #fde68a; }
+.traslado-pedidos { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 0.5rem; }
+.traslado-pedido {
+  display: flex; flex-direction: column; gap: 0.15rem; padding: 0.6rem 0.8rem; text-align: left;
+  border: 1px solid var(--brand-border); border-radius: var(--radius-md);
+  background: var(--brand-surface); color: var(--brand-text); font: inherit; cursor: pointer;
+}
+.traslado-pedido-activo { border-color: var(--brand-accent, #7b2f4d); box-shadow: 0 0 0 1px var(--brand-accent, #7b2f4d); }
+.traslado-pedido-titulo { font-weight: 700; font-size: 0.9rem; }
+.traslado-pedido-sub { font-size: 0.78rem; color: var(--brand-text-soft); }
+.traslado-pct { display: flex; align-items: center; gap: 0.4rem; flex-wrap: wrap; font-size: 0.85rem; }
+.traslado-pct-input { width: 70px; }
+.traslado-pct-total { margin-left: auto; color: var(--brand-text-soft); }
+.traslado-salud {
+  display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; align-items: center; font-size: 0.82rem;
+  padding: 0.5rem 0.8rem; border-radius: var(--radius-md); background: var(--brand-surface-alt, #f8fafc);
+}
+.traslado-punto { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 0.3rem; }
+.traslado-salud-critico { background: #E24B4A; }
+.traslado-salud-riesgo  { background: #EF9F27; }
+.traslado-salud-bien    { background: #639922; }
+.traslado-salud-sobre   { background: #378ADD; }
+.traslado-salud-txt-critico { color: #E24B4A; font-weight: 700; }
+.traslado-salud-txt-riesgo  { color: #EF9F27; font-weight: 700; }
+.traslado-salud-txt-bien    { color: #639922; font-weight: 700; }
+.traslado-salud-txt-sobre   { color: #378ADD; font-weight: 700; }
+.traslado-tabla-wrap { max-height: 45vh; overflow: auto; }
+.traslado-tabla thead th { position: sticky; top: 0; z-index: 1; }
+.traslado-nombre { font-size: 0.82rem; color: var(--brand-text-soft); }
+.traslado-forzado { font-size: 0.7rem; color: #7c3aed; }
+.traslado-input-editado { border-color: var(--brand-accent, #7b2f4d); }
+.traslado-footer { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; justify-content: flex-end; }
+.traslado-resumen { margin-right: auto; font-size: 0.82rem; color: var(--brand-text-soft); }
+.traslado-num-tienda { color: #639922; }
+.traslado-num-deposito { color: #b45309; }
+.traslado-resultado { display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.92rem; }
+.traslado-resultado p { margin: 0; }
+.traslado-resultado-titulo { font-size: 1.05rem; }
+
+/* ── Historial de traslados (Tienda vs depósito) ── */
+.stockdep-ultimo { white-space: nowrap; font-size: 0.85rem; }
+.stockdep-historial {
+  border: 1px solid var(--brand-border); border-radius: var(--radius-md);
+  background: var(--brand-surface); padding: 0.7rem 1rem;
+}
+.stockdep-historial-toggle {
+  display: flex; align-items: center; gap: 0.5rem; width: 100%; padding: 0;
+  background: none; border: none; color: var(--brand-text); font: inherit; cursor: pointer; text-align: left;
+}
+.stockdep-historial-ultimo { font-size: 0.85rem; color: var(--brand-text-soft); }
+.stockdep-historial-lista { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.7rem; }
+.stockdep-traslado { border: 1px solid var(--brand-border); border-radius: var(--radius-md); }
+.stockdep-traslado-fila {
+  display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; width: 100%;
+  padding: 0.5rem 0.8rem; background: none; border: none; color: var(--brand-text);
+  font: inherit; font-size: 0.86rem; text-align: left; cursor: pointer;
+}
+.stockdep-traslado-fecha { font-weight: 600; min-width: 140px; }
+.stockdep-traslado-pedido { color: var(--brand-text-soft); }
+.stockdep-traslado-chev { margin-left: auto; color: var(--brand-text-soft); }
+.stockdep-traslado-detalle { padding: 0 0.8rem 0.7rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.stockdep-traslado-detalle p { margin: 0; }
+.stockdep-traslado-lineas { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.stockdep-traslado-linea {
+  font-size: 0.8rem; padding: 0.15rem 0.5rem; border-radius: 6px;
+  background: var(--brand-surface-alt, #f8fafc); border: 1px solid var(--brand-border);
+}

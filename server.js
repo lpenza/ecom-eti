@@ -486,6 +486,107 @@ async function listarSkusStockPlanner() {
   return Array.isArray(data) ? data : [];
 }
 
+// Llama a la API de StockPlanner (rutas Next /api/...) como la cuenta dueño, con su
+// JWT en Authorization. Si el token cacheado ya no sirve (401), lo renueva y reintenta una vez.
+async function llamarApiStockPlanner(method, ruta, body, timeout = 30000) {
+  for (let intento = 0; intento < 2; intento++) {
+    const token = await tokenStockPlannerDueno();
+    try {
+      const { data } = await axios({
+        method,
+        url: `${STOCKPLANNER.appUrl}${ruta}`,
+        data: body,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        timeout,
+      });
+      return data;
+    } catch (err) {
+      if (err.response?.status === 401 && intento === 0) {
+        stockPlannerTokenCache = { token: null, venceEn: 0 };
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+// Pedidos de StockPlanner que están en depósito (llegaron y todavía queda algo por
+// pasar a la tienda), con lo que queda de cada uno. El más viejo primero.
+async function listarPedidosEnDepositoStockPlanner() {
+  const token = await tokenStockPlannerDueno();
+  const { data } = await axios.get(`${STOCKPLANNER.supabaseUrl}/rest/v1/orders`, {
+    params: {
+      select: 'id,created_at,shipped_at,deposit_at,total_units,excel_filename,notes,order_lines(final_units,transferred_units)',
+      deposit_at: 'not.is.null',
+      received_at: 'is.null',
+      order: 'deposit_at.asc',
+    },
+    headers: { apikey: STOCKPLANNER.anonKey, Authorization: `Bearer ${token}` },
+    timeout: 20000,
+  });
+  return (Array.isArray(data) ? data : []).map((o) => {
+    const lineas = Array.isArray(o.order_lines) ? o.order_lines : [];
+    const pendiente = (l) => Math.max(0, (Number(l.final_units) || 0) - (Number(l.transferred_units) || 0));
+    return {
+      id: o.id,
+      creado: o.created_at,
+      enviado: o.shipped_at,
+      en_deposito_desde: o.deposit_at,
+      total_unidades: o.total_units,
+      archivo: o.excel_filename,
+      notas: o.notes,
+      queda_en_deposito: lineas.reduce((acc, l) => acc + pendiente(l), 0),
+      colores_en_deposito: lineas.filter((l) => pendiente(l) > 0).length,
+    };
+  });
+}
+
+// Últimos traslados depósito → tienda registrados en StockPlanner (hechos desde
+// Velinne o desde StockPlanner), con el pedido al que pertenecen. El más nuevo primero.
+async function listarTrasladosStockPlanner(limite = 50) {
+  const token = await tokenStockPlannerDueno();
+  const { data } = await axios.get(`${STOCKPLANNER.supabaseUrl}/rest/v1/order_transfers`, {
+    params: {
+      select: 'id,order_id,pct,total_units,lines,shopify_sync,created_at,orders(created_at,excel_filename,received_at)',
+      order: 'created_at.desc',
+      limit: limite,
+    },
+    headers: { apikey: STOCKPLANNER.anonKey, Authorization: `Bearer ${token}` },
+    timeout: 20000,
+  });
+  return (Array.isArray(data) ? data : []).map((t) => {
+    const sh = t.shopify_sync || null;
+    const fallidos = sh && Array.isArray(sh.results)
+      ? sh.results.filter((r) => r.status !== 'ok').map((r) => r.skuCode)
+      : [];
+    let shopify = 'ok';
+    if (!sh) shopify = 'pendiente';
+    else if (sh.skipped && sh.reason !== 'no_lines') shopify = 'no_actualizado';
+    else if (fallidos.length > 0) shopify = 'con_errores';
+    return {
+      id: t.id,
+      pedido_id: t.order_id,
+      pedido_creado: t.orders?.created_at || null,
+      pedido_archivo: t.orders?.excel_filename || null,
+      pedido_completo: !!t.orders?.received_at,
+      fecha: t.created_at,
+      pct: t.pct,
+      unidades: t.total_units,
+      lineas: (Array.isArray(t.lines) ? t.lines : [])
+        .map((l) => ({ sku: String(l.sku_code || '').trim(), unidades: Number(l.units) || 0 }))
+        .filter((l) => l.unidades > 0),
+      shopify,
+      shopify_motivo: sh?.reason || null,
+      shopify_fallidos: fallidos,
+    };
+  });
+}
+
+function errorStockPlanner(err) {
+  return err.response?.data?.error || err.response?.data?.message
+    || err.response?.data?.error_description || err.message;
+}
+
 // Acceso a StockPlanner: admin (cuenta dueño) o armador (rol "user", cuenta acotada).
 // atencion u otros roles no tienen acceso.
 app.get('/api/admin/stockplanner-sso', requireAuth, async (req, res) => {
@@ -2013,6 +2114,96 @@ app.get('/api/admin/stock-nc/deposito', requireAuth, requireAdmin, async (req, r
     logService.error('Error comparando stock tienda vs depósito', detalle);
     res.status(502).json({ success: false, data: [], error: `No se pudo leer StockPlanner: ${detalle}` });
   }
+});
+
+// ── Traslado depósito → tienda (por pedido), delegado en StockPlanner ──────────
+// StockPlanner es el dueño de la lógica: valida lo que queda, registra el traslado,
+// recalcula el depósito y suma las unidades en Shopify (todas las variantes del SKU).
+// Acá sólo listamos los pedidos y pasamos la vista previa / confirmación.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function statusErrorStockPlanner(error) {
+  const st = error.response?.status;
+  return st && st < 500 ? st : 502;
+}
+
+app.get('/api/admin/stock-nc/deposito/pedidos', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    res.json({ success: true, data: await listarPedidosEnDepositoStockPlanner() });
+  } catch (error) {
+    const detalle = errorStockPlanner(error);
+    logService.error('Error listando pedidos en depósito (StockPlanner)', detalle);
+    res.status(502).json({ success: false, data: [], error: `No se pudo leer StockPlanner: ${detalle}` });
+  }
+});
+
+// Historial de traslados (para saber qué ya se pasó a la tienda y cuándo).
+app.get('/api/admin/stock-nc/deposito/traslados', requireAuth, requireAdmin, async (req, res) => {
+  const limite = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+  try {
+    res.json({ success: true, data: await listarTrasladosStockPlanner(limite) });
+  } catch (error) {
+    const detalle = errorStockPlanner(error);
+    logService.error('Error listando traslados (StockPlanner)', detalle);
+    res.status(502).json({ success: false, data: [], error: `No se pudo leer StockPlanner: ${detalle}` });
+  }
+});
+
+// Vista previa: líneas del pedido con lo que queda, stock en tienda (recién leído de
+// Shopify por StockPlanner) y venta diaria.
+app.get('/api/admin/stock-nc/deposito/pedidos/:id/traslado', requireAuth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  if (!UUID_RE.test(id)) return res.status(400).json({ success: false, error: 'Pedido inválido' });
+  try {
+    const preview = await llamarApiStockPlanner('get', `/api/orders/${id}/transfer`, undefined, 60000);
+    res.json({ success: true, data: preview });
+  } catch (error) {
+    const detalle = errorStockPlanner(error);
+    logService.error('Error leyendo vista previa de traslado (StockPlanner)', detalle);
+    res.status(statusErrorStockPlanner(error)).json({ success: false, error: detalle });
+  }
+});
+
+// Confirmar: { pct, lines: [{ id, units }] }. Después resincroniza el stock NC desde
+// Shopify para que la columna "Tienda" refleje lo trasladado.
+app.post('/api/admin/stock-nc/deposito/pedidos/:id/traslado', requireAuth, requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  if (!UUID_RE.test(id)) return res.status(400).json({ success: false, error: 'Pedido inválido' });
+  const pct = Number(req.body?.pct);
+  const lines = (Array.isArray(req.body?.lines) ? req.body.lines : [])
+    .map((l) => ({ id: String(l?.id || ''), units: Number(l?.units) }))
+    .filter((l) => UUID_RE.test(l.id) && Number.isInteger(l.units) && l.units > 0);
+  if (!Number.isFinite(pct) || lines.length === 0) {
+    return res.status(400).json({ success: false, error: 'No hay unidades para trasladar' });
+  }
+
+  let resultado;
+  try {
+    resultado = await llamarApiStockPlanner('post', `/api/orders/${id}/transfer`, { pct, lines }, 120000);
+  } catch (error) {
+    const detalle = errorStockPlanner(error);
+    logService.error('Error aplicando traslado (StockPlanner)', detalle);
+    return res.status(statusErrorStockPlanner(error)).json({ success: false, error: detalle });
+  }
+
+  const sh = resultado?.shopify;
+  logService.info(`Traslado depósito→tienda (${req.user?.email}): pedido ${id}, ${resultado?.totalUnits} u.`, {
+    transferId: resultado?.transferId,
+    totalUnits: resultado?.totalUnits,
+    remainingUnits: resultado?.remainingUnits,
+    shopify: sh ? { updated: sh.updated, notFound: sh.notFound, failed: sh.failed, skipped: sh.skipped, reason: sh.reason } : null,
+  });
+
+  // Best-effort: el traslado ya quedó hecho aunque la resincronización falle.
+  let sincronizado = false;
+  try {
+    await sincronizarStockNCDesdeShopify();
+    sincronizado = true;
+  } catch (error) {
+    logService.error('Traslado OK pero falló la resincronización de stock NC', error.message);
+  }
+
+  res.json({ success: true, data: resultado, sincronizado });
 });
 
 // Sincronizar (manual): leer el stock "available" de Shopify y volcarlo a productos.stock.

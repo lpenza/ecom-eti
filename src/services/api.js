@@ -1000,6 +1000,40 @@ export async function obtenerStockTiendaVsDeposito() {
   return Array.isArray(data?.data) ? data.data : [];
 }
 
+/**
+ * Pedidos de StockPlanner que están en depósito (con lo que queda por trasladar). Sólo admin.
+ */
+export async function obtenerPedidosEnDeposito() {
+  const data = await fetchAPI('/admin/stock-nc/deposito/pedidos', { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+/**
+ * Historial de traslados depósito → tienda (los más nuevos primero).
+ */
+export async function obtenerHistorialTraslados(limit = 50) {
+  const data = await fetchAPI(`/admin/stock-nc/deposito/traslados?limit=${limit}`, { method: 'GET' });
+  return Array.isArray(data?.data) ? data.data : [];
+}
+
+/**
+ * Vista previa del traslado de un pedido: líneas con lo que queda, stock en tienda y venta diaria.
+ */
+export async function obtenerPreviewTraslado(pedidoId) {
+  const data = await fetchAPI(`/admin/stock-nc/deposito/pedidos/${pedidoId}/traslado`, { method: 'GET' });
+  return data?.data || null;
+}
+
+/**
+ * Trasladar del depósito a la tienda: `lines` = [{ id (línea del pedido), units }].
+ */
+export async function trasladarDepositoATienda(pedidoId, pct, lines) {
+  return await fetchAPI(`/admin/stock-nc/deposito/pedidos/${pedidoId}/traslado`, {
+    method: 'POST',
+    body: JSON.stringify({ pct, lines }),
+  });
+}
+
 // ==================== STOCK OTROS ARTÍCULOS (base coat, top coat, tratamientos) ====================
 // Misma mecánica que stock NC (arriba), acotada a otra lista de prefijos de SKU en el backend.
 

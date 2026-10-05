@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { obtenerStockTiendaVsDeposito, sincronizarStockNC } from '../services/api';
+import { obtenerStockTiendaVsDeposito, sincronizarStockNC, obtenerHistorialTraslados } from '../services/api';
 import { formatFechaHoraUy, parseTimestampUtc } from '../utils/fechas';
+import TrasladoDepositoModal from './modals/TrasladoDepositoModal';
 
 // Mismo criterio de "stock bajo" que la tab de colores: 5 unidades o menos, o el
 // `stock_minimo` propio del producto si es mayor.
@@ -45,8 +46,35 @@ const COLUMNAS = [
   { campo: 'stock_tienda',   label: 'Tienda',      dirInicial: 'asc'  },
   { campo: 'stock_deposito', label: 'Depósito',    dirInicial: 'desc' },
   { campo: 'stock_transito', label: 'En tránsito', dirInicial: 'desc' },
+  { campo: 'ultimo_traslado', label: 'Último traslado', dirInicial: 'desc' },
   { campo: 'updated_at',     label: 'Sync tienda', dirInicial: 'desc' },
 ];
+
+const SKU_KEY = (sku) => String(sku || '').trim().toUpperCase();
+
+// "hoy", "ayer", "hace 3 días": lo importante es si el traslado es reciente.
+function haceCuanto(iso) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const inicioHoy = new Date();
+  inicioHoy.setHours(0, 0, 0, 0);
+  const dias = Math.ceil((inicioHoy.getTime() - t) / 86400000);
+  if (dias <= 0) return 'hoy';
+  if (dias === 1) return 'ayer';
+  return `hace ${dias} días`;
+}
+
+function formatFechaCorta(iso) {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleDateString('es-UY', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+const SHOPIFY_ESTADO = {
+  ok:             { label: 'Shopify OK',             clase: 'verde' },
+  pendiente:      { label: 'Shopify pendiente',      clase: 'gris'  },
+  no_actualizado: { label: 'Shopify no actualizado', clase: 'rojo'  },
+  con_errores:    { label: 'Shopify con errores',    clase: 'ambar' },
+};
 
 export default function StockTiendaVsDeposito({ mostrarToast }) {
   const [filas, setFilas] = useState([]);
@@ -56,13 +84,24 @@ export default function StockTiendaVsDeposito({ mostrarToast }) {
   const [busqueda, setBusqueda] = useState('');
   const [filtro, setFiltro] = useState('reponer');
   const [orden, setOrden] = useState({ campo: 'estado', dir: 'asc' });
+  const [trasladoAbierto, setTrasladoAbierto] = useState(false);
+  // Historial de traslados depósito → tienda (de StockPlanner). Si falla, la tabla sigue andando.
+  const [traslados, setTraslados] = useState([]);
+  const [errorTraslados, setErrorTraslados] = useState('');
+  const [historialAbierto, setHistorialAbierto] = useState(false);
+  const [trasladoExpandido, setTrasladoExpandido] = useState(null);
 
   const cargar = useCallback(async () => {
     setLoading(true);
     setError('');
+    setErrorTraslados('');
+    const historial = obtenerHistorialTraslados(50)
+      .then(setTraslados)
+      .catch((err) => setErrorTraslados(err.message || 'No se pudo leer el historial de traslados'));
     try {
       const data = await obtenerStockTiendaVsDeposito();
       setFilas(data.map((p) => ({ ...p, estado: estadoDe(p) })));
+      await historial;
     } catch (err) {
       setError(err.message || 'Error leyendo el depósito');
       mostrarToast?.(err.message || 'Error leyendo el depósito', 'error');
@@ -89,6 +128,18 @@ export default function StockTiendaVsDeposito({ mostrarToast }) {
       setSincronizando(false);
     }
   }
+
+  // Último traslado de cada color (la lista viene del más nuevo al más viejo).
+  const ultimoTrasladoPorSku = useMemo(() => {
+    const m = new Map();
+    for (const t of traslados) {
+      for (const l of t.lineas) {
+        const k = SKU_KEY(l.sku);
+        if (!m.has(k)) m.set(k, { fecha: t.fecha, unidades: l.unidades });
+      }
+    }
+    return m;
+  }, [traslados]);
 
   // Los inactivos no cuentan para las alertas (sólo aparecen en "Todos").
   const activas = useMemo(() => filas.filter((p) => p.activo !== false), [filas]);
@@ -122,6 +173,10 @@ export default function StockTiendaVsDeposito({ mostrarToast }) {
     const signo = dir === 'asc' ? 1 : -1;
     const valor = (p) => {
       if (campo === 'estado') return ESTADOS[p.estado].prioridad;
+      if (campo === 'ultimo_traslado') {
+        const t = Date.parse(ultimoTrasladoPorSku.get(SKU_KEY(p.sku))?.fecha);
+        return Number.isFinite(t) ? t : null;
+      }
       if (campo === 'sku' || campo === 'nombre') return String(p[campo] || '').trim().toLowerCase();
       if (campo === 'updated_at') {
         const t = parseTimestampUtc(p.updated_at);
@@ -140,9 +195,13 @@ export default function StockTiendaVsDeposito({ mostrarToast }) {
       if (r === 0 && campo === 'estado') return (Number(b.stock_deposito) || 0) - (Number(a.stock_deposito) || 0);
       return r * signo;
     });
-  }, [filtradas, orden]);
+  }, [filtradas, orden, ultimoTrasladoPorSku]);
 
   const ocupado = loading || sincronizando;
+  const nombresPorSku = useMemo(() => Object.fromEntries(
+    filas.filter((p) => p.en_tienda).map((p) => [String(p.sku).trim().toUpperCase(), p.nombre])
+  ), [filas]);
+  const hayDeposito = filas.some((p) => (Number(p.stock_deposito) || 0) > 0);
 
   return (
     <>
@@ -156,6 +215,14 @@ export default function StockTiendaVsDeposito({ mostrarToast }) {
           </p>
         </div>
         <div className="stocknc-header-actions">
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => setTrasladoAbierto(true)}
+            disabled={ocupado || !!error || !hayDeposito}
+            title={hayDeposito ? 'Pasar unidades de un pedido en depósito a la tienda' : 'No hay stock en depósito'}
+          >
+            ↔ Trasladar a tienda
+          </button>
           <button className="btn btn-secondary btn-sm" onClick={cargar} disabled={ocupado}>
             🔄 Actualizar
           </button>
@@ -257,6 +324,17 @@ export default function StockTiendaVsDeposito({ mostrarToast }) {
                       </>
                     ) : (p.stock_transito === null ? '—' : 0)}
                   </td>
+                  <td className="stockdep-ultimo">
+                    {(() => {
+                      const u = ultimoTrasladoPorSku.get(SKU_KEY(p.sku));
+                      if (!u) return <span className="stocknc-diff-muted">—</span>;
+                      return (
+                        <span title={formatFechaHoraUy(u.fecha)}>
+                          <strong>+{u.unidades}</strong> · {haceCuanto(u.fecha)}
+                        </span>
+                      );
+                    })()}
+                  </td>
                   <td className="stocknc-fecha">{p.updated_at ? formatFechaHoraUy(p.updated_at) : '—'}</td>
                 </tr>
               );
@@ -274,6 +352,81 @@ export default function StockTiendaVsDeposito({ mostrarToast }) {
           </tbody>
         </table>
       </div>
+
+      <div className="stockdep-historial">
+        <button
+          type="button"
+          className="stockdep-historial-toggle"
+          onClick={() => setHistorialAbierto((a) => !a)}
+          aria-expanded={historialAbierto}
+        >
+          <strong>Historial de traslados</strong>
+          {traslados[0] && (
+            <span className="stockdep-historial-ultimo">
+              · último: {traslados[0].unidades} u. {haceCuanto(traslados[0].fecha)}
+            </span>
+          )}
+          <span className="stocknc-alerta-bajo-toggle">{historialAbierto ? 'Ocultar ▴' : 'Ver ▾'}</span>
+        </button>
+        {historialAbierto && (
+          <div className="stockdep-historial-lista">
+            {errorTraslados && <div className="stockdep-error">⚠ {errorTraslados}</div>}
+            {!errorTraslados && traslados.length === 0 && (
+              <p className="stocknc-diff-muted">Todavía no hay traslados registrados.</p>
+            )}
+            {traslados.map((t) => {
+              const sh = SHOPIFY_ESTADO[t.shopify] || SHOPIFY_ESTADO.ok;
+              const abierto = trasladoExpandido === t.id;
+              return (
+                <div key={t.id} className="stockdep-traslado">
+                  <button
+                    type="button"
+                    className="stockdep-traslado-fila"
+                    onClick={() => setTrasladoExpandido(abierto ? null : t.id)}
+                  >
+                    <span className="stockdep-traslado-fecha">{formatFechaHoraUy(t.fecha)}</span>
+                    <span><strong>{t.unidades} u.</strong>{t.pct != null && ` (${Number(t.pct)}%)`} · {t.lineas.length} colores</span>
+                    <span className="stockdep-traslado-pedido">
+                      Pedido del {t.pedido_creado ? formatFechaCorta(t.pedido_creado) : '—'}
+                      {t.pedido_completo && ' · recibido completo'}
+                    </span>
+                    <span className={`stockdep-badge stockdep-badge-${sh.clase}`}>{sh.label}</span>
+                    <span className="stockdep-traslado-chev">{abierto ? '▴' : '▾'}</span>
+                  </button>
+                  {abierto && (
+                    <div className="stockdep-traslado-detalle">
+                      {t.shopify === 'no_actualizado' && (
+                        <p className="traslado-aviso">Shopify no se actualizó ({t.shopify_motivo}). Reintentalo desde "Pedidos en camino" en StockPlanner.</p>
+                      )}
+                      {t.shopify === 'con_errores' && (
+                        <p className="traslado-aviso">Sin ajustar en Shopify: {t.shopify_fallidos.join(', ')}. Reintentalo desde "Pedidos en camino" en StockPlanner.</p>
+                      )}
+                      <div className="stockdep-traslado-lineas">
+                        {t.lineas.map((l) => (
+                          <span key={l.sku} className="stockdep-traslado-linea">
+                            <span className="stocknc-sku">{l.sku}</span>
+                            {nombresPorSku[SKU_KEY(l.sku)] && ` ${nombresPorSku[SKU_KEY(l.sku)]}`}
+                            {' '}<strong>+{l.unidades}</strong>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {trasladoAbierto && (
+        <TrasladoDepositoModal
+          onClose={() => setTrasladoAbierto(false)}
+          onTrasladado={cargar}
+          mostrarToast={mostrarToast}
+          nombresPorSku={nombresPorSku}
+        />
+      )}
     </>
   );
 }
