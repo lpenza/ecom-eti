@@ -194,12 +194,11 @@ function SituacionDetalle({ situacion, mostrarToast, esAdmin, onEditar, onElimin
           {situacion.categoriaIcon} {situacion.categoriaNombre}
         </span>
         <h3>{situacion.pregunta}</h3>
-        {situacion.dbId && (
+        {/* Atención al cliente la ve en solo lectura: editar/eliminar es sólo para admin */}
+        {esAdmin && situacion.dbId && (
           <div className="faq-detalle-acciones">
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => onEditar(situacion)}>✏️ Editar</button>
-            {esAdmin && (
-              <button type="button" className="btn btn-danger btn-sm" onClick={() => onEliminar(situacion)}>🗑️ Eliminar</button>
-            )}
+            <button type="button" className="btn btn-danger btn-sm" onClick={() => onEliminar(situacion)}>🗑️ Eliminar</button>
           </div>
         )}
       </div>
@@ -579,9 +578,11 @@ export default function FaqAtencionPanel({ mostrarToast, esAdmin }) {
             {totalSituaciones} situaciones · {categorias.length} temas
             {cargandoCasos ? ' · cargando…' : ''}
           </span>
-          <button type="button" className="btn btn-primary btn-sm faq-agregar-btn" onClick={abrirFormNuevo}>
-            ➕ Agregar caso
-          </button>
+          {esAdmin && (
+            <button type="button" className="btn btn-primary btn-sm faq-agregar-btn" onClick={abrirFormNuevo}>
+              ➕ Agregar caso
+            </button>
+          )}
         </div>
 
         {avisoCasos && (

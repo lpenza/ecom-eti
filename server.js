@@ -8057,7 +8057,7 @@ app.get('/api/atencion-faq/casos', requireAuth, requireAtencion, async (req, res
   }
 });
 
-app.post('/api/atencion-faq/casos', requireAuth, requireAtencion, async (req, res) => {
+app.post('/api/atencion-faq/casos', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { categoria_id, categoria_nombre, pregunta } = req.body || {};
     if (!categoria_id || !categoria_nombre || !pregunta) {
@@ -8096,7 +8096,7 @@ app.post('/api/atencion-faq/casos', requireAuth, requireAtencion, async (req, re
   }
 });
 
-app.put('/api/atencion-faq/casos/:id', requireAuth, requireAtencion, async (req, res) => {
+app.put('/api/atencion-faq/casos/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const caso = await supabaseService.actualizarAtencionFaqCaso(req.params.id, req.body || {});
     res.json({ success: true, data: caso });
