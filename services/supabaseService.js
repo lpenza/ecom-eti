@@ -516,8 +516,8 @@ class SupabaseService {
   }
 
   // Vista de atención al cliente: todos los pedidos sin importar estado ni tipo de envío.
-  // Sin búsqueda devuelve los más recientes; con q busca en toda la historia SOLO por
-  // número de orden (criterio acordado: atención siempre se guía por el N° de orden).
+  // Sin búsqueda devuelve los más recientes; con q busca en toda la historia por
+  // N° de orden o teléfono (si son dígitos) o por nombre/email (si tiene letras).
   async obtenerPedidosAtencion(q = '') {
     const term = String(q || '').trim().replace(/^#/, '');
     let query = supabase
@@ -525,15 +525,43 @@ class SupabaseService {
       .select('*')
       .order('created_at', { ascending: false });
 
-    if (term) {
-      query = query.ilike('numero_pedido', `%${term}%`).limit(100);
-    } else {
-      query = query.limit(500);
+    if (!term) {
+      const { data, error } = await query.limit(500);
+      if (error) throw error;
+      return data || [];
     }
 
-    const { data, error } = await query;
-    if (error) throw error;
-    return data || [];
+    // Sólo dígitos → N° de orden. Con letras/@ → nombre, email o teléfono.
+    // Se quitan los caracteres que rompen el filtro or() de PostgREST.
+    const limpio = term.replace(/[,()*%_\\]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!limpio) return [];
+    const esNumero = /^\+?[\d\s-]+$/.test(limpio);
+    if (esNumero) {
+      const digitos = limpio.replace(/\D/g, '');
+      query = query.or(`numero_pedido.ilike.%${digitos}%,cliente_telefono.ilike.%${digitos}%`);
+    } else {
+      query = query.or(
+        `cliente_nombre.ilike.%${limpio}%,cliente_email.ilike.%${limpio}%,numero_pedido.ilike.%${limpio}%`
+      );
+    }
+
+    // La coincidencia exacta del N° de orden se pide aparte y va primero: si no, buscar
+    // "41" la podía perder fuera del límite entre los pedidos recientes que contienen "41".
+    const exacto = esNumero ? limpio.replace(/\D/g, '') : '';
+    const [parcial, exactos] = await Promise.all([
+      query.limit(200),
+      exacto
+        ? supabase.from('pedidos').select('*').in('numero_pedido', [exacto, `#${exacto}`])
+        : Promise.resolve({ data: [] }),
+    ]);
+    if (parcial.error) throw parcial.error;
+    if (exactos.error) throw exactos.error;
+    const vistos = new Set();
+    return [...(exactos.data || []), ...(parcial.data || [])].filter((p) => {
+      if (vistos.has(p.id)) return false;
+      vistos.add(p.id);
+      return true;
+    });
   }
 
   // Obtener todos los pedidos activos (pendientes + con etiqueta, excluye procesados y reclamos)

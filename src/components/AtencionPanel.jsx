@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { obtenerPedidosAtencion, obtenerDetallePedido } from '../services/api';
 import CrearPedidoModal from './modals/CrearPedidoModal';
 import { formatFechaCortaUy } from '../utils/fechas';
@@ -42,11 +42,16 @@ export default function AtencionPanel({ mostrarToast }) {
   const [showCrearPedido, setShowCrearPedido] = useState(false);
   // Detalle por pedido: { [pedidoId]: { loading, items, error, open } }
   const [detalles, setDetalles] = useState({});
+  // Cada búsqueda lleva un número; sólo se aplica la respuesta de la última, así una
+  // búsqueda vieja (p. ej. la lista completa, que tarda más) no pisa el resultado nuevo.
+  const ultimaBusquedaRef = useRef(0);
 
   const cargar = useCallback(async (q = '') => {
+    const id = ++ultimaBusquedaRef.current;
     setLoading(true);
     try {
       const res = await obtenerPedidosAtencion(q);
+      if (id !== ultimaBusquedaRef.current) return;
       if (res?.success) {
         setPedidos(Array.isArray(res.data) ? res.data : []);
         setPagina(1);
@@ -54,9 +59,10 @@ export default function AtencionPanel({ mostrarToast }) {
         mostrarToast?.(res?.error || 'Error cargando pedidos', 'error');
       }
     } catch (err) {
+      if (id !== ultimaBusquedaRef.current) return;
       mostrarToast?.(`Error: ${err.message}`, 'error');
     } finally {
-      setLoading(false);
+      if (id === ultimaBusquedaRef.current) setLoading(false);
     }
   }, [mostrarToast]);
 
@@ -104,8 +110,7 @@ export default function AtencionPanel({ mostrarToast }) {
           <h2 style={{ margin: 0 }}>🎧 Atención al Cliente</h2>
           <input
             type="text"
-            inputMode="numeric"
-            placeholder="Buscar por N° de orden (ej: 2252)…"
+            placeholder="Buscar por N° de orden, nombre, email o teléfono…"
             value={busqueda}
             onChange={(e) => setBusqueda(e.target.value)}
             style={{ flex: '1 1 280px', maxWidth: 420, padding: '0.5rem 0.75rem' }}
@@ -206,12 +211,12 @@ export default function AtencionPanel({ mostrarToast }) {
                             {est.icon} {est.label}
                           </span>
                           {est.key === 'contacto' && pedido.revision_contacto_motivo && (
-                            <div style={{ fontSize: 12, color: '#a15c00', marginTop: 4, maxWidth: 220 }}>
+                            <div className="atencion-motivo">
                               Motivo: {pedido.revision_contacto_motivo}
                             </div>
                           )}
                           {est.key === 'etiqueta' && (
-                            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4, fontStyle: 'italic' }}>
+                            <div className="atencion-nota">
                               Por ser armado
                             </div>
                           )}
@@ -219,7 +224,7 @@ export default function AtencionPanel({ mostrarToast }) {
                         <td>
                           {est.key === 'procesado' && pedido.numero_seguimiento_ues
                             ? <strong>{pedido.numero_seguimiento_ues}</strong>
-                            : <span style={{ color: '#bbb' }}>—</span>}
+                            : <span className="atencion-muted">—</span>}
                         </td>
                         <td>
                           <button
@@ -233,18 +238,18 @@ export default function AtencionPanel({ mostrarToast }) {
                       </tr>
                       {det.open && !det.loading && (
                         <tr>
-                          <td colSpan={9} style={{ background: '#fafafa', padding: '0.6rem 1rem' }}>
+                          <td colSpan={9} className="atencion-detalle-cell">
                             {det.error ? (
-                              <span style={{ color: '#c0392b' }}>⚠️ {det.error}</span>
+                              <span className="atencion-detalle-error">⚠️ {det.error}</span>
                             ) : (det.items || []).length === 0 ? (
-                              <span style={{ color: '#888' }}>Sin productos visibles en este pedido.</span>
+                              <span className="atencion-muted">Sin productos visibles en este pedido.</span>
                             ) : (
                               <ul style={{ margin: 0, paddingLeft: '1.2rem' }}>
                                 {det.items.map((item) => (
                                   <li key={item.id} style={{ fontSize: 13 }}>
                                     {item.quantity} × {item.title}
                                     {item.variant_title ? ` — ${item.variant_title}` : ''}
-                                    {item.sku ? <span style={{ color: '#999' }}> ({item.sku})</span> : null}
+                                    {item.sku ? <span className="atencion-muted"> ({item.sku})</span> : null}
                                   </li>
                                 ))}
                               </ul>
@@ -266,7 +271,7 @@ export default function AtencionPanel({ mostrarToast }) {
                   onClick={() => setPagina(paginaActual - 1)}>
                   ← Anterior
                 </button>
-                <span style={{ fontSize: 13, color: '#666' }}>
+                <span className="atencion-muted" style={{ fontSize: 13 }}>
                   Página {paginaActual} de {totalPaginas} · {pedidos.length} pedido{pedidos.length !== 1 ? 's' : ''}
                 </span>
                 <button

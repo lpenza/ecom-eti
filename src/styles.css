@@ -5628,6 +5628,52 @@ body {
   text-decoration: underline;
 }
 
+.atencion-motivo {
+  font-size: 12px;
+  color: #a15c00;
+  margin-top: 4px;
+  max-width: 220px;
+}
+
+.atencion-nota {
+  font-size: 12px;
+  color: var(--brand-text-soft);
+  margin-top: 4px;
+  font-style: italic;
+}
+
+.atencion-muted {
+  color: var(--brand-text-soft);
+}
+
+.atencion-detalle-cell {
+  background: var(--brand-surface-alt, #fafafa);
+  color: var(--brand-text);
+  padding: 0.6rem 1rem !important;
+}
+
+.atencion-detalle-error {
+  color: var(--danger-text, #c0392b);
+}
+
+/* Modo oscuro: las tarjetas de Montevideo/Interior y el detalle usaban fondos claros fijos */
+:root[data-theme="dark"] .atencion-info-item {
+  background: var(--brand-surface-alt);
+  border-color: var(--brand-border);
+}
+:root[data-theme="dark"] .atencion-info-badge-mvd {
+  background: var(--info-bg);
+  color: var(--info-text);
+  border-color: #34497a;
+}
+:root[data-theme="dark"] .atencion-info-badge-interior {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border-color: #2a6146;
+}
+:root[data-theme="dark"] .atencion-info-carrier a { color: #8fb3ff; }
+:root[data-theme="dark"] .atencion-motivo { color: var(--warning-text); }
+
 .armador-body {
   background: var(--brand-surface);
   border: 1px solid var(--brand-border);
