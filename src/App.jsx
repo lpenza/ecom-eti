@@ -1362,7 +1362,7 @@ function AppContent({ user, logout }) {
     });
     const envio = resultado.data?.[0];
     if (!resultado.success || !envio?.success) {
-      mostrarToast(resultado.error || envio?.error || 'No se pudo enviar el email', 'error');
+      mostrarToast(resultado.error || envio?.error || resultado.message || 'No se pudo enviar el email', 'error');
       return false;
     }
     mostrarToast(`✉️ Email enviado a ${envio.email}`, 'success');

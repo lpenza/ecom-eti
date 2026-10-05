@@ -471,6 +471,14 @@ function PedidoRow({
               📦 mismo tracking
             </span>
           )}
+          {pedido.grupo_cliente && (
+            <span
+              className="pedido-duplicate-tracking-badge"
+              title={`Mismo cliente que ${(pedido.grupo_cliente_numeros || []).map((n) => '#' + n).join(', ')}: el armador los arma juntos en un solo paquete`}
+            >
+              👥 mismo cliente
+            </span>
+          )}
           {esReclamo && <span className="pedido-reclamo-badge" title="Pedido con reclamo asociado">🔄 Reclamo</span>}
           {pedido.origen === 'mercadolibre' && (
             <span

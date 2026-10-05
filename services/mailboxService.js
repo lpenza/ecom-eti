@@ -380,7 +380,59 @@ async function getMessageSource({ uid, tipo = 'inbox' } = {}) {
   }
 }
 
+function toAddressArray(value) {
+  const list = Array.isArray(value) ? value : String(value || '').split(/[,;]/);
+  return list.map((s) => String(s).trim()).filter(Boolean);
+}
+
+/**
+ * Envía por la API (POST /send). Sale siempre desde el buzón madre (info@): la
+ * API no deja fijar From ni Reply-To. La copia en Enviados la guarda Hostinger.
+ * replySource = { uid, tipo } del mensaje original para enlazar el hilo
+ * (In-Reply-To/References) y marcarlo como respondido.
+ */
+async function sendMessage({ to, cc, bcc, subject, html, text, attachments, replySource, displayName } = {}) {
+  const mb = await resolveMailboxId();
+  const body = {
+    to: toAddressArray(to),
+    cc: toAddressArray(cc),
+    bcc: toAddressArray(bcc),
+    subject: subject || '(sin asunto)',
+    html: html || undefined,
+    text: text || undefined,
+    displayName: displayName || process.env.MAIL_DISPLAY_NAME || undefined,
+  };
+  if (!body.to.length && !body.cc.length && !body.bcc.length) {
+    throw new Error('Falta el destinatario (to)');
+  }
+  if (!body.cc.length) delete body.cc;
+  if (!body.bcc.length) delete body.bcc;
+  if (Array.isArray(attachments) && attachments.length) {
+    body.attachments = attachments.map((a) => ({
+      filename: String(a.filename),
+      content: Buffer.isBuffer(a.content) ? a.content.toString('base64') : String(a.content),
+      encoding: Buffer.isBuffer(a.content) ? 'base64' : (a.encoding || 'base64'),
+      contentType: a.contentType || undefined,
+      cid: a.cid || undefined,
+    }));
+  }
+  const uid = Number(replySource?.uid);
+  if (Number.isInteger(uid) && uid > 0) {
+    const path = replySource.tipo === 'sent' ? await resolveSentFolder() : FOLDER;
+    body.inReplyTo = { uid, folder: path };
+  }
+
+  try {
+    await client().post(`/api/v1/mailboxes/${mb}/send`, body);
+  } catch (error) {
+    if (error?.response) throw toApiError(error, 'Hostinger no pudo enviar el correo');
+    throw error;
+  }
+  return { messageId: null, accepted: body.to, rejected: [] };
+}
+
 module.exports = {
+  sendMessage,
   listMessages,
   getMessage,
   getAttachment,

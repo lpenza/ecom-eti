@@ -1,6 +1,7 @@
 const nodemailer = require('nodemailer');
 const MailComposer = require('nodemailer/lib/mail-composer');
 const { ImapFlow } = require('imapflow');
+const mailboxService = require('./mailboxService');
 
 // Guarda una copia del correo en la carpeta Enviados vía IMAP APPEND. El envío
 // por SMTP no la guarda solo (lo hace el cliente de correo), así replicamos ese
@@ -15,7 +16,9 @@ async function appendToSent(rawBuffer) {
   if (!user || !pass) return;
 
   const folder = process.env.HOSTINGER_SENT_FOLDER || 'INBOX.Sent';
-  const client = new ImapFlow({ host, port, secure, auth: { user, pass }, logger: false });
+  const client = new ImapFlow({ host, port, secure, auth: { user, pass }, logger: false,
+    connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000,
+  });
   await client.connect();
   try {
     await client.append(folder, rawBuffer, ['\\Seen']);
@@ -89,9 +92,26 @@ class EmailService {
       port,
       secure,
       auth: { user, pass },
+      // Sin estos límites, si el puerto SMTP está bloqueado (Railway lo bloquea
+      // fuera del plan Pro) sendMail queda colgado minutos y el panel en "enviando".
+      connectionTimeout: 15000,
+      greetingTimeout: 15000,
+      socketTimeout: 30000,
     });
 
     return this.transporter;
+  }
+
+  async sendMail(mailOptions) {
+    try {
+      return await this.getTransporter().sendMail(mailOptions);
+    } catch (error) {
+      if (['ETIMEDOUT', 'ECONNECTION', 'ESOCKET', 'ECONNREFUSED'].includes(error.code)) {
+        const { SMTP_HOST, SMTP_PORT } = process.env;
+        throw new Error(`No se pudo conectar al servidor SMTP (${SMTP_HOST}:${SMTP_PORT}): ${error.message}`);
+      }
+      throw error;
+    }
   }
 
   renderMail({ pedido, subjectTemplate, htmlTemplate, motivoContacto = '' }) {
@@ -116,14 +136,13 @@ class EmailService {
   }
 
   async enviarCorreo({ to, subject, html }) {
-    const transporter = this.getTransporter();
     const from = process.env.SMTP_FROM || process.env.SMTP_USER;
 
     if (!from) {
       throw new Error('Falta SMTP_FROM o SMTP_USER para definir remitente');
     }
 
-    const info = await transporter.sendMail({
+    const info = await this.sendMail({
       from,
       to,
       subject,
@@ -138,16 +157,21 @@ class EmailService {
   }
 
   /**
-   * Envío genérico para el panel de EMAILS (respuestas y correos nuevos).
-   * Permite fijar el remitente (alias) y las cabeceras de hilo para que las
-   * respuestas queden enlazadas en el cliente del destinatario.
+   * Envío genérico para el panel de EMAILS (respuestas y correos nuevos) y los
+   * emails de contacto. Por defecto va por la API de Hostinger (HTTPS), porque
+   * Railway bloquea el SMTP saliente: sale siempre desde info@ y el hilo se
+   * enlaza con replySource ({ uid, tipo }). Con MAIL_SEND_VIA=smtp vuelve a SMTP,
+   * que sí respeta el alias (from) y las cabeceras inReplyTo/references.
    */
-  async enviarCorreoRaw({ from, to, cc, subject, html, text, inReplyTo, references, replyTo, attachments }) {
-    const transporter = this.getTransporter();
+  async enviarCorreoRaw({ from, to, cc, subject, html, text, inReplyTo, references, replyTo, attachments, replySource }) {
     const fromDefault = process.env.SMTP_FROM || process.env.SMTP_USER;
 
     if (!to) {
       throw new Error('Falta el destinatario (to)');
+    }
+
+    if (String(process.env.MAIL_SEND_VIA || 'api').toLowerCase() !== 'smtp') {
+      return mailboxService.sendMessage({ to, cc, subject, html, text, attachments, replySource });
     }
 
     const mailOptions = {
@@ -163,7 +187,7 @@ class EmailService {
       attachments: Array.isArray(attachments) && attachments.length ? attachments : undefined,
     };
 
-    const info = await transporter.sendMail(mailOptions);
+    const info = await this.sendMail(mailOptions);
 
     // Guardar copia en Enviados (best-effort; no bloquea ni rompe el envío).
     try {

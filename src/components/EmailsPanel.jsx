@@ -322,6 +322,7 @@ export default function EmailsPanel({ mostrarToast }) {
       body: citado,
       inReplyTo: msg.messageId || null,
       references: msg.references || msg.messageId || null,
+      replySource: msg.uid ? { uid: msg.uid, tipo: esEnviado ? 'sent' : 'inbox' } : null,
       attachments: [],
     });
   };
@@ -349,6 +350,7 @@ export default function EmailsPanel({ mostrarToast }) {
         attachments: adjuntos.map((a) => ({ filename: a.filename, content: a.content, contentType: a.contentType })),
         inReplyTo: compose.inReplyTo || undefined,
         references: compose.references || undefined,
+        replySource: compose.replySource || undefined,
       };
       await enviarEmail(payload);
       mostrarToast?.('✅ Correo enviado', 'success');

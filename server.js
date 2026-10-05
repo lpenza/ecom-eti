@@ -53,6 +53,7 @@ app.use((req, res, next) => {
 
 // Importar servicios
 const supabaseService = require('./services/supabaseService');
+const { asignarGruposCliente } = require('./services/clienteAgrupador');
 const uesService = require('./services/uesService');
 const marcoPostalService = require('./services/marcoPostalService');
 const marcoPostalWebService = require('./services/marcoPostalWebService');
@@ -304,7 +305,7 @@ app.get('/api/emails/:uid/attachments/:attachmentId', requireAuth, requireAtenci
 app.post('/api/emails/send', requireAuth, requireAtencion, async (req, res) => {
   try {
     const { canSeeAll, aliases } = aliasesPermitidos(req.user);
-    const { to, cc, subject, html, text, inReplyTo, references, attachments } = req.body || {};
+    const { to, cc, subject, html, text, inReplyTo, references, attachments, replySource } = req.body || {};
 
     if (!to || !String(to).trim()) {
       return res.status(400).json({ success: false, error: 'Falta el destinatario' });
@@ -343,6 +344,9 @@ app.post('/api/emails/send', requireAuth, requireAtencion, async (req, res) => {
       inReplyTo,
       references,
       attachments: adjuntos,
+      replySource: replySource?.uid
+        ? { uid: Number(replySource.uid), tipo: replySource.tipo === 'sent' ? 'sent' : 'inbox' }
+        : undefined,
     });
 
     logService.info(`Email enviado desde ${from} por ${req.user?.email}`, { to, subject });
@@ -1641,7 +1645,10 @@ function normalizeBotHistoryPayload(payload) {
 
 const CONTACT_REVIEW_FILE = path.join(__dirname, 'pedido_revision_contacto.json');
 
-async function leerRevisionContacto() {
+// Las marcas de "pendiente de contacto" viven en Supabase (pedido_revision_contacto):
+// el archivo local se pierde en cada deploy de Railway. Si la tabla todavía no
+// existe (falta correr sql/create_pedido_revision_contacto.sql) se usa el archivo.
+async function leerRevisionContactoArchivo() {
   try {
     const raw = await fs.readFile(CONTACT_REVIEW_FILE, 'utf-8');
     const parsed = JSON.parse(raw);
@@ -1652,8 +1659,26 @@ async function leerRevisionContacto() {
   }
 }
 
-async function guardarRevisionContacto(data) {
-  await fs.writeFile(CONTACT_REVIEW_FILE, JSON.stringify(data || {}, null, 2), 'utf-8');
+async function leerRevisionContacto() {
+  try {
+    return await supabaseService.obtenerRevisionesContacto();
+  } catch (error) {
+    logService.warning('No se pudo leer pedido_revision_contacto, se usa el archivo local', { error: error.message });
+    return leerRevisionContactoArchivo();
+  }
+}
+
+// revision = null quita la marca del pedido.
+async function guardarRevisionContacto(pedidoId, revision) {
+  try {
+    await supabaseService.guardarRevisionContacto(pedidoId, revision);
+  } catch (error) {
+    logService.warning('No se pudo guardar en pedido_revision_contacto, se usa el archivo local', { error: error.message });
+    const revisiones = await leerRevisionContactoArchivo();
+    if (revision) revisiones[pedidoId] = revision;
+    else delete revisiones[pedidoId];
+    await fs.writeFile(CONTACT_REVIEW_FILE, JSON.stringify(revisiones, null, 2), 'utf-8');
+  }
 }
 
 // Rutas
@@ -1709,7 +1734,9 @@ app.get('/api/pedidos', async (req, res) => {
     console.log(`📊 Pedidos obtenidos: ${pedidos ? pedidos.length : 0}`);
     
     // Asegurar que siempre devolvemos un array
-    const pedidosArray = Array.isArray(pedidos) ? pedidos : [];
+    // Marca los pedidos del mismo cliente con distinto número de orden, para
+    // verlos de un vistazo en el panel (el armador los arma juntos).
+    const pedidosArray = asignarGruposCliente(Array.isArray(pedidos) ? pedidos : []);
     const pedidosConRevision = pedidosArray.map((pedido) => {
       const revision = revisionesContacto?.[pedido.id] || null;
       return {
@@ -2563,7 +2590,7 @@ app.post('/api/pedidos/:pedidoId/revision-contacto', async (req, res) => {
       delete revisiones[pedidoId];
     }
 
-    await guardarRevisionContacto(revisiones);
+    await guardarRevisionContacto(pedidoId, revisiones[pedidoId] || null);
 
     logService.info(`Revisión de contacto actualizada para pedido ${pedidoId}`, {
       pendiente,
@@ -2661,7 +2688,7 @@ app.post('/api/pedidos/:pedidoId/revision-contacto/contactado', async (req, res)
       ultimo_contacto_canal: 'whatsapp',
     };
 
-    await guardarRevisionContacto(revisiones);
+    await guardarRevisionContacto(pedidoId, revisiones[pedidoId]);
 
     logService.info(`Contacto registrado para pedido ${pedidoId}`, {
       ultimo_contacto_at: ahora,
@@ -2798,6 +2825,12 @@ app.post('/api/pedidos/revision-contacto/email-masivo', async (req, res) => {
           ultimo_contacto_at: ahora,
           ultimo_contacto_canal: 'email',
         };
+        try {
+          await guardarRevisionContacto(pedido.id, revisiones[pedido.id]);
+        } catch (err) {
+          // El email ya salió: no se reporta como fallido por no poder anotar el contacto.
+          logService.warning(`Email enviado pero no se registró el contacto del pedido ${pedido.id}`, { error: err.message });
+        }
 
         resultados.push({
           pedidoId: pedido.id,
@@ -2814,8 +2847,6 @@ app.post('/api/pedidos/revision-contacto/email-masivo', async (req, res) => {
         });
       }
     }
-
-    await guardarRevisionContacto(revisiones);
 
     const sent = resultados.filter((r) => r.success).length;
     const failed = resultados.length - sent;
@@ -4087,7 +4118,29 @@ async function sincronizarMercadoLibre({ horas = 72, ventasPrecargadas = null } 
     logService.warning(`[ML] No se pudieron revisar etiquetas pendientes: ${err.message}`);
   }
 
+  // Tercera pasada: pedidos activos sin comprador (entraron antes de guardarlo).
+  // Sin él no se detecta que dos órdenes son de la misma persona.
+  try {
+    resumen.compradores = await completarCompradoresML();
+  } catch (err) {
+    logService.warning(`[ML] No se pudieron completar compradores: ${err.message}`);
+  }
+
   return resumen;
+}
+
+async function completarCompradoresML() {
+  const pendientes = await supabaseService.obtenerPedidosMlSinComprador();
+  let completados = 0;
+  for (const p of pendientes) {
+    try {
+      const venta = await mercadolibreService.obtenerVenta(p.ml_order_id);
+      if (!venta?.buyer?.id) continue;
+      await supabaseService.actualizarPedido(p.id, { ml_buyer_id: String(venta.buyer.id) });
+      completados += 1;
+    } catch (_) { /* se reintenta en la próxima corrida */ }
+  }
+  return completados;
 }
 
 // ── Sincronización automática de stock ML ↔ Shopify ─────────────────────────
@@ -5312,6 +5365,38 @@ app.post('/api/revertir-a-etiqueta-generada-bulk', requireAuth, async (req, res)
   }
 });
 
+// Para cada secundario sin tracking propio, la etiqueta del primario del mismo
+// cliente con el que viaja. Uno con tracking propio es otro envío: no se toca.
+async function etiquetaHeredadaPorSecundario(idsPrimarios, idsSecundarios) {
+  const herencia = new Map();
+  try {
+    const cargar = (ids) => Promise.all(ids.map((id) => supabaseService.obtenerPedido(id).catch(() => null)));
+    const [primarios, secundarios] = await Promise.all([cargar(idsPrimarios), cargar(idsSecundarios)]);
+    const sinEtiqueta = secundarios.filter((p) => p && !String(p.numero_seguimiento_ues || '').trim());
+    if (sinEtiqueta.length === 0) return herencia;
+
+    const conEtiqueta = primarios.filter((p) => p && String(p.numero_seguimiento_ues || '').trim());
+    const agrupados = asignarGruposCliente([...conEtiqueta, ...sinEtiqueta]);
+    const primarioPorGrupo = new Map();
+    agrupados.slice(0, conEtiqueta.length).forEach((p) => {
+      if (p.grupo_cliente && !primarioPorGrupo.has(p.grupo_cliente)) primarioPorGrupo.set(p.grupo_cliente, p);
+    });
+    agrupados.slice(conEtiqueta.length).forEach((p) => {
+      const primario = primarioPorGrupo.get(p.grupo_cliente);
+      if (!primario) return;
+      herencia.set(String(p.id), {
+        numero_seguimiento_ues: primario.numero_seguimiento_ues,
+        link_etiqueta_drive: primario.link_etiqueta_drive || null,
+        etiqueta_generada: true,
+      });
+      logService.info(`[Armado] ${p.numero_pedido} va en el paquete de ${primario.numero_pedido} (mismo cliente)`);
+    });
+  } catch (err) {
+    logService.warning(`[Armado] No se pudo heredar la etiqueta a los pedidos del mismo cliente: ${err.message}`);
+  }
+  return herencia;
+}
+
 // Marcar pedidos como ARMADOS (estado intermedio) para el flujo de operario.
 // Debe hacer solo lo necesario para que figuren en Despachados, sin efectos extra.
 app.post('/api/marcar-armados-bulk', requireAuth, async (req, res) => {
@@ -5342,7 +5427,13 @@ app.post('/api/marcar-armados-bulk', requireAuth, async (req, res) => {
       })
     );
 
-    // Secundarios: mismo tracking que un primario, no cuentan para comisión
+    // Secundarios: mismo tracking o mismo cliente que un primario, no cuentan
+    // para comisión. Uno del mismo cliente que no tenía etiqueta viaja en el
+    // paquete del primario: hereda su tracking y etiqueta, así el fulfillment
+    // (que exige tracking) lo cierra junto con el primario.
+    const herenciaEtiqueta = idsSecundarios.length > 0
+      ? await etiquetaHeredadaPorSecundario(pedidoIds, idsSecundarios)
+      : new Map();
     if (idsSecundarios.length > 0) {
       await Promise.all(
         idsSecundarios.map(async (pedidoId) => {
@@ -5352,6 +5443,7 @@ app.post('/api/marcar-armados-bulk', requireAuth, async (req, res) => {
               despachado_por_nombre: null,
               armado_at: armadoAt,
               notificacion_enviada_at: null,
+              ...(herenciaEtiqueta.get(String(pedidoId)) || {}),
             });
           } catch (err) {
             logService.warning(`No se pudo marcar secundario como armado pedido ${pedidoId}: ${err.message}`);

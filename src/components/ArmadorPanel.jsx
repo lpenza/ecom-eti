@@ -55,33 +55,48 @@ function getCourierInfo(key) {
   return COURIERS.find((c) => c.key === key) || { key, label: key, icon: '📦' };
 }
 
-function groupByTracking(pedidos) {
-  const groups = new Map();
+const tieneEtiqueta = (p) => Boolean(String(p?.link_etiqueta_drive || '').trim());
+const trackingDe = (p) => String(p?.numero_seguimiento_ues || '').trim();
+
+// Un paquete = los pedidos que se arman juntos: los que comparten tracking y,
+// de la misma persona (`grupo_cliente`, lo calcula el servidor), los que no
+// tienen tracking propio. Ej.: en ML compró un producto suelto sin envío y
+// después un carrito con envío: van en la caja del carrito, con su etiqueta.
+// Dos pedidos de la misma persona con tracking distinto son dos envíos y siguen
+// separados. El primero del grupo es el que tiene etiqueta: es la que se imprime.
+function agruparPaquetes(pedidos) {
+  const trackingDelCliente = new Map();
   for (const p of pedidos) {
-    const tracking = String(p.numero_seguimiento_ues || '').trim();
-    if (!tracking) continue;
-    if (!groups.has(tracking)) groups.set(tracking, []);
-    groups.get(tracking).push(p);
-  }
-  const seen = new Set();
-  const result = [];
-  for (const p of pedidos) {
-    const tracking = String(p.numero_seguimiento_ues || '').trim();
-    if (!tracking) { result.push({ ...p, _mergedIds: null }); continue; }
-    if (seen.has(tracking)) continue;
-    seen.add(tracking);
-    const group = groups.get(tracking);
-    if (group.length === 1) {
-      result.push(p);
-    } else {
-      result.push({
-        ...group[0],
-        numero_pedido: group.map(g => g.numero_pedido).join(' / '),
-        _mergedIds: group.map(g => g.id),
-        _mergedPedidos: group,
-        _isDuplicateTracking: true,
-      });
+    if (p.grupo_cliente && trackingDe(p) && !trackingDelCliente.has(p.grupo_cliente)) {
+      trackingDelCliente.set(p.grupo_cliente, trackingDe(p));
     }
+  }
+  const claveDe = (p) => {
+    if (trackingDe(p)) return 't:' + trackingDe(p);
+    const delCliente = p.grupo_cliente && trackingDelCliente.get(p.grupo_cliente);
+    return delCliente ? 't:' + delCliente : 'id:' + p.id;
+  };
+
+  const grupos = new Map();
+  for (const p of pedidos) {
+    const clave = claveDe(p);
+    if (!grupos.has(clave)) grupos.set(clave, []);
+    grupos.get(clave).push(p);
+  }
+
+  const result = [];
+  for (const grupo of grupos.values()) {
+    if (grupo.length === 1) { result.push({ ...grupo[0], _mergedIds: null }); continue; }
+    const ordenado = [...grupo].sort((a, b) => Number(tieneEtiqueta(b)) - Number(tieneEtiqueta(a)));
+    const mismoTracking = ordenado.every((g) => trackingDe(g) === trackingDe(ordenado[0]));
+    result.push({
+      ...ordenado[0],
+      numero_pedido: ordenado.map((g) => g.numero_pedido).join(' / '),
+      _mergedIds: ordenado.map((g) => g.id),
+      _mergedPedidos: ordenado,
+      _isDuplicateTracking: mismoTracking,
+      _mismoCliente: !mismoTracking,
+    });
   }
   return result;
 }
@@ -98,8 +113,8 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
     await onMarcarArmadoBulk(primaryIds, secondaryIds);
   };
 
-  // Filas agrupadas por tracking (dedupe para impresión combinada).
-  const filas = useMemo(() => groupByTracking(pedidos), [pedidos]);
+  // Filas agrupadas por paquete (mismo tracking o mismo cliente).
+  const filas = useMemo(() => agruparPaquetes(pedidos), [pedidos]);
 
   // Conteos por courier: total de filas y cuántas tienen etiqueta imprimible.
   const conteos = useMemo(() => {
@@ -109,7 +124,7 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
       const key = getCourier(p);
       if (!base[key]) base[key] = { total: 0, conEtiqueta: 0 };
       base[key].total += 1;
-      if (String(p.link_etiqueta_drive || '').trim()) base[key].conEtiqueta += 1;
+      if (tieneEtiqueta(p)) base[key].conEtiqueta += 1;
     }
     return base;
   }, [filas]);
@@ -117,9 +132,10 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
   const filasVisibles = courierFilter === 'todos'
     ? filas
     : filas.filter((p) => getCourier(p) === courierFilter);
-  const filasConEtiqueta = filasVisibles.filter((p) => String(p.link_etiqueta_drive || '').trim());
+  const etiquetasVisibles = filasVisibles.filter(tieneEtiqueta);
 
   const courierActivo = courierFilter === 'todos' ? null : getCourierInfo(courierFilter);
+
 
   return (
     <>
@@ -128,7 +144,7 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
         <div>
           <h2 className="armador-panel-title">Pedidos a Armar</h2>
           <span className="armador-panel-count">
-            {pedidos.length} pendiente{pedidos.length !== 1 ? 's' : ''}
+            {filas.length} pendiente{filas.length !== 1 ? 's' : ''}
           </span>
         </div>
         <div className="armador-panel-header-actions">
@@ -192,17 +208,17 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
           {onImprimirEtiquetas && (
             <button
               className="btn btn-secondary btn-sm"
-              onClick={() => onImprimirEtiquetas(filasConEtiqueta)}
-              disabled={filasConEtiqueta.length === 0}
-              title={filasConEtiqueta.length === 0
+              onClick={() => onImprimirEtiquetas(etiquetasVisibles)}
+              disabled={etiquetasVisibles.length === 0}
+              title={etiquetasVisibles.length === 0
                 ? 'Ninguno de estos pedidos tiene etiqueta PDF disponible'
                 : courierActivo
                   ? 'Descargar/imprimir juntas las etiquetas de ' + courierActivo.label
                   : 'Descargar/imprimir juntas las etiquetas de la cola'}
             >
               {courierActivo
-                ? '🖨️ Imprimir etiquetas ' + courierActivo.label + ' (' + filasConEtiqueta.length + ')'
-                : '🖨️ Imprimir etiquetas (' + filasConEtiqueta.length + ')'}
+                ? '🖨️ Imprimir etiquetas ' + courierActivo.label + ' (' + etiquetasVisibles.length + ')'
+                : '🖨️ Imprimir etiquetas (' + etiquetasVisibles.length + ')'}
             </button>
           )}
           <button
@@ -241,11 +257,11 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
             <tbody>
               {filasVisibles.map((p) => {
                 const courier = getCourierInfo(getCourier(p));
-                const tieneEtiqueta = Boolean(String(p.link_etiqueta_drive || '').trim());
+                const conEtiqueta = tieneEtiqueta(p);
                 return (
                   <tr
                     key={p._mergedIds ? p._mergedIds.join('-') : p.id}
-                    className={p._isDuplicateTracking ? 'armador-row-duplicate-tracking' : ''}
+                    className={p._mergedIds ? 'armador-row-duplicate-tracking' : ''}
                   >
                     <td className="armador-orden">
                       #{p.numero_pedido || p.id?.substring(0, 8)}
@@ -269,6 +285,22 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                       {p._isDuplicateTracking && (
                         <span className="pedido-duplicate-tracking-badge" title="Estos pedidos comparten el mismo número de seguimiento">
                           📦 mismo tracking
+                        </span>
+                      )}
+                      {p._mismoCliente && (
+                        <span
+                          className="pedido-duplicate-tracking-badge"
+                          title={'Son ' + p._mergedPedidos.length + ' órdenes de la misma persona: van juntas en un solo paquete con la etiqueta de #' + p._mergedPedidos[0].numero_pedido}
+                        >
+                          👥 mismo cliente · {p._mergedPedidos.length} órdenes
+                        </span>
+                      )}
+                      {!p._mergedIds && p.grupo_cliente && (
+                        <span
+                          className="pedido-duplicate-tracking-badge"
+                          title={'La misma persona tiene otro envío con su propio tracking (' + (p.grupo_cliente_numeros || []).map((n) => '#' + n).join(', ') + '): se arman por separado'}
+                        >
+                          👥 mismo cliente · envío aparte
                         </span>
                       )}
                     </td>
@@ -295,8 +327,8 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                           type="button"
                           className="btn btn-secondary btn-sm"
                           onClick={() => onImprimirEtiqueta(p)}
-                          disabled={!tieneEtiqueta}
-                          title={tieneEtiqueta
+                          disabled={!conEtiqueta}
+                          title={conEtiqueta
                             ? 'Imprimir/descargar la etiqueta ' + courier.label + ' de este pedido'
                             : 'Este pedido no tiene etiqueta PDF disponible'}
                         >

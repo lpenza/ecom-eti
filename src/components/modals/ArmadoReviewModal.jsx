@@ -55,13 +55,16 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
         for (const mp of p._mergedPedidos) {
           const res = await obtenerDetallePedido(mp.numero_pedido);
           if (res.success) {
-            const tag = (it) => ({ ...it, _fromPedido: mp.numero_pedido });
+            // El id se prefija con la orden: dos órdenes del mismo cliente pueden
+            // traer el mismo producto y cada unidad se tilda por separado.
+            const tag = (it) => ({ ...it, id: `${mp.numero_pedido}::${it.id}`, _fromPedido: mp.numero_pedido });
             const items = (res.lineItems || []).map(tag);
             allItems.push(...items);
             if (res.desglose) {
               anyDesglose = true;
               combinedKits.push(...res.desglose.kits.map((k) => ({
                 ...k,
+                kitLineId: `${mp.numero_pedido}::${k.kitLineId}`,
                 colorBase: k.colorBase ? tag(k.colorBase) : k.colorBase,
                 colores: (k.colores || []).map(tag),
                 adicionales: (k.adicionales || []).map(tag),
@@ -390,7 +393,17 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
 
               {/* Contenido: items */}
               <div className="preview-section" style={{ borderLeftColor: '#7b2f4d' }}>
-                <h4>Contenido del pedido{pedido._isDuplicateTracking ? ` (${pedido._mergedPedidos.length} pedidos con mismo tracking)` : ''}</h4>
+                <h4>
+                  Contenido del pedido
+                  {pedido._isDuplicateTracking ? ` (${pedido._mergedPedidos.length} pedidos con mismo tracking)` : ''}
+                  {pedido._mismoCliente ? ` (${pedido._mergedPedidos.length} órdenes del mismo cliente)` : ''}
+                </h4>
+                {pedido._mismoCliente && (
+                  <div style={{ background: '#ede9fe', border: '1px solid #c4b5fd', color: '#4c1d95', borderRadius: '8px', padding: '0.5rem 0.7rem', marginBottom: '0.6rem', fontSize: '0.85rem', fontWeight: 600 }}>
+                    👥 Misma persona, {pedido._mergedPedidos.length} órdenes ({pedido._mergedPedidos.map((m) => '#' + m.numero_pedido).join(', ')}).
+                    {` Va todo en un solo paquete con la etiqueta de #${pedido._mergedPedidos[0].numero_pedido}.`}
+                  </div>
+                )}
 
                 {isLoading && (
                   <div style={{ padding: '1rem', color: '#64748b' }}>Cargando contenido desde Shopify...</div>

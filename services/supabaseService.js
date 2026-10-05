@@ -23,6 +23,8 @@ if (!globalThis.fetch) {
   globalThis.Response = fetch.Response;
 }
 
+const { asignarGruposCliente } = require('./clienteAgrupador');
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
@@ -693,6 +695,32 @@ class SupabaseService {
 
   // Obtener pedidos para armado de operario:
   // incluye estandar, pickup, recibilo, express (siempre que tengan etiqueta y no esten cerrados).
+  // Una persona con dos órdenes distintas (p.ej. en ML un producto suelto sin
+  // envío y un carrito con envío) se arma en UN paquete con UNA etiqueta. El
+  // pedido sin etiqueta nunca entraría a la cola por sí solo, así que se suma
+  // acá cuando es del mismo cliente que uno que sí está; el armador los agrupa
+  // por `grupo_cliente`.
+  async _sumarPedidosDelMismoCliente(cola) {
+    if (cola.length === 0) return cola;
+    const hace60dias = new Date(Date.now() - 60 * 24 * 3600 * 1000).toISOString();
+    const { data: sinEtiqueta, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .eq('etiqueta_generada', false)
+      .is('notificacion_enviada_at', null)
+      .not('estado', 'in', '(enviado,despachado,cancelado)')
+      .gte('created_at', hace60dias);
+    if (error) {
+      // Sin los compañeros la cola sigue sirviendo: no se corta el armado.
+      console.error('⚠️ No se pudieron buscar pedidos del mismo cliente:', error.message);
+      return asignarGruposCliente(cola);
+    }
+
+    const agrupados = asignarGruposCliente([...cola, ...(sinEtiqueta || [])]);
+    const gruposEnCola = new Set(agrupados.slice(0, cola.length).map((p) => p.grupo_cliente).filter(Boolean));
+    return agrupados.filter((p, i) => i < cola.length || gruposEnCola.has(p.grupo_cliente));
+  }
+
   async obtenerPedidosParaArmado() {
     try {
       const { data, error } = await supabase
@@ -706,7 +734,7 @@ class SupabaseService {
         .order('created_at', { ascending: true });
 
       if (error) throw error;
-      return data || [];
+      return await this._sumarPedidosDelMismoCliente(data || []);
     } catch (error) {
       console.error('❌ Error en obtenerPedidosParaArmado:', error);
       throw error;
@@ -2240,6 +2268,44 @@ class SupabaseService {
     return data;
   }
 
+  // ── Pedidos pendientes de contacto ───────────────────────────────────────────
+
+  // Devuelve { [pedidoId]: { motivo, fecha, ultimo_contacto_at, ultimo_contacto_canal } }.
+  async obtenerRevisionesContacto() {
+    const { data, error } = await supabase
+      .from('pedido_revision_contacto')
+      .select('pedido_id, motivo, fecha, ultimo_contacto_at, ultimo_contacto_canal');
+    if (error) throw error;
+    const out = {};
+    (data || []).forEach(({ pedido_id, ...revision }) => {
+      out[pedido_id] = revision;
+    });
+    return out;
+  }
+
+  // revision = null borra la marca del pedido.
+  async guardarRevisionContacto(pedidoId, revision) {
+    if (!revision) {
+      const { error } = await supabase
+        .from('pedido_revision_contacto')
+        .delete()
+        .eq('pedido_id', String(pedidoId));
+      if (error) throw error;
+      return;
+    }
+    const { error } = await supabase
+      .from('pedido_revision_contacto')
+      .upsert({
+        pedido_id: String(pedidoId),
+        motivo: revision.motivo,
+        fecha: revision.fecha,
+        ultimo_contacto_at: revision.ultimo_contacto_at || null,
+        ultimo_contacto_canal: revision.ultimo_contacto_canal || null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'pedido_id' });
+    if (error) throw error;
+  }
+
   // ── Parámetros de reglas Meta Ads (fila única) ───────────────────────────────
 
   async obtenerParametrosMetaAds() {
@@ -3123,6 +3189,20 @@ class SupabaseService {
   // cambiar (dirección hasta que sale el envío, ids de envío, etiqueta). Nunca
   // se pisa `estado`, `etiqueta_impresa` ni el armado: eso lo maneja el panel.
   async upsertPedidoMercadoLibre(datos) {
+    try {
+      return await this._upsertPedidoMercadoLibre(datos);
+    } catch (error) {
+      // Hasta que se corra sql/add_ml_buyer_id_to_pedidos.sql la columna no
+      // existe: el pedido entra igual, sólo sin el comprador.
+      const faltaColumna = (error.code === '42703' || error.code === 'PGRST204')
+        && /ml_buyer_id/.test(error.message || '');
+      if (!faltaColumna || datos.ml_buyer_id === undefined) throw error;
+      const { ml_buyer_id, ...sinComprador } = datos;
+      return this._upsertPedidoMercadoLibre(sinComprador);
+    }
+  }
+
+  async _upsertPedidoMercadoLibre(datos) {
     // La clave es `numero_pedido` (ML-<pack o order>), que es estable corrida a
     // corrida. Buscar por ml_order_id daría de alta un pedido duplicado si en un
     // carrito ML devuelve las ventas en otro orden. El ml_order_id queda como
@@ -3139,6 +3219,7 @@ class SupabaseService {
       ml_shipping_mode: datos.ml_shipping_mode,
       ml_items: datos.ml_items,
       ml_referencia: datos.ml_referencia,
+      ...(datos.ml_buyer_id !== undefined ? { ml_buyer_id: datos.ml_buyer_id } : {}),
       updated_at: ahora,
     };
 
@@ -3198,6 +3279,24 @@ class SupabaseService {
       .single();
     if (error) throw error;
     return { pedido: data, creado: true };
+  }
+
+  // Pedidos de ML activos a los que les falta el comprador. Si la columna todavía
+  // no existe (falta sql/add_ml_buyer_id_to_pedidos.sql) no hay nada que hacer.
+  async obtenerPedidosMlSinComprador(limite = 100) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('id, ml_order_id')
+      .eq('origen', 'mercadolibre')
+      .is('ml_buyer_id', null)
+      .not('ml_order_id', 'is', null)
+      .not('estado', 'in', '(enviado,despachado,cancelado)')
+      .limit(limite);
+    if (error) {
+      if (/ml_buyer_id/.test(error.message || '')) return [];
+      throw error;
+    }
+    return data || [];
   }
 
   // Ventas de ML que todavía no descontaron stock. Se excluyen las canceladas:

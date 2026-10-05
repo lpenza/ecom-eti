@@ -758,6 +758,8 @@ class MercadoLibreService {
     return {
       ml_order_id: String(orden.id),
       ml_pack_id: orden.pack_id ? String(orden.pack_id) : null,
+      // Identifica a la persona entre ventas distintas (ver clienteAgrupador).
+      ml_buyer_id: comprador.id ? String(comprador.id) : null,
       ml_shipment_id: shipmentId,
       ml_logistic_type: logisticType,
       ml_shipping_mode: shippingMode,
