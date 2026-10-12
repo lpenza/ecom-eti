@@ -277,6 +277,17 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                           🛒 {!p.ml_shipment_id ? 'MERCADOLIBRE' : esMlFlex(p) ? 'ML FLEX' : 'ML PUNTO'}
                         </span>
                       )}
+                      {/* Aviso visible antes de abrir el modal: estas ventas llevan
+                          conforme de entrega y NO va pegado afuera del paquete. */}
+                      {p.origen === 'mercadolibre' && !p.ml_shipment_id && (
+                        <span
+                          className="pedido-duplicate-tracking-badge"
+                          style={{ background: '#fff7ed', color: '#9a3412', borderColor: '#fb923c' }}
+                          title="Lleva el conforme de entrega SUELTO adentro del paquete (no pegado): lo llena quien retira, en MarcoPostal"
+                        >
+                          📄 conforme adentro
+                        </span>
+                      )}
                       {p.es_reclamo && (
                         <span className="pedido-duplicate-tracking-badge" style={{ background: '#fef9c3', color: '#92400e', borderColor: '#fde047' }}>
                           ⚠ reclamo

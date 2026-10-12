@@ -582,7 +582,11 @@ class SupabaseService {
         .order('created_at', { ascending: true });
 
       if (error) throw error;
-      return data || [];
+      // Mismo agrupador que usa la cola del armador: deja `grupo_cliente` y
+      // `grupo_cliente_numeros` en los pedidos que comparten comprador. El panel
+      // lo necesita para saber si un pedido va en el paquete de otro (p.ej. una
+      // venta de ML sin envío que viaja con la etiqueta de otra orden).
+      return asignarGruposCliente(data || []);
     } catch (error) {
       console.error('❌ Error en obtenerPedidosActivos:', error);
       throw error;

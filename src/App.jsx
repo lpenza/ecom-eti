@@ -255,24 +255,20 @@ function AppContent({ user, logout }) {
   // guía Pick-UP de MarcoPostal (retiro en oficina), que no necesita dirección.
   const esMlACoordinar = (p) => esMercadoLibre(p) && !p?.ml_shipment_id;
 
-  // Nombres de comprador comparables: sin tildes, sin mayúsculas y sin espacios
-  // de más. Es lo único que ML nos da de estos pedidos — no hay email ni teléfono
-  // para cruzar — así que el match es por nombre y por eso se normaliza.
-  const normalizarNombre = (s) => String(s || '')
-    .normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .toLowerCase().replace(/\s+/g, ' ').trim();
-
   // Otro pedido activo del mismo comprador: si existe, los dos van en un mismo
   // paquete y este no lleva etiqueta propia.
+  //
+  // El cruce lo hace el servidor (`services/clienteAgrupador.js`) y llega en
+  // `grupo_cliente` / `grupo_cliente_numeros`. No se rehace acá por nombre: ese
+  // agrupador encadena ml_buyer_id, email, teléfono y nombre+dirección, y para
+  // ML el buyer_id es la única clave confiable (email y teléfono vienen vacíos y
+  // el nombre es el del destinatario del envío, no el del comprador).
   const otroPedidoDelMismoCliente = (pedido) => {
-    const nombre = normalizarNombre(pedido?.cliente_nombre);
-    if (!nombre) return null;
-    return pedidos.find((otro) => (
-      otro.id !== pedido.id
-      && !estadoEsCerrado(otro.estado)
-      && String(otro.estado || '').toLowerCase() !== 'cancelado'
-      && normalizarNombre(otro.cliente_nombre) === nombre
-    )) || null;
+    if (!pedido?.grupo_cliente) return null;
+    const numeros = pedido.grupo_cliente_numeros || [];
+    if (numeros.length === 0) return null;
+    return pedidos.find((otro) => otro.id !== pedido.id && numeros.includes(otro.numero_pedido))
+      || { numero_pedido: numeros[0] };
   };
 
   // Pedidos que aún no tienen etiqueta generada (necesitan validación)

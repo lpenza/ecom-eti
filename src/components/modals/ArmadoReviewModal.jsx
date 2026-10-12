@@ -40,6 +40,11 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
   const [confirmedIds, setConfirmedIds] = useState(new Set());
   const [justConfirmedId, setJustConfirmedId] = useState(null);
   const [motivoAceptadoByPedido, setMotivoAceptadoByPedido] = useState({});
+  const [conformeAceptadoByPedido, setConformeAceptadoByPedido] = useState({});
+
+  // Venta de ML sin envio de Mercado Envios: la despachamos nosotros con guia
+  // Pick-UP de MarcoPostal y lleva conforme de entrega adentro del paquete.
+  const esMlACoordinar = (p) => p?.origen === 'mercadolibre' && !p?.ml_shipment_id;
 
   const pedido = pedidos[index];
 
@@ -139,7 +144,8 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
       const cids = buildCheckableIds(items, desgloseByPedido[p.id]);
       const checkedSet = checkedByPedido[p.id] || new Set();
       const motivoOk = !p.motivo_reenvio || !!motivoAceptadoByPedido[p.id];
-      if (cids.length > 0 && cids.every((id) => checkedSet.has(id)) && motivoOk) {
+      const conformeOk = !esMlACoordinar(p) || !!conformeAceptadoByPedido[p.id];
+      if (cids.length > 0 && cids.every((id) => checkedSet.has(id)) && motivoOk && conformeOk) {
         const ids = allIdsForPedido(p);
         primaryIds.push(ids[0]);
         secondaryIds.push(...ids.slice(1));
@@ -362,6 +368,41 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
               <div className="preview-validation-list">
                 <span className="tag-warn">Listos para confirmar: {readyCount}</span>
               </div>
+
+              {/* Venta de ML "a coordinar": viaja con una guía Pick-UP de MP y un
+                  conforme de entrega. El conforme NO se pega afuera — va adentro
+                  del paquete para que MarcoPostal se lo haga llenar a quien
+                  retira. Se chequea antes de confirmar, como el motivo de reenvío:
+                  pegarlo afuera arruina el documento y se pierde el respaldo. */}
+              {esMlACoordinar(pedido) && (
+                <div style={{
+                  background: conformeAceptadoByPedido[pedido.id] ? '#dcfce7' : '#fff7ed',
+                  border: `2px solid ${conformeAceptadoByPedido[pedido.id] ? '#86efac' : '#fb923c'}`,
+                  borderRadius: '8px',
+                  padding: '0.75rem 1rem',
+                  marginBottom: '0.75rem',
+                  transition: 'background 0.2s, border-color 0.2s',
+                }}>
+                  <div style={{ fontWeight: 700, color: conformeAceptadoByPedido[pedido.id] ? '#166534' : '#9a3412', fontSize: '0.82rem', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.3rem' }}>
+                    📄 Conforme de entrega — NO se pega en el paquete
+                  </div>
+                  <p style={{ margin: '0 0 0.6rem', color: conformeAceptadoByPedido[pedido.id] ? '#166534' : '#7c2d12', fontSize: '0.92rem', fontWeight: 600 }}>
+                    Esta venta es "a coordinar con el vendedor" y se despacha con guía Pick-UP.
+                    El conforme va <strong>suelto adentro del paquete</strong>, junto con la etiqueta:
+                    lo llena la persona que retira, en MarcoPostal. Si lo pegás afuera no se puede
+                    firmar y se pierde el respaldo de la entrega.
+                  </p>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: isConfirmed ? 'default' : 'pointer', fontSize: '0.85rem', color: conformeAceptadoByPedido[pedido.id] ? '#166534' : '#9a3412', fontWeight: 600 }}>
+                    <input
+                      type="checkbox"
+                      checked={!!conformeAceptadoByPedido[pedido.id]}
+                      disabled={isConfirmed}
+                      onChange={(e) => setConformeAceptadoByPedido((prev) => ({ ...prev, [pedido.id]: e.target.checked }))}
+                    />
+                    Puse el conforme adentro del paquete, sin pegarlo
+                  </label>
+                </div>
+              )}
 
               {/* Alerta motivo reenvío — debe chequearse antes de confirmar */}
               {pedido.motivo_reenvio && (
