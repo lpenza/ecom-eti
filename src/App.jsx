@@ -3196,6 +3196,7 @@ function AppContent({ user, logout }) {
               esMlACoordinar={esMlACoordinar}
               buscarPedidoAsociado={otroPedidoDelMismoCliente}
               pickupMlCargandoId={pickupMlCargandoId}
+              mostrarAccionML={tableFilter === 'mercadolibre'}
               showNotifyColumn={tableFilter !== 'porValidar' && tableFilter !== 'mercadolibre'}
               showTrackingColumn={tableFilter !== 'porValidar'}
               showProcesarButton={tableFilter === 'despachados'}

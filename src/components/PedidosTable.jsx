@@ -160,6 +160,9 @@ function PedidosTable({
   esMlACoordinar: esMlACoordinarFn,
   buscarPedidoAsociado,
   pickupMlCargandoId = null,
+  // Columna de acción propia para la pestaña de ML: la celda común de acciones
+  // vive dentro de showNotifyColumn, que en ML está apagada a propósito.
+  mostrarAccionML = false,
 }) {
   const [previewPedido, setPreviewPedido] = useState(null);
   // allSelected: true solo si TODOS los de la vista filtrada están seleccionados
@@ -234,13 +237,14 @@ function PedidosTable({
               <th title="MarcoPostal — tiempo restante para cumplir el plazo de entrega (48h desde el pago)">Plazo entrega</th>
               {showTrackingColumn && <th>Seguimiento</th>}
               {showNotifyColumn && <th>Notificar</th>}
+              {mostrarAccionML && <th>Acción</th>}
               {showProcesarButton && <th>Acción</th>}
             </tr>
           </thead>
           <tbody>
             {pedidosToRender.length === 0 ? (
               <tr>
-                <td colSpan={6 + (showTrackingColumn ? 1 : 0) + (showNotifyColumn ? 1 : 0) + (showProcesarButton ? 1 : 0)} className="table-empty-state">
+                <td colSpan={6 + (showTrackingColumn ? 1 : 0) + (showNotifyColumn ? 1 : 0) + (mostrarAccionML ? 1 : 0) + (showProcesarButton ? 1 : 0)} className="table-empty-state">
                   No hay pedidos para mostrar
                 </td>
               </tr>
@@ -291,6 +295,7 @@ function PedidosTable({
                     esMlACoordinar={Boolean(esMlACoordinarFn && esMlACoordinarFn(pedido))}
                     pedidoAsociado={buscarPedidoAsociado ? buscarPedidoAsociado(pedido) : null}
                     pickupMlCargando={pickupMlCargandoId === pedido.id}
+                    mostrarAccionML={mostrarAccionML}
                   />
                 );
               })
@@ -322,6 +327,7 @@ function PedidoRow({
   esMlACoordinar = false,
   pedidoAsociado = null,
   pickupMlCargando = false,
+  mostrarAccionML = false,
   fulfillmentPreview = false,
   channelPriority = 'email',
   showNotifyColumn = true,
@@ -620,31 +626,6 @@ function PedidoRow({
               </button>
             )}
 
-            {/* Venta de ML "a coordinar con el vendedor": ML no emite etiqueta ni
-                nos da dirección, así que la salida es una guía Pick-UP de MP
-                (retiro en oficina, no necesita dirección). Si el mismo comprador
-                tiene otro pedido activo van juntos y esta no lleva etiqueta
-                propia: en vez del botón se explica con cuál va. */}
-            {esMlACoordinar && !pedido.etiqueta_generada && !fulfillmentPreview && onGenerarGuiaPickupML && (
-              pedidoAsociado ? (
-                <span
-                  className="cadeteria-guard-hint cadeteria-guard-hint-pending"
-                  title={`${pedido.cliente_nombre} también tiene el pedido #${pedidoAsociado.numero_pedido}. Despachalos juntos con esa etiqueta.`}
-                >
-                  🔗 va con #{pedidoAsociado.numero_pedido}
-                </span>
-              ) : (
-                <button
-                  className="btn btn-primary btn-sm"
-                  disabled={pickupMlCargando}
-                  onClick={() => onGenerarGuiaPickupML(pedido)}
-                  title="Emitir guía Pick-UP de MarcoPostal (el comprador retira en oficina). No requiere dirección."
-                >
-                  {pickupMlCargando ? '⏳ Emitiendo…' : '🏪 Etiqueta Pick-UP MP'}
-                </button>
-              )
-            )}
-
             {pedido.es_reenvio && !fulfillmentPreview && onGenerarEtiquetaUES && !pedido.etiqueta_generada && (
               <button
                 className="btn btn-primary btn-sm"
@@ -714,6 +695,37 @@ function PedidoRow({
                   </button>
                 )}
               </div>
+            )}
+
+          </div>
+        </td>
+      )}
+      {mostrarAccionML && (
+        <td>
+          <div className="pedido-actions-cell">
+            {/* Venta de ML "a coordinar con el vendedor": ML no emite etiqueta ni
+                nos da dirección, así que la salida es una guía Pick-UP de MP
+                (retiro en oficina, no necesita dirección). Si el mismo comprador
+                tiene otro pedido activo van juntos y esta no lleva etiqueta
+                propia: en vez del botón se explica con cuál va. */}
+            {esMlACoordinar && !pedido.etiqueta_generada && !fulfillmentPreview && onGenerarGuiaPickupML && (
+              pedidoAsociado ? (
+                <span
+                  className="cadeteria-guard-hint cadeteria-guard-hint-pending"
+                  title={`${pedido.cliente_nombre} también tiene el pedido #${pedidoAsociado.numero_pedido}. Despachalos juntos con esa etiqueta.`}
+                >
+                  🔗 va con #{pedidoAsociado.numero_pedido}
+                </span>
+              ) : (
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={pickupMlCargando}
+                  onClick={() => onGenerarGuiaPickupML(pedido)}
+                  title="Emitir guía Pick-UP de MarcoPostal (el comprador retira en oficina). No requiere dirección."
+                >
+                  {pickupMlCargando ? '⏳ Emitiendo…' : '🏪 Etiqueta Pick-UP MP'}
+                </button>
+              )
             )}
 
           </div>
