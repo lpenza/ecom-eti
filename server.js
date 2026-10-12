@@ -61,6 +61,7 @@ const etiquetaPdfService = require('./services/etiquetaPdfService');
 const etiquetaPdfCleanup = require('./services/etiquetaPdfCleanup');
 const shopifyService = require('./services/shopifyService');
 const mercadolibreService = require('./services/mercadolibreService');
+const conformeEntregaService = require('./services/conformeEntregaService');
 const facturacionParserService = require('./services/facturacionParserService');
 const facturacionAuditService = require('./services/facturacionAuditService');
 const { generarLinkWhatsApp } = require('./services/notificationService');
@@ -4405,17 +4406,31 @@ app.post('/api/pedidos/:pedidoId/conforme', requireAuth, requireAdmin, async (re
 app.get('/api/pedidos/:pedidoId/conforme', async (req, res) => {
   try {
     const adjunto = await supabaseService.obtenerAdjuntoPedido(req.params.pedidoId, 'conforme_ml');
-    if (!adjunto) {
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      return res.status(404).json({ success: false, error: 'Este pedido no tiene conforme adjunto' });
+
+    let buffer;
+    let nombre;
+    if (adjunto) {
+      // Un PDF subido a mano gana: sirve para reemplazar el generado si alguna
+      // vez hace falta una versión distinta.
+      buffer = Buffer.from(adjunto.contenido, 'base64');
+      nombre = adjunto.nombre;
+    } else {
+      // Si no hay subido, se completa la plantilla de MercadoPago con los datos
+      // de la venta. El formulario es siempre el mismo.
+      const pedido = await supabaseService.obtenerPedido(req.params.pedidoId);
+      if (!pedido) {
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+      }
+      buffer = await conformeEntregaService.generar(pedido);
+      nombre = `conforme-${pedido.numero_pedido}.pdf`;
     }
-    const buffer = Buffer.from(adjunto.contenido, 'base64');
     // Content-Type explícito: un middleware global deja todo en application/json
     // y sin esto el navegador no abre el visor de PDF.
-    res.setHeader('Content-Type', adjunto.content_type || 'application/pdf');
+    res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
       'Content-Disposition',
-      `${String(req.query.download || '') === '1' ? 'attachment' : 'inline'}; filename="${String(adjunto.nombre || 'conforme.pdf').replace(/"/g, '')}"`
+      `${String(req.query.download || '') === '1' ? 'attachment' : 'inline'}; filename="${String(nombre || 'conforme.pdf').replace(/"/g, '')}"`
     );
     return res.send(buffer);
   } catch (error) {

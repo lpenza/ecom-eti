@@ -288,7 +288,7 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                           📄 conforme adentro
                         </span>
                       )}
-                      {p.origen === 'mercadolibre' && !p.ml_shipment_id && p.conforme_adjunto_at && (
+                      {p.origen === 'mercadolibre' && !p.ml_shipment_id && (
                         <a
                           href={`/api/pedidos/${p.id}/conforme`}
                           target="_blank"

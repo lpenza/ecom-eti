@@ -740,44 +740,38 @@ function PedidoRow({
             {/* Conforme de entrega: ML no lo da por API, lo baja el admin del
                 panel de ML y lo sube acá. El armador lo imprime y lo mete suelto
                 en el paquete. Sin conforme adjunto el pedido no está completo. */}
-            {esMlACoordinar && !fulfillmentPreview && onAdjuntarConforme && (
-              pedido.conforme_adjunto_at ? (
-                <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <a
-                    href={urlConforme ? urlConforme(pedido.id) : '#'}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn btn-secondary btn-sm"
-                    title="Ver el conforme adjunto"
+            {/* El conforme se genera solo sobre la plantilla de MercadoPago, asi
+                que siempre esta disponible. Subir uno reemplaza al generado. */}
+            {esMlACoordinar && !fulfillmentPreview && (
+              <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <a
+                  href={urlConforme ? urlConforme(pedido.id) : '#'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-secondary btn-sm"
+                  title={pedido.conforme_adjunto_at
+                    ? 'Ver el conforme subido a mano'
+                    : 'Ver el conforme completado con los datos de la venta'}
+                >
+                  📄 Conforme{pedido.conforme_adjunto_at ? ' (subido)' : ''}
+                </a>
+                {onAdjuntarConforme && (
+                  <label
+                    className="btn btn-outline btn-sm"
+                    style={{ cursor: conformeSubiendo ? 'wait' : 'pointer', margin: 0 }}
+                    title="Reemplazar por un PDF propio (opcional)"
                   >
-                    📄 Ver conforme
-                  </a>
-                  <label className="btn btn-outline btn-sm" style={{ cursor: 'pointer', margin: 0 }} title="Reemplazar el conforme">
-                    ♻️
+                    {conformeSubiendo ? '⏳' : '♻️'}
                     <input
                       type="file"
                       accept="application/pdf"
+                      disabled={conformeSubiendo}
                       style={{ display: 'none' }}
                       onChange={(e) => { onAdjuntarConforme(pedido, e.target.files?.[0]); e.target.value = ''; }}
                     />
                   </label>
-                </div>
-              ) : (
-                <label
-                  className="btn btn-outline-danger btn-sm"
-                  style={{ cursor: conformeSubiendo ? 'wait' : 'pointer', margin: 0 }}
-                  title="Subí el conforme de entrega que bajaste del panel de MercadoLibre (PDF)"
-                >
-                  {conformeSubiendo ? '⏳ Subiendo…' : '📎 Adjuntar conforme'}
-                  <input
-                    type="file"
-                    accept="application/pdf"
-                    disabled={conformeSubiendo}
-                    style={{ display: 'none' }}
-                    onChange={(e) => { onAdjuntarConforme(pedido, e.target.files?.[0]); e.target.value = ''; }}
-                  />
-                </label>
-              )
+                )}
+              </div>
             )}
 
           </div>
