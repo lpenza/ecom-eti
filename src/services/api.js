@@ -367,6 +367,25 @@ export async function generarGuiaMarcoPostalWeb(pedidoIdOrNumero, payloadOverrid
 }
 
 /**
+ * Adjunta el conforme de entrega (PDF bajado del panel de ML) a un pedido.
+ */
+export async function adjuntarConformePedido(pedidoId, { contenido, nombre, contentType }) {
+  return await fetchAPI(`/pedidos/${pedidoId}/conforme`, {
+    method: 'POST',
+    body: JSON.stringify({ contenido, nombre, contentType }),
+  });
+}
+
+/** URL pública del conforme — se abre en pestaña nueva para imprimir. */
+export function urlConformePedido(pedidoId, descargar = false) {
+  return `/api/pedidos/${pedidoId}/conforme${descargar ? '?download=1' : ''}`;
+}
+
+export async function eliminarConformePedido(pedidoId) {
+  return await fetchAPI(`/pedidos/${pedidoId}/conforme`, { method: 'DELETE' });
+}
+
+/**
  * Emite una guía Pick-UP de MarcoPostal (retiro en oficina) sin cambiarle el
  * tipo_envio al pedido. Para ventas de ML "a coordinar con el vendedor", que no
  * traen dirección: la guía pickup no la necesita.

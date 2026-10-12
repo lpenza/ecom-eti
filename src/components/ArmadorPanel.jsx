@@ -288,6 +288,18 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                           📄 conforme adentro
                         </span>
                       )}
+                      {p.origen === 'mercadolibre' && !p.ml_shipment_id && p.conforme_adjunto_at && (
+                        <a
+                          href={`/api/pedidos/${p.id}/conforme`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn btn-secondary btn-sm"
+                          style={{ marginLeft: '0.3rem' }}
+                          title="Abrir el conforme de entrega para imprimirlo"
+                        >
+                          🖨 Conforme
+                        </a>
+                      )}
                       {p.es_reclamo && (
                         <span className="pedido-duplicate-tracking-badge" style={{ background: '#fef9c3', color: '#92400e', borderColor: '#fde047' }}>
                           ⚠ reclamo

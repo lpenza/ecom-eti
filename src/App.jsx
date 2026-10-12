@@ -52,6 +52,8 @@ import {
   buscarPedidos,
   generarGuiaMarcoPostalWeb,
   generarGuiaPickupMarcoPostal,
+  adjuntarConformePedido,
+  urlConformePedido,
   obtenerStockPlannerSSO,
   marcarRetiroCadeteria,
   buscarEtiquetasCadeteria,
@@ -1259,6 +1261,39 @@ function AppContent({ user, logout }) {
       mostrarToast(error.message || 'No se pudo emitir la guía Pick-UP', 'error');
     } finally {
       setPickupMlCargandoId(null);
+    }
+  };
+
+  // Sube el conforme de entrega que el admin bajó del panel de ML. ML no lo da
+  // por API, así que es carga manual: un PDF por venta "a coordinar".
+  const [conformeSubiendoId, setConformeSubiendoId] = useState(null);
+
+  const handleAdjuntarConforme = async (pedido, file) => {
+    if (!file) return;
+    if (file.type && file.type !== 'application/pdf') {
+      mostrarToast('El conforme tiene que ser un PDF', 'warning');
+      return;
+    }
+    setConformeSubiendoId(pedido.id);
+    try {
+      const contenido = await new Promise((resolve, reject) => {
+        const lector = new FileReader();
+        lector.onload = () => resolve(String(lector.result));
+        lector.onerror = () => reject(new Error('No se pudo leer el archivo'));
+        lector.readAsDataURL(file);
+      });
+      const r = await adjuntarConformePedido(pedido.id, {
+        contenido,
+        nombre: file.name,
+        contentType: file.type || 'application/pdf',
+      });
+      if (!r?.success) throw new Error(r?.error || 'No se pudo adjuntar');
+      mostrarToast(`📄 Conforme adjuntado a #${pedido.numero_pedido}`, 'success');
+      await cargarPedidos();
+    } catch (error) {
+      mostrarToast(error.message || 'No se pudo adjuntar el conforme', 'error');
+    } finally {
+      setConformeSubiendoId(null);
     }
   };
 
@@ -3197,6 +3232,9 @@ function AppContent({ user, logout }) {
               buscarPedidoAsociado={otroPedidoDelMismoCliente}
               pickupMlCargandoId={pickupMlCargandoId}
               mostrarAccionML={tableFilter === 'mercadolibre'}
+              onAdjuntarConforme={handleAdjuntarConforme}
+              urlConforme={urlConformePedido}
+              conformeSubiendoId={conformeSubiendoId}
               showNotifyColumn={tableFilter !== 'porValidar' && tableFilter !== 'mercadolibre'}
               showTrackingColumn={tableFilter !== 'porValidar'}
               showProcesarButton={tableFilter === 'despachados'}

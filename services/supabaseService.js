@@ -3167,6 +3167,59 @@ class SupabaseService {
     return data || [];
   }
 
+  // ── Adjuntos de pedidos (conforme de entrega de ML) ─────────────────────────
+
+  // Guarda (o reemplaza) el adjunto y deja la marca en el pedido. La marca es lo
+  // que miran el panel y el armador: así no hay que traer el archivo para saber
+  // que existe.
+  async guardarAdjuntoPedido({ pedidoId, tipo = 'conforme_ml', nombre, contentType, contenido, tamano, subidoPor }) {
+    const { data, error } = await supabase
+      .from('pedido_adjuntos')
+      .upsert({
+        pedido_id: pedidoId,
+        tipo,
+        nombre: nombre || null,
+        content_type: contentType || 'application/pdf',
+        contenido,
+        tamano: tamano || null,
+        subido_por: subidoPor || null,
+        created_at: new Date().toISOString(),
+      }, { onConflict: 'pedido_id,tipo' })
+      .select('id, pedido_id, tipo, nombre, content_type, tamano, created_at')
+      .single();
+    if (error) throw error;
+
+    if (tipo === 'conforme_ml') {
+      await supabase.from('pedidos')
+        .update({ conforme_adjunto_at: new Date().toISOString() })
+        .eq('id', pedidoId);
+    }
+    return data;
+  }
+
+  async obtenerAdjuntoPedido(pedidoId, tipo = 'conforme_ml') {
+    const { data, error } = await supabase
+      .from('pedido_adjuntos')
+      .select('*')
+      .eq('pedido_id', pedidoId)
+      .eq('tipo', tipo)
+      .maybeSingle();
+    if (error) throw error;
+    return data || null;
+  }
+
+  async eliminarAdjuntoPedido(pedidoId, tipo = 'conforme_ml') {
+    const { error } = await supabase
+      .from('pedido_adjuntos')
+      .delete()
+      .eq('pedido_id', pedidoId)
+      .eq('tipo', tipo);
+    if (error) throw error;
+    if (tipo === 'conforme_ml') {
+      await supabase.from('pedidos').update({ conforme_adjunto_at: null }).eq('id', pedidoId);
+    }
+  }
+
   // ── MercadoLibre ────────────────────────────────────────────────────────────
 
   // Credenciales OAuth (fila única id=1 de ml_config). Devuelve null si la tabla

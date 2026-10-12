@@ -4341,6 +4341,100 @@ async function completarCompradoresML() {
   return completados;
 }
 
+// ── Conforme de entrega (ventas de ML "a coordinar") ────────────────────────
+// ML no expone este documento por API: lo baja el admin del panel de ML y lo
+// sube acá. El armador lo imprime y lo mete SUELTO en el paquete — no pegado —
+// para que lo llene quien retira en MarcoPostal.
+
+const CONFORME_MAX_BYTES = 8 * 1024 * 1024;
+
+app.post('/api/pedidos/:pedidoId/conforme', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const pedido = await supabaseService.obtenerPedido(req.params.pedidoId);
+    if (!pedido) return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+
+    const { contenido, nombre, contentType } = req.body || {};
+    if (!contenido || typeof contenido !== 'string') {
+      return res.status(400).json({ success: false, error: 'Falta el archivo' });
+    }
+
+    // Llega como data URL o base64 pelado.
+    const base64 = contenido.includes(',') ? contenido.split(',').pop() : contenido;
+    let buffer;
+    try {
+      buffer = Buffer.from(base64, 'base64');
+    } catch {
+      return res.status(400).json({ success: false, error: 'El archivo no se pudo leer' });
+    }
+    if (buffer.length === 0) {
+      return res.status(400).json({ success: false, error: 'El archivo llegó vacío' });
+    }
+    if (buffer.length > CONFORME_MAX_BYTES) {
+      return res.status(413).json({ success: false, error: 'El archivo supera los 8 MB' });
+    }
+    // Se exige PDF: el armador lo imprime, y un .docx o una captura no sirven.
+    if (buffer.slice(0, 4).toString() !== '%PDF') {
+      return res.status(400).json({ success: false, error: 'El archivo tiene que ser un PDF' });
+    }
+
+    const guardado = await supabaseService.guardarAdjuntoPedido({
+      pedidoId: pedido.id,
+      tipo: 'conforme_ml',
+      nombre: nombre || `conforme-${pedido.numero_pedido}.pdf`,
+      contentType: contentType || 'application/pdf',
+      contenido: base64,
+      tamano: buffer.length,
+      subidoPor: req.user?.nombre || req.user?.email || null,
+    });
+
+    logService.info(`Conforme adjuntado al pedido ${pedido.numero_pedido}`, {
+      pedidoId: pedido.id,
+      bytes: buffer.length,
+      por: req.user?.nombre,
+    });
+    res.json({ success: true, data: guardado });
+  } catch (error) {
+    logService.error('Error adjuntando el conforme de entrega', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Sirve el PDF. Sin auth por header a propósito: lo abre el armador en una
+// pestaña nueva y lo manda a imprimir, y un <a> no puede mandar Authorization
+// (mismo criterio que las etiquetas de MarcoPostal y ML).
+app.get('/api/pedidos/:pedidoId/conforme', async (req, res) => {
+  try {
+    const adjunto = await supabaseService.obtenerAdjuntoPedido(req.params.pedidoId, 'conforme_ml');
+    if (!adjunto) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      return res.status(404).json({ success: false, error: 'Este pedido no tiene conforme adjunto' });
+    }
+    const buffer = Buffer.from(adjunto.contenido, 'base64');
+    // Content-Type explícito: un middleware global deja todo en application/json
+    // y sin esto el navegador no abre el visor de PDF.
+    res.setHeader('Content-Type', adjunto.content_type || 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `${String(req.query.download || '') === '1' ? 'attachment' : 'inline'}; filename="${String(adjunto.nombre || 'conforme.pdf').replace(/"/g, '')}"`
+    );
+    return res.send(buffer);
+  } catch (error) {
+    logService.error('Error sirviendo el conforme de entrega', error);
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/pedidos/:pedidoId/conforme', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    await supabaseService.eliminarAdjuntoPedido(req.params.pedidoId, 'conforme_ml');
+    res.json({ success: true });
+  } catch (error) {
+    logService.error('Error eliminando el conforme de entrega', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ── Sincronización automática de stock ML ↔ Shopify ─────────────────────────
 // Shopify es el master: el stock real vive ahí y `productos` lo espeja. Una venta
 // de ML descuenta en Shopify (ML ya descontó lo suyo solo); cualquier cambio de

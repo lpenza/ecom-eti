@@ -401,6 +401,23 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
                     />
                     Puse el conforme adentro del paquete, sin pegarlo
                   </label>
+                  <div style={{ marginTop: '0.5rem' }}>
+                    {pedido.conforme_adjunto_at ? (
+                      <a
+                        href={`/api/pedidos/${pedido.id}/conforme`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn btn-secondary btn-sm"
+                        title="Abrir el conforme para imprimirlo"
+                      >
+                        🖨 Imprimir conforme
+                      </a>
+                    ) : (
+                      <span style={{ fontSize: '0.82rem', color: '#9a3412', fontWeight: 600 }}>
+                        ⚠ Todavía no hay conforme adjunto — pedíselo a administración antes de cerrar el paquete.
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
 
