@@ -154,6 +154,12 @@ function PedidosTable({
   modoPendienteContacto = false,
   allowRedownload = false,
   groupByTracking = false,
+  // Ventas de ML "a coordinar": quien decide si corresponde el boton es App.jsx,
+  // que es el que tiene la lista completa de pedidos para cruzar por comprador.
+  onGenerarGuiaPickupML,
+  esMlACoordinar: esMlACoordinarFn,
+  buscarPedidoAsociado,
+  pickupMlCargandoId = null,
 }) {
   const [previewPedido, setPreviewPedido] = useState(null);
   // allSelected: true solo si TODOS los de la vista filtrada están seleccionados
@@ -281,6 +287,10 @@ function PedidosTable({
                     activeContactTemplate={activeContactTemplate}
                     modoPendienteContacto={modoPendienteContacto}
                     allowRedownload={allowRedownload}
+                    onGenerarGuiaPickupML={onGenerarGuiaPickupML}
+                    esMlACoordinar={Boolean(esMlACoordinarFn && esMlACoordinarFn(pedido))}
+                    pedidoAsociado={buscarPedidoAsociado ? buscarPedidoAsociado(pedido) : null}
+                    pickupMlCargando={pickupMlCargandoId === pedido.id}
                   />
                 );
               })
@@ -308,6 +318,10 @@ function PedidoRow({
   onProcesarDirecto,
   onRevertirEtiqueta,
   onGuardarLinkDrive,
+  onGenerarGuiaPickupML,
+  esMlACoordinar = false,
+  pedidoAsociado = null,
+  pickupMlCargando = false,
   fulfillmentPreview = false,
   channelPriority = 'email',
   showNotifyColumn = true,
@@ -604,6 +618,31 @@ function PedidoRow({
               >
                 📮 Etiqueta MP
               </button>
+            )}
+
+            {/* Venta de ML "a coordinar con el vendedor": ML no emite etiqueta ni
+                nos da dirección, así que la salida es una guía Pick-UP de MP
+                (retiro en oficina, no necesita dirección). Si el mismo comprador
+                tiene otro pedido activo van juntos y esta no lleva etiqueta
+                propia: en vez del botón se explica con cuál va. */}
+            {esMlACoordinar && !pedido.etiqueta_generada && !fulfillmentPreview && onGenerarGuiaPickupML && (
+              pedidoAsociado ? (
+                <span
+                  className="cadeteria-guard-hint cadeteria-guard-hint-pending"
+                  title={`${pedido.cliente_nombre} también tiene el pedido #${pedidoAsociado.numero_pedido}. Despachalos juntos con esa etiqueta.`}
+                >
+                  🔗 va con #{pedidoAsociado.numero_pedido}
+                </span>
+              ) : (
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={pickupMlCargando}
+                  onClick={() => onGenerarGuiaPickupML(pedido)}
+                  title="Emitir guía Pick-UP de MarcoPostal (el comprador retira en oficina). No requiere dirección."
+                >
+                  {pickupMlCargando ? '⏳ Emitiendo…' : '🏪 Etiqueta Pick-UP MP'}
+                </button>
+              )
             )}
 
             {pedido.es_reenvio && !fulfillmentPreview && onGenerarEtiquetaUES && !pedido.etiqueta_generada && (

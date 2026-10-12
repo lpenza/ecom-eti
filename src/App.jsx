@@ -51,6 +51,7 @@ import {
   crearReenvio,
   buscarPedidos,
   generarGuiaMarcoPostalWeb,
+  generarGuiaPickupMarcoPostal,
   obtenerStockPlannerSSO,
   marcarRetiroCadeteria,
   buscarEtiquetasCadeteria,
@@ -247,6 +248,32 @@ function AppContent({ user, logout }) {
   // manual" y encendían la alerta de tracking sin que hubiera nada que resolver.
   // Viven en su propia tarjeta (🛒 ML) y siguen entrando a la cola del armador.
   const esMercadoLibre = (p) => p?.origen === 'mercadolibre';
+
+  // ── Ventas de ML "a coordinar con el vendedor" ─────────────────────────────
+  // No traen envío de Mercado Envíos, así que ML no emite etiqueta y tampoco nos
+  // da dirección: sólo el nombre del comprador. Para esas se puede emitir una
+  // guía Pick-UP de MarcoPostal (retiro en oficina), que no necesita dirección.
+  const esMlACoordinar = (p) => esMercadoLibre(p) && !p?.ml_shipment_id;
+
+  // Nombres de comprador comparables: sin tildes, sin mayúsculas y sin espacios
+  // de más. Es lo único que ML nos da de estos pedidos — no hay email ni teléfono
+  // para cruzar — así que el match es por nombre y por eso se normaliza.
+  const normalizarNombre = (s) => String(s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/\s+/g, ' ').trim();
+
+  // Otro pedido activo del mismo comprador: si existe, los dos van en un mismo
+  // paquete y este no lleva etiqueta propia.
+  const otroPedidoDelMismoCliente = (pedido) => {
+    const nombre = normalizarNombre(pedido?.cliente_nombre);
+    if (!nombre) return null;
+    return pedidos.find((otro) => (
+      otro.id !== pedido.id
+      && !estadoEsCerrado(otro.estado)
+      && String(otro.estado || '').toLowerCase() !== 'cancelado'
+      && normalizarNombre(otro.cliente_nombre) === nombre
+    )) || null;
+  };
 
   // Pedidos que aún no tienen etiqueta generada (necesitan validación)
   const pedidosPendientes = pedidos.filter(
@@ -1203,6 +1230,39 @@ function AppContent({ user, logout }) {
       mostrarToast(error.message || 'Error sincronizando MercadoLibre', 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Emite la guía Pick-UP de MarcoPostal para una venta de ML "a coordinar".
+  // Pide confirmación porque genera una guía real en MarcoPostal, que después hay
+  // que anular a mano si fue un error.
+  const [pickupMlCargandoId, setPickupMlCargandoId] = useState(null);
+
+  const handleGenerarGuiaPickupML = async (pedido) => {
+    const asociado = otroPedidoDelMismoCliente(pedido);
+    if (asociado) {
+      mostrarToast(
+        `${pedido.cliente_nombre} también tiene el pedido #${asociado.numero_pedido} — despachalos juntos`,
+        'warning'
+      );
+      return;
+    }
+    const ok = window.confirm(
+      `Emitir guía Pick-UP de MarcoPostal para ${pedido.cliente_nombre || 'este pedido'} (#${pedido.numero_pedido})?\n\n` +
+      'El comprador retira en la oficina de MarcoPostal. Se genera una guía real: si te equivocás hay que anularla a mano.'
+    );
+    if (!ok) return;
+
+    setPickupMlCargandoId(pedido.id);
+    try {
+      const r = await generarGuiaPickupMarcoPostal(pedido.id);
+      if (!r?.success) throw new Error(r?.error || 'MarcoPostal no devolvió la guía');
+      mostrarToast(`🏪 Guía Pick-UP ${r.data?.guiaId} emitida para #${pedido.numero_pedido}`, 'success');
+      await cargarPedidos();
+    } catch (error) {
+      mostrarToast(error.message || 'No se pudo emitir la guía Pick-UP', 'error');
+    } finally {
+      setPickupMlCargandoId(null);
     }
   };
 
@@ -3136,6 +3196,10 @@ function AppContent({ user, logout }) {
               channelPriority={channelPriority}
               /* En ML no hay nada que notificar desde acá: el aviso al comprador
                  lo manda MercadoLibre. El tracking sí se muestra (es el de ML). */
+              onGenerarGuiaPickupML={handleGenerarGuiaPickupML}
+              esMlACoordinar={esMlACoordinar}
+              buscarPedidoAsociado={otroPedidoDelMismoCliente}
+              pickupMlCargandoId={pickupMlCargandoId}
               showNotifyColumn={tableFilter !== 'porValidar' && tableFilter !== 'mercadolibre'}
               showTrackingColumn={tableFilter !== 'porValidar'}
               showProcesarButton={tableFilter === 'despachados'}

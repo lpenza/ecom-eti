@@ -3755,7 +3755,10 @@ app.post('/api/marcopostal/preview-guia/:pedidoRef', async (req, res) => {
     if (!pedido) {
       return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
     }
-    const isPickup = pedido.tipo_envio === 'pickup_local';
+    // Mismo override que generar-guia-web: permite ver el payload de una guía
+    // pickup sin tocarle el tipo_envio al pedido ni emitir nada. Sirve para
+    // chequear una venta de ML "a coordinar" antes de generar la guía de verdad.
+    const isPickup = pedido.tipo_envio === 'pickup_local' || Boolean(req.body?.forzarPickup);
     const preview = isPickup
       ? await marcoPostalWebService.previewGuiaPickup(pedido)
       : await marcoPostalWebService.previewGuia(pedido);
@@ -3778,7 +3781,11 @@ app.post('/api/marcopostal/generar-guia-web/:pedidoRef', async (req, res) => {
     if (!pedido) {
       return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
     }
-    const isPickup = pedido.tipo_envio === 'pickup_local';
+    // `forzarPickup` emite una guía de retiro en oficina sin cambiarle el
+    // tipo_envio al pedido. Lo usan las ventas de ML "a coordinar con el
+    // vendedor": no traen dirección, y una guía pickup no la necesita (la
+    // dirección de entrega va vacía y se usa el punto de retiro fijo).
+    const isPickup = pedido.tipo_envio === 'pickup_local' || Boolean(req.body?.forzarPickup);
     const result = isPickup
       ? await marcoPostalWebService.generarGuiaPickup(pedido, req.body?.payloadOverrides || {})
       : await marcoPostalWebService.generarGuia(pedido, req.body?.payloadOverrides || {});

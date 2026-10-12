@@ -366,6 +366,18 @@ export async function generarGuiaMarcoPostalWeb(pedidoIdOrNumero, payloadOverrid
   });
 }
 
+/**
+ * Emite una guía Pick-UP de MarcoPostal (retiro en oficina) sin cambiarle el
+ * tipo_envio al pedido. Para ventas de ML "a coordinar con el vendedor", que no
+ * traen dirección: la guía pickup no la necesita.
+ */
+export async function generarGuiaPickupMarcoPostal(pedidoIdOrNumero) {
+  return await fetchAPI(`/marcopostal/generar-guia-web/${pedidoIdOrNumero}`, {
+    method: 'POST',
+    body: JSON.stringify({ forzarPickup: true }),
+  });
+}
+
 // Asocia manualmente un guiaId existente de MarcoPostal a un pedido (renderiza
 // el PDF y guarda tracking + link en BD).
 export async function asociarGuiaMarcoPostal(pedidoIdOrNumero, guiaId) {
