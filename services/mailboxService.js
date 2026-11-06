@@ -31,7 +31,7 @@ const keepAliveAgent = new https.Agent({ keepAlive: true, maxSockets: 10 });
 const MAIL_MADRE = String(process.env.MAIL_MADRE || 'info@velinneuy.com').toLowerCase().trim();
 const MAIL_ALIASES = String(
   process.env.MAIL_ALIASES
-  || `${MAIL_MADRE},ventas@velinneuy.com,consultas@velinneuy.com,facturacion@velinneuy.com`
+  || `${MAIL_MADRE},ventas@velinneuy.com,consultas@velinneuy.com,facturacion@velinneuy.com,mercadopago@velinneuy.com`
 )
   .split(',')
   .map((s) => s.toLowerCase().trim())

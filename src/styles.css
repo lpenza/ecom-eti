@@ -8540,6 +8540,12 @@ body {
   margin-top: 0.2rem;
 }
 
+.fact-recalculando {
+  font-size: 0.95rem;
+  color: var(--brand-text-soft);
+  font-style: italic;
+}
+
 /* Cabecera del reporte */
 .fact-reporte-head {
   display: flex;

@@ -7,6 +7,8 @@ import MarcoPostalPreviewModal from './components/modals/MarcoPostalPreviewModal
 import ValidarEtiquetasMPModal from './components/modals/ValidarEtiquetasMPModal';
 import PDFPreviewModal from './components/modals/PDFPreviewModal';
 import EmailContactoPreviewModal from './components/modals/EmailContactoPreviewModal';
+import ComprobanteModal from './components/modals/ComprobanteModal';
+import ComprobanteLoteModal from './components/modals/ComprobanteLoteModal';
 import LoadingModal from './components/modals/LoadingModal';
 import Toast from './components/Toast';
 import NotificacionesPanel from './components/NotificacionesPanel';
@@ -54,6 +56,7 @@ import {
   generarGuiaPickupMarcoPostal,
   adjuntarConformePedido,
   urlConformePedido,
+  eliminarPedido,
   obtenerStockPlannerSSO,
   marcarRetiroCadeteria,
   buscarEtiquetasCadeteria,
@@ -72,6 +75,7 @@ import CadeteriaPanel from './components/CadeteriaPanel';
 import EmailsPanel from './components/EmailsPanel';
 import FaqAtencionPanel from './components/FaqAtencionPanel';
 import { formatFechaUy, formatUy } from './utils/fechas';
+import { cierreFuera } from './utils/cierreModal';
 
 const HTML_TEMPLATE_PREFIX = '[HTML] ';
 
@@ -206,6 +210,7 @@ function AppContent({ user, logout }) {
   const [pedidosEnviadosLoaded, setPedidosEnviadosLoaded] = useState(false);
   const [pedidosEnviadosLoading, setPedidosEnviadosLoading] = useState(false);
   const [searchEnviados, setSearchEnviados] = useState('');
+  const [enviadosCourierFilter, setEnviadosCourierFilter] = useState(null); // null | 'marcopostal' | 'ues' | 'ml'
   const [pedidosArmadoOperario, setPedidosArmadoOperario] = useState([]);
   const [pickupList,    setPickupList]    = useState([]);
   const [recibiloList,  setRecibiloList]  = useState([]);
@@ -380,6 +385,18 @@ function AppContent({ user, logout }) {
     ? pedidosDespachadosActivos.filter((p) => getCourierPedido(p) === despachadosCourierFilter)
     : pedidosDespachadosActivos;
 
+  // En procesados ya no importa el diferido de los pickup: cuentan como MarcoPostal,
+  // así los tres chips cubren toda la lista.
+  const getCourierProcesado = (p) => {
+    const grupo = getCourierPedido(p);
+    return grupo === 'marcopostal_pickup' ? 'marcopostal' : grupo;
+  };
+  const enviadosPorGrupo = pedidosEnviadosList.reduce((acc, p) => {
+    const grupo = getCourierProcesado(p);
+    acc[grupo] = (acc[grupo] || 0) + 1;
+    return acc;
+  }, {});
+
   // El fulfillment solo sale para pedidos que la cadetería ya retiró. Los pickup no
   // pasan por cadetería: el backend les hace "listo para retirar" en vez de un envío.
   // Los de ML no pasan por cadetería ni por fulfillment: los llevás vos al punto
@@ -467,8 +484,11 @@ function AppContent({ user, logout }) {
     if (tableFilter === 'despachados') return pedidosDespachadosFiltrados;
     if (tableFilter === 'enviados') {
       const q = searchEnviados.trim().toLowerCase();
-      if (!q) return pedidosEnviadosList;
-      return pedidosEnviadosList.filter((p) =>
+      const porCourier = enviadosCourierFilter
+        ? pedidosEnviadosList.filter((p) => getCourierProcesado(p) === enviadosCourierFilter)
+        : pedidosEnviadosList;
+      if (!q) return porCourier;
+      return porCourier.filter((p) =>
         String(p.numero_pedido || '').toLowerCase().includes(q) ||
         String(p.cliente_nombre || '').toLowerCase().includes(q)
       );
@@ -1264,6 +1284,31 @@ function AppContent({ user, logout }) {
     }
   };
 
+  // Etiqueta UES para una venta de ML "a coordinar". ML no nos da la dirección,
+  // así que se abre el mismo modal de datos que usan Validar y Reenvíos: el
+  // operador carga la dirección que acordó con el comprador y de ahí sale por
+  // handleConfirmarGeneracion (UES, o MarcoPostal si el destino es Montevideo,
+  // igual que cualquier otro pedido). El pedido no cambia de origen: sigue en el
+  // circuito de ML.
+  const handleGenerarEtiquetaUESML = (pedido) => {
+    const asociado = otroPedidoDelMismoCliente(pedido);
+    if (asociado) {
+      mostrarToast(
+        `${pedido.cliente_nombre} también tiene el pedido #${asociado.numero_pedido} — despachalos juntos`,
+        'warning'
+      );
+      return;
+    }
+    if (!uesAuthenticated) {
+      mostrarToast('Iniciá sesión en UES antes de generar la etiqueta', 'warning');
+      return;
+    }
+    setPreviewMode('normal');
+    setPreviewPedidos([pedido]);
+    setPreviewInitialIndex(0);
+    setShowDatosModal(true);
+  };
+
   // Sube el conforme de entrega que el admin bajó del panel de ML. ML no lo da
   // por API, así que es carga manual: un PDF por venta "a coordinar".
   const [conformeSubiendoId, setConformeSubiendoId] = useState(null);
@@ -1294,6 +1339,57 @@ function AppContent({ user, logout }) {
       mostrarToast(error.message || 'No se pudo adjuntar el conforme', 'error');
     } finally {
       setConformeSubiendoId(null);
+    }
+  };
+
+  // Borra un pedido sin etiqueta que entró por error. Las ventas de ML no se
+  // borran: el server las pasa a canceladas para que el sync no las reviva.
+  const [eliminandoPedidoId, setEliminandoPedidoId] = useState(null);
+
+  // e-Ticket en Zensei (solo admin): pedido cuyo comprobante se está viendo/emitiendo.
+  const [comprobantePedido, setComprobantePedido] = useState(null);
+  // Pedidos de la emisión masiva en curso (null = cerrado).
+  const [loteComprobantes, setLoteComprobantes] = useState(null);
+  // Comprobantes emitidos en esta sesión, por id de pedido. Cada pestaña carga su
+  // lista por separado (pendientes, despachados, enviados): con esto la fila pasa
+  // a "emitido" al instante en cualquiera de ellas, sin esperar la recarga.
+  const [comprobantesLocales, setComprobantesLocales] = useState({});
+
+  const registrarComprobantes = (pares) => {
+    const nuevos = {};
+    for (const [pedidoId, comprobante] of pares) {
+      if (pedidoId && comprobante?.cfeId) nuevos[pedidoId] = comprobante;
+    }
+    if (Object.keys(nuevos).length) setComprobantesLocales((prev) => ({ ...prev, ...nuevos }));
+    cargarPedidos();
+    if (pedidosEnviadosLoaded) cargarPedidosEnviados();
+    cargarPedidosDespachados();
+  };
+
+  // Un pedido entra a la emisión masiva si es de Shopify y todavía no tiene CFE.
+  const esFacturableETicket = (p) =>
+    p && !p._mergedIds && p.origen !== 'mercadolibre' && !p.ml_order_id && !p.cfe_id && !comprobantesLocales[p.id];
+
+  const handleEliminarPedido = async (pedido) => {
+    const esML = Boolean(pedido.ml_order_id);
+    const confirmado = window.confirm(esML
+      ? `¿Cancelar la venta de ML #${pedido.numero_pedido} (${pedido.cliente_nombre || 'sin nombre'})? Sale del panel; en MercadoLibre no cambia nada.`
+      : `¿Eliminar el pedido #${pedido.numero_pedido} (${pedido.cliente_nombre || 'sin nombre'})? No se puede deshacer.`);
+    if (!confirmado) return;
+
+    setEliminandoPedidoId(pedido.id);
+    try {
+      const r = await eliminarPedido(pedido.id);
+      if (!r?.success) throw new Error(r?.error || 'No se pudo eliminar');
+      mostrarToast(r.cancelado
+        ? `🗑 Venta #${pedido.numero_pedido} cancelada en el panel`
+        : `🗑 Pedido #${pedido.numero_pedido} eliminado`, 'success');
+      if (selectedPedidos.includes(pedido.id)) toggleSelectPedido(pedido.id);
+      await cargarPedidos();
+    } catch (error) {
+      mostrarToast(error.message || 'No se pudo eliminar el pedido', 'error');
+    } finally {
+      setEliminandoPedidoId(null);
     }
   };
 
@@ -2660,6 +2756,37 @@ function AppContent({ user, logout }) {
             onTrackingTemplateChange={setActiveTrackingTemplateId}
           />}
 
+          {/* Emisión masiva de e-Tickets: SOLO los pedidos seleccionados. Sin
+              selección el botón queda deshabilitado (nunca se toma "toda la vista"). */}
+          {esAdmin && fulfillmentPreviewIds === null && tableFilter !== 'mercadolibre'
+            && !['reclamosPendientes', 'pickup', 'recibilo', 'reenvios'].includes(tableFilter) && (() => {
+            const seleccionadosVista = pedidosFiltradosPorCard.filter((p) => selectedPedidos.includes(p.id));
+            const lote = seleccionadosVista.filter(esFacturableETicket);
+            const excluidos = seleccionadosVista.length - lote.length;
+            return (
+              <div className="section-action-bar">
+                <span>
+                  🧾 {selectedPedidos.length === 0
+                    ? 'Seleccioná los pedidos a facturar'
+                    : `${lote.length} seleccionado(s) para e-Ticket`}
+                  {excluidos > 0 && ` · ${excluidos} no van (ya tienen comprobante o son de ML)`}
+                </span>
+                <button
+                  className="btn btn-primary btn-sm"
+                  disabled={lote.length === 0 || lote.length > 100}
+                  onClick={() => setLoteComprobantes(lote)}
+                  title={lote.length === 0
+                    ? 'Seleccioná con el checkbox los pedidos que querés facturar'
+                    : lote.length > 100
+                      ? 'Máximo 100 pedidos por tanda: seleccioná menos'
+                      : 'Revisar y emitir los e-Tickets de los pedidos seleccionados'}
+                >
+                  🧾 Emitir e-Tickets ({lote.length})
+                </button>
+              </div>
+            );
+          })()}
+
           {/* Barra de accion email masivo (solo en pendientes contacto) */}
           {esAdmin && tableFilter === 'pendientesContacto' && (
             <div className="section-action-bar">
@@ -2967,8 +3094,34 @@ function AppContent({ user, logout }) {
                   <button type="button" className="enviados-search-clear" onClick={() => setSearchEnviados('')}>✕</button>
                 )}
               </div>
+              <div className="notif-preview-chips">
+                <button
+                  type="button"
+                  className={`notif-chip notif-chip-mp ${enviadosCourierFilter === 'marcopostal' ? 'notif-chip-active' : ''}`}
+                  onClick={() => setEnviadosCourierFilter(enviadosCourierFilter === 'marcopostal' ? null : 'marcopostal')}
+                  title="MarcoPostal: normales, Recibilo Hoy y Pick-UP"
+                >
+                  🛵 MarcoPostal ({enviadosPorGrupo.marcopostal || 0})
+                </button>
+                <button
+                  type="button"
+                  className={`notif-chip notif-chip-ues ${enviadosCourierFilter === 'ues' ? 'notif-chip-active' : ''}`}
+                  onClick={() => setEnviadosCourierFilter(enviadosCourierFilter === 'ues' ? null : 'ues')}
+                  title="Envíos UES (seguimiento con prefijo UES)"
+                >
+                  🚚 UES ({enviadosPorGrupo.ues || 0})
+                </button>
+                <button
+                  type="button"
+                  className={`notif-chip notif-chip-ml ${enviadosCourierFilter === 'ml' ? 'notif-chip-active' : ''}`}
+                  onClick={() => setEnviadosCourierFilter(enviadosCourierFilter === 'ml' ? null : 'ml')}
+                  title="Ventas de MercadoLibre"
+                >
+                  🛒 ML ({enviadosPorGrupo.ml || 0})
+                </button>
+              </div>
               <span className="enviados-search-count">
-                {searchEnviados
+                {searchEnviados || enviadosCourierFilter
                   ? `${pedidosFiltradosPorCard.length} resultado(s) de ${pedidosEnviadosList.length}`
                   : `${pedidosEnviadosList.length} pedido(s) procesados`}
               </span>
@@ -3228,6 +3381,7 @@ function AppContent({ user, logout }) {
               /* En ML no hay nada que notificar desde acá: el aviso al comprador
                  lo manda MercadoLibre. El tracking sí se muestra (es el de ML). */
               onGenerarGuiaPickupML={handleGenerarGuiaPickupML}
+              onGenerarEtiquetaUESML={handleGenerarEtiquetaUESML}
               esMlACoordinar={esMlACoordinar}
               buscarPedidoAsociado={otroPedidoDelMismoCliente}
               pickupMlCargandoId={pickupMlCargandoId}
@@ -3235,6 +3389,10 @@ function AppContent({ user, logout }) {
               onAdjuntarConforme={handleAdjuntarConforme}
               urlConforme={urlConformePedido}
               conformeSubiendoId={conformeSubiendoId}
+              onEliminarPedido={esAdmin && fulfillmentPreviewIds === null ? handleEliminarPedido : undefined}
+              eliminandoPedidoId={eliminandoPedidoId}
+              onComprobante={esAdmin && fulfillmentPreviewIds === null && tableFilter !== 'mercadolibre' ? setComprobantePedido : undefined}
+              comprobantesLocales={comprobantesLocales}
               showNotifyColumn={tableFilter !== 'porValidar' && tableFilter !== 'mercadolibre'}
               showTrackingColumn={tableFilter !== 'porValidar'}
               showProcesarButton={tableFilter === 'despachados'}
@@ -3550,6 +3708,27 @@ function AppContent({ user, logout }) {
         );
       })()}
 
+      {comprobantePedido && (
+        <ComprobanteModal
+          pedido={comprobantePedido}
+          onClose={() => setComprobantePedido(null)}
+          onEmitido={(c, pedidoIds) => registrarComprobantes((pedidoIds || [comprobantePedido.id]).map((id) => [id, c]))}
+          mostrarToast={mostrarToast}
+        />
+      )}
+
+      {loteComprobantes && (
+        <ComprobanteLoteModal
+          pedidos={loteComprobantes}
+          onClose={() => setLoteComprobantes(null)}
+          onTerminado={(resultados) => {
+            registrarComprobantes(resultados.flatMap((r) => (r.pedidoIds || [r.pedidoId]).map((id) => [id, r.comprobante])));
+            limpiarSeleccion();
+          }}
+          mostrarToast={mostrarToast}
+        />
+      )}
+
       {/* Modal de vista previa de PDF */}
       {showPDFModal && (
         <PDFPreviewModal
@@ -3576,7 +3755,10 @@ function AppContent({ user, logout }) {
 
       {/* Modal crear reenvío */}
       {reenvioModal && (
-        <div className="modal-overlay" onClick={handleCerrarModalReenvio}>
+        <div
+          className="modal-overlay"
+          {...cierreFuera(handleCerrarModalReenvio, { bloqueado: reenvioCreating, mensaje: '¿Cerrar sin crear el reenvío? Se pierde lo que cargaste.' })}
+        >
           <div className="modal-content" style={{ maxWidth: 520 }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
               <h3>Crear Reenvío — Pedido #{reenvioModal.numero_pedido}</h3>

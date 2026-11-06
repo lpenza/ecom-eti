@@ -381,6 +381,11 @@ export function urlConformePedido(pedidoId, descargar = false) {
   return `/api/pedidos/${pedidoId}/conforme${descargar ? '?download=1' : ''}`;
 }
 
+/** Elimina un pedido sin etiqueta (o lo cancela si es de ML). Solo admin. */
+export async function eliminarPedido(pedidoId) {
+  return await fetchAPI(`/pedidos/${pedidoId}`, { method: 'DELETE' });
+}
+
 export async function eliminarConformePedido(pedidoId) {
   return await fetchAPI(`/pedidos/${pedidoId}/conforme`, { method: 'DELETE' });
 }
@@ -1266,4 +1271,69 @@ export async function obtenerMiniaturaCreativo(fileId) {
 // job: 'reporte' | 'auditoria' | 'ganadores'
 export async function obtenerReportesMetaAds(job) {
   return fetchAPI(`/meta-ads/reportes?job=${job}`);
+}
+
+// ── Comprobantes fiscales (e-Ticket en Zensei) ─────────────────────────────
+// Emisión manual por pedido (solo admin). Ver services/comprobanteBuilder.js.
+
+/**
+ * Preview del e-Ticket: líneas, netos, IVA y si se puede emitir. No emite nada.
+ * Junta los otros pedidos del mismo cliente sin facturar (`grupo`), salvo que
+ * se pida `separado`.
+ */
+export async function obtenerPreviewComprobante(pedidoId, { separado = false } = {}) {
+  return fetchAPI(`/pedidos/${pedidoId}/comprobante/preview${separado ? '?separado=1' : ''}`);
+}
+
+/**
+ * Emite el e-Ticket en Zensei (comprobante REAL a DGI).
+ * fecha: 'hoy' o 'pedido' (fecha en que entró el pedido, hasta 2 días atrás).
+ * pedidoIds: los pedidos que se vieron juntos en el preview; si el grupo cambió
+ * el server no emite.
+ */
+export async function emitirComprobante(pedidoId, fecha = 'hoy', { separado = false, pedidoIds = null } = {}) {
+  return fetchAPI(`/pedidos/${pedidoId}/comprobante`, {
+    method: 'POST',
+    body: JSON.stringify({ fecha, separado, pedidoIds }),
+  });
+}
+
+/** Vuelve a consultar el estado del comprobante en Zensei. */
+export async function actualizarEstadoComprobante(pedidoId) {
+  return fetchAPI(`/pedidos/${pedidoId}/comprobante/actualizar`, { method: 'POST' });
+}
+
+/** PDF del comprobante como blob (el endpoint pide el token: no sirve un link directo). */
+export async function obtenerPdfComprobante(pedidoId) {
+  const response = await fetch(`${API_BASE}/pedidos/${pedidoId}/comprobante/pdf`, { headers: getAuthHeaders() });
+  if (!response.ok) {
+    let mensaje = 'No se pudo bajar el PDF del comprobante';
+    try { mensaje = (await response.json()).error || mensaje; } catch (_) { /* no era JSON */ }
+    throw new Error(mensaje);
+  }
+  return response.blob();
+}
+
+/**
+ * Revisión previa de una emisión masiva: por cada pedido, si se puede emitir,
+ * total, fecha posible y motivos de bloqueo. No emite nada.
+ */
+export async function previewLoteComprobantes(pedidoIds, onProgreso) {
+  return fetchAPIConProgreso('/comprobantes/lote/preview', {
+    method: 'POST',
+    body: JSON.stringify({ pedidoIds }),
+  }, onProgreso);
+}
+
+/**
+ * Emisión masiva de e-Tickets (comprobantes REALES a DGI), de a uno.
+ * fecha: 'auto' (la del pedido si tiene hasta 2 días, si no hoy) u 'hoy'.
+ * onProgreso recibe { mensaje, hechos, total, item } por cada pedido.
+ * grupos: pedidoId → ids del mismo cliente que el preview juntó en su e-Ticket.
+ */
+export async function emitirLoteComprobantes(pedidoIds, fecha = 'auto', onProgreso, grupos = {}) {
+  return fetchAPIConProgreso('/comprobantes/lote', {
+    method: 'POST',
+    body: JSON.stringify({ pedidoIds, fecha, grupos }),
+  }, onProgreso);
 }

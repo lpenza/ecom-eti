@@ -128,6 +128,47 @@ function IframePreview({ src, title }) {
   );
 }
 
+// e-Ticket de Zensei: número si ya está emitido, botón para emitirlo si no.
+// Las ventas de ML no van: las factura la integración de ML de Zensei.
+// `local` es el comprobante recién emitido en esta sesión (antes de que la lista
+// se recargue): con él la fila deja de ofrecer "Emitir" al instante.
+// Una fila agrupada (varios pedidos con la misma guía) abre el e-Ticket del
+// primero: el server junta a los del mismo cliente en un solo comprobante.
+function CeldaComprobante({ pedido, onComprobante, local }) {
+  if (pedido.origen === 'mercadolibre' || pedido.ml_order_id) {
+    return <span style={{ color: '#aaa' }} title="Las ventas de MercadoLibre las factura Zensei con su integración de ML">ML</span>;
+  }
+  const cfeId = pedido.cfe_id || local?.cfeId;
+  if (cfeId) {
+    // Ya emitido: no hay botón de emitir. El número abre el comprobante (PDF y
+    // estado); el modal y el server rechazan cualquier segunda emisión.
+    const serie = pedido.cfe_serie || local?.serie;
+    const numero = pedido.cfe_numero ?? local?.numero;
+    const status = pedido.cfe_status || local?.status;
+    const pendiente = status && status !== 'SENT';
+    return (
+      <button
+        className="btn btn-outline btn-sm"
+        onClick={() => onComprobante(pedido)}
+        title={pendiente ? `e-Ticket emitido — estado en Zensei: ${status}` : 'e-Ticket ya emitido y enviado a DGI — ver PDF'}
+        style={{ whiteSpace: 'nowrap', color: pendiente ? '#ea580c' : '#16a34a' }}
+      >
+        ✅ {serie}-{numero}{pendiente ? ' ⚠️' : ''}
+      </button>
+    );
+  }
+  return (
+    <button
+      className="btn btn-secondary btn-sm"
+      onClick={() => onComprobante(pedido)}
+      title={pedido.cfe_error ? `Último intento sin comprobante: ${pedido.cfe_error}` : 'Ver el e-Ticket y emitirlo'}
+      style={{ whiteSpace: 'nowrap' }}
+    >
+      🧾 {pedido.cfe_error ? 'Reintentar ⚠️' : 'Emitir'}
+    </button>
+  );
+}
+
 function PedidosTable({
   pedidos,
   selectedPedidos,
@@ -157,6 +198,7 @@ function PedidosTable({
   // Ventas de ML "a coordinar": quien decide si corresponde el boton es App.jsx,
   // que es el que tiene la lista completa de pedidos para cruzar por comprador.
   onGenerarGuiaPickupML,
+  onGenerarEtiquetaUESML,
   esMlACoordinar: esMlACoordinarFn,
   buscarPedidoAsociado,
   pickupMlCargandoId = null,
@@ -166,6 +208,12 @@ function PedidosTable({
   onAdjuntarConforme,
   urlConforme,
   conformeSubiendoId = null,
+  // Solo admin: borrar pedidos sin etiqueta cargados por error.
+  onEliminarPedido,
+  eliminandoPedidoId = null,
+  // Solo admin: e-Ticket en Zensei. Recibe el pedido y abre el modal.
+  onComprobante,
+  comprobantesLocales = {},
 }) {
   const [previewPedido, setPreviewPedido] = useState(null);
   // allSelected: true solo si TODOS los de la vista filtrada están seleccionados
@@ -242,12 +290,14 @@ function PedidosTable({
               {showNotifyColumn && <th>Notificar</th>}
               {mostrarAccionML && <th>Acción</th>}
               {showProcesarButton && <th>Acción</th>}
+              {onComprobante && <th title="e-Ticket en Zensei">Comprobante</th>}
+              {onEliminarPedido && <th aria-label="Eliminar"></th>}
             </tr>
           </thead>
           <tbody>
             {pedidosToRender.length === 0 ? (
               <tr>
-                <td colSpan={6 + (showTrackingColumn ? 1 : 0) + (showNotifyColumn ? 1 : 0) + (mostrarAccionML ? 1 : 0) + (showProcesarButton ? 1 : 0)} className="table-empty-state">
+                <td colSpan={6 + (showTrackingColumn ? 1 : 0) + (showNotifyColumn ? 1 : 0) + (mostrarAccionML ? 1 : 0) + (showProcesarButton ? 1 : 0) + (onComprobante ? 1 : 0) + (onEliminarPedido ? 1 : 0)} className="table-empty-state">
                   No hay pedidos para mostrar
                 </td>
               </tr>
@@ -295,6 +345,7 @@ function PedidosTable({
                     modoPendienteContacto={modoPendienteContacto}
                     allowRedownload={allowRedownload}
                     onGenerarGuiaPickupML={onGenerarGuiaPickupML}
+                    onGenerarEtiquetaUESML={onGenerarEtiquetaUESML}
                     esMlACoordinar={Boolean(esMlACoordinarFn && esMlACoordinarFn(pedido))}
                     pedidoAsociado={buscarPedidoAsociado ? buscarPedidoAsociado(pedido) : null}
                     pickupMlCargando={pickupMlCargandoId === pedido.id}
@@ -302,6 +353,10 @@ function PedidosTable({
                     onAdjuntarConforme={onAdjuntarConforme}
                     urlConforme={urlConforme}
                     conformeSubiendo={conformeSubiendoId === pedido.id}
+                    onEliminarPedido={onEliminarPedido}
+                    eliminando={eliminandoPedidoId === pedido.id}
+                    onComprobante={onComprobante}
+                    comprobanteLocal={comprobantesLocales[pedido.id]}
                   />
                 );
               })
@@ -330,6 +385,7 @@ function PedidoRow({
   onRevertirEtiqueta,
   onGuardarLinkDrive,
   onGenerarGuiaPickupML,
+  onGenerarEtiquetaUESML,
   esMlACoordinar = false,
   pedidoAsociado = null,
   pickupMlCargando = false,
@@ -337,6 +393,10 @@ function PedidoRow({
   onAdjuntarConforme,
   urlConforme,
   conformeSubiendo = false,
+  onEliminarPedido,
+  eliminando = false,
+  onComprobante,
+  comprobanteLocal,
   fulfillmentPreview = false,
   channelPriority = 'email',
   showNotifyColumn = true,
@@ -726,14 +786,28 @@ function PedidoRow({
                   🔗 va con #{pedidoAsociado.numero_pedido}
                 </span>
               ) : (
-                <button
-                  className="btn btn-primary btn-sm"
-                  disabled={pickupMlCargando}
-                  onClick={() => onGenerarGuiaPickupML(pedido)}
-                  title="Emitir guía Pick-UP de MarcoPostal (el comprador retira en oficina). No requiere dirección."
-                >
-                  {pickupMlCargando ? '⏳ Emitiendo…' : '🏪 Etiqueta Pick-UP MP'}
-                </button>
+                <>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    disabled={pickupMlCargando}
+                    onClick={() => onGenerarGuiaPickupML(pedido)}
+                    title="Emitir guía Pick-UP de MarcoPostal (el comprador retira en oficina). No requiere dirección."
+                  >
+                    {pickupMlCargando ? '⏳ Emitiendo…' : '🏪 Etiqueta Pick-UP MP'}
+                  </button>
+                  {/* Entrega a domicilio: ML no da dirección, se carga en el
+                      modal de datos antes de emitir la etiqueta UES. */}
+                  {onGenerarEtiquetaUESML && (
+                    <button
+                      className="btn btn-primary btn-sm"
+                      disabled={pickupMlCargando}
+                      onClick={() => onGenerarEtiquetaUESML(pedido)}
+                      title="Generar etiqueta UES a domicilio. Se abre el modal para cargar la dirección acordada con el comprador."
+                    >
+                      📦 Etiqueta UES
+                    </button>
+                  )}
+                </>
               )
             )}
 
@@ -792,6 +866,31 @@ function PedidoRow({
           >
             ✅ Procesar
           </button>
+        </td>
+      )}
+
+      {onComprobante && (
+        <td>
+          <CeldaComprobante pedido={pedido} onComprobante={onComprobante} local={comprobanteLocal} />
+        </td>
+      )}
+
+      {onEliminarPedido && (
+        <td>
+          {/* Con etiqueta ya hay una guía emitida: primero se descarta. Las filas
+              agrupadas por tracking siempre tienen etiqueta, así que no aplica. */}
+          {!pedido.etiqueta_generada && !pedido._mergedIds && !fulfillmentPreview && (
+            <button
+              className="btn btn-outline-danger btn-sm"
+              disabled={eliminando}
+              onClick={() => onEliminarPedido(pedido)}
+              title={pedido.ml_order_id
+                ? 'Cancelar esta venta de ML en el panel (no se borra para que el sync no la vuelva a traer)'
+                : 'Eliminar este pedido (cargado por error)'}
+            >
+              {eliminando ? '⏳' : '🗑'}
+            </button>
+          )}
         </td>
       )}
     </tr>

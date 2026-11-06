@@ -7,6 +7,7 @@ import {
   actualizarAtencionFaqCaso,
   eliminarAtencionFaqCaso,
 } from '../services/api';
+import { cierreFuera } from '../utils/cierreModal';
 
 // Búsqueda "inteligente": no busca la frase literal, busca por palabra — y cada
 // palabra se expande a sus sinónimos (ver atencionFaqSinonimos.js). Así "color
@@ -194,11 +195,13 @@ function SituacionDetalle({ situacion, mostrarToast, esAdmin, onEditar, onElimin
           {situacion.categoriaIcon} {situacion.categoriaNombre}
         </span>
         <h3>{situacion.pregunta}</h3>
-        {/* Atención al cliente la ve en solo lectura: editar/eliminar es sólo para admin */}
-        {esAdmin && situacion.dbId && (
+        {/* Admin y atención pueden editar; eliminar es sólo para admin */}
+        {situacion.dbId && (
           <div className="faq-detalle-acciones">
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => onEditar(situacion)}>✏️ Editar</button>
-            <button type="button" className="btn btn-danger btn-sm" onClick={() => onEliminar(situacion)}>🗑️ Eliminar</button>
+            {esAdmin && (
+              <button type="button" className="btn btn-danger btn-sm" onClick={() => onEliminar(situacion)}>🗑️ Eliminar</button>
+            )}
           </div>
         )}
       </div>
@@ -262,7 +265,10 @@ function SituacionDetalle({ situacion, mostrarToast, esAdmin, onEditar, onElimin
 
 const CATEGORIA_NUEVA_VALOR = '__nueva__';
 
-function CasoFormModal({ categorias, casoInicial, onCancelar, onGuardar }) {
+function CasoFormModal({ categorias, casoInicial, soloRespuesta, onCancelar, onGuardar }) {
+  // Con soloRespuesta (atención) sólo se edita la respuesta y se suman variables
+  // nuevas; las que ya existen y el resto de los campos quedan bloqueados.
+  const cantVariantesOriginales = Array.isArray(casoInicial?.variantes) ? casoInicial.variantes.length : 0;
   const [categoriaId, setCategoriaId] = useState(casoInicial?.categoria_id || categorias[0]?.id || CATEGORIA_NUEVA_VALOR);
   const [nuevaCategoriaNombre, setNuevaCategoriaNombre] = useState('');
   const [nuevaCategoriaIcon, setNuevaCategoriaIcon] = useState('❓');
@@ -306,14 +312,19 @@ function CasoFormModal({ categorias, casoInicial, onCancelar, onGuardar }) {
       catIcon = cat?.icon || '❓';
     }
 
-    const payload = {
+    const variantesLimpias = variantes.filter((v) => (v.condicion || '').trim() || (v.respuesta || '').trim());
+
+    const payload = soloRespuesta ? {
+      respuesta: respuesta.trim() || null,
+      variantes: variantesLimpias,
+    } : {
       categoria_id: catId,
       categoria_nombre: catNombre,
       categoria_icon: catIcon,
       pregunta: preguntaLimpia,
       regla: regla.trim() || null,
       respuesta: respuesta.trim() || null,
-      variantes: variantes.filter((v) => (v.condicion || '').trim() || (v.respuesta || '').trim()),
+      variantes: variantesLimpias,
       escalar: escalar.trim() || null,
       no_prometer: noPrometer.trim() || null,
       dato_a_confirmar: datoAConfirmar.trim() || null,
@@ -330,10 +341,10 @@ function CasoFormModal({ categorias, casoInicial, onCancelar, onGuardar }) {
   };
 
   return (
-    <div className="modal show" onClick={(e) => { if (e.target === e.currentTarget) onCancelar(); }}>
+    <div className="modal show" {...cierreFuera(onCancelar, { bloqueado: guardando, mensaje: '¿Cerrar sin guardar el caso? Se pierde lo que escribiste.' })}>
       <div className="modal-content modal-medium">
         <div className="modal-header">
-          <h3>{casoInicial ? 'Editar caso' : 'Agregar caso a la guía'}</h3>
+          <h3>{casoInicial ? (soloRespuesta ? 'Editar respuesta y variables' : 'Editar caso') : 'Agregar caso a la guía'}</h3>
           <button type="button" className="btn-close" onClick={onCancelar}>×</button>
         </div>
         <form onSubmit={handleSubmit}>
@@ -344,6 +355,7 @@ function CasoFormModal({ categorias, casoInicial, onCancelar, onGuardar }) {
                 className="faq-form-input"
                 value={categoriaId}
                 onChange={(e) => setCategoriaId(e.target.value)}
+                disabled={soloRespuesta}
               >
                 {categorias.map((c) => (
                   <option key={c.id} value={c.id}>{c.icon} {c.nombre}</option>
@@ -384,12 +396,13 @@ function CasoFormModal({ categorias, casoInicial, onCancelar, onGuardar }) {
                 onChange={(e) => setPregunta(e.target.value)}
                 placeholder='Ej: "Llegó un pedido con la caja mojada"'
                 required
+                disabled={soloRespuesta}
               />
             </label>
 
             <label className="faq-form-label">
               Regla del negocio
-              <textarea className="faq-form-textarea" rows={3} value={regla} onChange={(e) => setRegla(e.target.value)} />
+              <textarea className="faq-form-textarea" rows={3} value={regla} onChange={(e) => setRegla(e.target.value)} disabled={soloRespuesta} />
             </label>
 
             <label className="faq-form-label">
@@ -409,31 +422,35 @@ function CasoFormModal({ categorias, casoInicial, onCancelar, onGuardar }) {
                     placeholder="Condición (ej: Montevideo)"
                     value={v.condicion}
                     onChange={(e) => cambiarVariante(idx, 'condicion', e.target.value)}
+                    disabled={soloRespuesta && idx < cantVariantesOriginales}
                   />
                   <input
                     className="faq-form-input"
                     placeholder="Respuesta para ese caso"
                     value={v.respuesta}
                     onChange={(e) => cambiarVariante(idx, 'respuesta', e.target.value)}
+                    disabled={soloRespuesta && idx < cantVariantesOriginales}
                   />
-                  <button type="button" className="btn btn-secondary btn-sm" onClick={() => quitarVariante(idx)}>✕</button>
+                  {!(soloRespuesta && idx < cantVariantesOriginales) && (
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => quitarVariante(idx)}>✕</button>
+                  )}
                 </div>
               ))}
             </div>
 
             <label className="faq-form-label">
               Cuándo escalar
-              <input className="faq-form-input" value={escalar} onChange={(e) => setEscalar(e.target.value)} />
+              <input className="faq-form-input" value={escalar} onChange={(e) => setEscalar(e.target.value)} disabled={soloRespuesta} />
             </label>
 
             <label className="faq-form-label">
               No prometer
-              <input className="faq-form-input" value={noPrometer} onChange={(e) => setNoPrometer(e.target.value)} />
+              <input className="faq-form-input" value={noPrometer} onChange={(e) => setNoPrometer(e.target.value)} disabled={soloRespuesta} />
             </label>
 
             <label className="faq-form-label">
               Dato a confirmar
-              <input className="faq-form-input" value={datoAConfirmar} onChange={(e) => setDatoAConfirmar(e.target.value)} />
+              <input className="faq-form-input" value={datoAConfirmar} onChange={(e) => setDatoAConfirmar(e.target.value)} disabled={soloRespuesta} />
             </label>
 
             <label className="faq-form-label">
@@ -443,6 +460,7 @@ function CasoFormModal({ categorias, casoInicial, onCancelar, onGuardar }) {
                 value={tagsTexto}
                 onChange={(e) => setTagsTexto(e.target.value)}
                 placeholder="caja mojada, pedido mojado, humedad"
+                disabled={soloRespuesta}
               />
             </label>
 
@@ -453,6 +471,7 @@ function CasoFormModal({ categorias, casoInicial, onCancelar, onGuardar }) {
                 value={fuente}
                 onChange={(e) => setFuente(e.target.value)}
                 placeholder="Ej: agregado por Ayelen · 24/09"
+                disabled={soloRespuesta}
               />
             </label>
           </div>
@@ -661,6 +680,7 @@ export default function FaqAtencionPanel({ mostrarToast, esAdmin }) {
         <CasoFormModal
           categorias={categorias}
           casoInicial={casoEditando}
+          soloRespuesta={!esAdmin}
           onCancelar={cerrarForm}
           onGuardar={handleGuardarCaso}
         />

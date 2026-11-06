@@ -897,8 +897,15 @@ class ShopifyService {
         const nombre = [productTitle, variantTitle && variantTitle.toLowerCase() !== 'default title' ? variantTitle : '']
           .filter(Boolean)
           .join(' - ') || sku;
-        if (!porSku.has(sku)) {
+        // Un SKU vive en varias variantes (kit, set, etc.) con inventory items propios.
+        // Si están desfasadas, vale la más baja: una venta web descuenta sólo la
+        // variante vendida hasta que Easify propaga, así que la mínima es la que ya
+        // refleja la última venta. Antes se tomaba la primera que devolvía Shopify.
+        const previo = porSku.get(sku);
+        if (!previo) {
           porSku.set(sku, { available, inventoryItemId, nombre });
+        } else if (available < previo.available) {
+          previo.available = available;
         }
       }
       cursor = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
@@ -908,20 +915,69 @@ class ShopifyService {
     return porSku;
   }
 
-  // Fijar el stock "available" (absoluto) de un SKU en la locación principal. Ajusta TODAS
-  // las variantes/inventory items que comparten ese SKU (varios productos: kit, set, etc.)
-  // para dejarlas todas en el mismo valor. No dependemos de Easify Inventory Sync para
-  // igualarlas (puede no ser instantáneo), lo hacemos explícitamente.
-  // Devuelve { sku, anterior, nuevo, variantes, ajustadas }.
-  async fijarStockDisponiblePorSku(sku, cantidad) {
+  // Deja registrado (una sola vez) el webhook inventory_levels/update apuntando a
+  // `callbackUrl`. Idempotente: si ya existe uno con esa URL no hace nada. Las
+  // suscripciones con otra URL para el mismo topic no se tocan.
+  // Devuelve { creado, id }.
+  async asegurarWebhookInventario(callbackUrl) {
+    const url = `https://${this.domain}/admin/api/2024-01/graphql.json`;
+    const lista = await axios.post(url, {
+      query: `query {
+        webhookSubscriptions(first: 50, topics: [INVENTORY_LEVELS_UPDATE]) {
+          edges { node { id endpoint { __typename ... on WebhookHttpEndpoint { callbackUrl } } } }
+        }
+      }`,
+    }, { headers: this.getHeaders() });
+    if (lista.data?.errors?.length) {
+      throw new Error(`Error listando webhooks de Shopify: ${JSON.stringify(lista.data.errors)}`);
+    }
+    const existente = (lista.data?.data?.webhookSubscriptions?.edges || [])
+      .map((e) => e.node)
+      .find((n) => n.endpoint?.callbackUrl === callbackUrl);
+    if (existente) return { creado: false, id: existente.id };
+
+    const alta = await axios.post(url, {
+      query: `mutation alta($sub: WebhookSubscriptionInput!) {
+        webhookSubscriptionCreate(topic: INVENTORY_LEVELS_UPDATE, webhookSubscription: $sub) {
+          webhookSubscription { id }
+          userErrors { field message }
+        }
+      }`,
+      variables: { sub: { callbackUrl, format: 'JSON' } },
+    }, { headers: this.getHeaders() });
+    const r = alta.data?.data?.webhookSubscriptionCreate;
+    if (alta.data?.errors?.length || r?.userErrors?.length) {
+      throw new Error(`Error registrando el webhook de inventario: ${JSON.stringify(alta.data?.errors || r?.userErrors)}`);
+    }
+    return { creado: true, id: r?.webhookSubscription?.id || null };
+  }
+
+  // Stock "available" actual, leído en vivo, de un SKU en la locación principal. Con
+  // las variantes desfasadas vale la mínima (mismo criterio que obtenerStockPorPrefijoSku).
+  // Lo usan la venta y la cancelación de ML para no calcular sobre `productos.stock`,
+  // que puede venir atrasado y pisar una venta web o un traslado recién hechos.
+  // Devuelve { sku, available, variantes, desfasado, valores }.
+  async obtenerStockDisponiblePorSku(sku) {
     const skuLimpio = String(sku || '').trim();
     if (!skuLimpio) throw new Error('SKU requerido');
-    const nuevo = Number(cantidad);
-    if (!Number.isFinite(nuevo)) throw new Error('Cantidad de stock inválida');
-
     const location = await this.obtenerLocationPrincipal();
+    const items = await this.leerInventarioPorSku(skuLimpio, location);
+    if (items.length === 0) {
+      throw new Error(`No se encontró ninguna variante en Shopify con SKU "${skuLimpio}"`);
+    }
+    const valores = items.map((it) => it.available);
+    const available = Math.min(...valores);
+    return {
+      sku: skuLimpio,
+      available,
+      variantes: items.length,
+      desfasado: Math.max(...valores) !== available,
+      valores,
+    };
+  }
 
-    // Buscar TODAS las variantes con ese SKU exacto y su available actual en la locación.
+  // Inventory items de TODAS las variantes con ese SKU exacto y su available en la locación.
+  async leerInventarioPorSku(skuLimpio, location) {
     const query = `query buscarVariantes($q: String!, $cursor: String, $loc: ID!) {
       productVariants(first: 250, after: $cursor, query: $q) {
         pageInfo { hasNextPage endCursor }
@@ -966,6 +1022,23 @@ class ShopifyService {
       cursor = conn?.pageInfo?.hasNextPage ? conn.pageInfo.endCursor : null;
       paginas += 1;
     } while (cursor && paginas < 20);
+
+    return items;
+  }
+
+  // Fijar el stock "available" (absoluto) de un SKU en la locación principal. Ajusta TODAS
+  // las variantes/inventory items que comparten ese SKU (varios productos: kit, set, etc.)
+  // para dejarlas todas en el mismo valor. No dependemos de Easify Inventory Sync para
+  // igualarlas (puede no ser instantáneo), lo hacemos explícitamente.
+  // Devuelve { sku, anterior, nuevo, variantes, ajustadas }.
+  async fijarStockDisponiblePorSku(sku, cantidad) {
+    const skuLimpio = String(sku || '').trim();
+    if (!skuLimpio) throw new Error('SKU requerido');
+    const nuevo = Number(cantidad);
+    if (!Number.isFinite(nuevo)) throw new Error('Cantidad de stock inválida');
+
+    const location = await this.obtenerLocationPrincipal();
+    const items = await this.leerInventarioPorSku(skuLimpio, location);
 
     if (items.length === 0) {
       throw new Error(`No se encontró ninguna variante en Shopify con SKU "${skuLimpio}"`);

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { cierreFuera } from '../../utils/cierreModal';
 import { TIPOS, ESTADOS_PROPUESTA, fmtNum, fmtPlata, fmtHora, fmtFecha, hace, diasEsperando } from './util';
 
 const Flecha = () => (
@@ -181,7 +182,7 @@ export function ConfirmarAprobacion({ p, moneda, onConfirmar, onCerrar, ocupado 
 export function RechazarPropuesta({ p, onConfirmar, onCerrar, ocupado }) {
   const [motivo, setMotivo] = useState('');
   return (
-    <div className="cauce-modal-fondo" role="presentation" onMouseDown={e => { if (e.target === e.currentTarget && !ocupado) onCerrar(); }}>
+    <div className="cauce-modal-fondo" role="presentation" {...cierreFuera(onCerrar, { bloqueado: ocupado, confirmar: !!motivo.trim(), mensaje: '¿Cerrar sin rechazar? Se pierde el motivo que escribiste.' })}>
       <div className="cauce-modal" role="dialog" aria-modal="true" aria-labelledby="rechazar-titulo">
         <h2 id="rechazar-titulo" style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Rechazar: {p.titulo}</h2>
         <p style={{ color: 'var(--c-soft)', fontSize: 12.5 }}>No se vuelve a proponer durante los próximos días de cadencia. El motivo queda en la actividad.</p>

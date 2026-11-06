@@ -381,8 +381,9 @@ class MercadoLibreService {
         ...u,
         sku: producto.sku,
         nombre: producto.nombre,
-        stockNuestro: Number(producto.stock || 0),
-        diferencia: Number(u.cantidadML || 0) - Number(producto.stock || 0),
+        // ML no admite negativos: un SKU sobrevendido en Shopify (available < 0) cuenta como 0.
+        stockNuestro: Math.max(0, Number(producto.stock || 0)),
+        diferencia: Number(u.cantidadML || 0) - Math.max(0, Number(producto.stock || 0)),
       });
     }
 

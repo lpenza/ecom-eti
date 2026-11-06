@@ -10,6 +10,7 @@ import {
   guardarParametrosFacturacion,
 } from '../services/api';
 import { formatFechaHoraUy, formatFechaUy } from '../utils/fechas';
+import LoadingModal from './modals/LoadingModal';
 
 const PROVEEDOR_LABEL = {
   marcopostal: 'MarcoPostal',
@@ -38,6 +39,7 @@ export default function FacturacionPanel({ mostrarToast }) {
   const [cargando, setCargando] = useState(false);
   const [subiendo, setSubiendo] = useState(false);
   const [guardando, setGuardando] = useState(false);
+  const [recalculando, setRecalculando] = useState(false);
   const [archivoPendiente, setArchivoPendiente] = useState(null); // { filename, contenidoBase64 }
   const [dragActivo, setDragActivo] = useState(false);
   const [filtroFlag, setFiltroFlag] = useState(null);
@@ -117,6 +119,7 @@ export default function FacturacionPanel({ mostrarToast }) {
   useEffect(() => {
     if (levantesCantidad === null || !archivoPendiente) return undefined;
     const timer = setTimeout(async () => {
+      setRecalculando(true);
       try {
         setReporte(await cargarLiquidacionFacturacion({
           ...archivoPendiente,
@@ -125,6 +128,8 @@ export default function FacturacionPanel({ mostrarToast }) {
         }));
       } catch (err) {
         mostrarToast?.(err.message || 'Error recalculando los levantes', 'error');
+      } finally {
+        setRecalculando(false);
       }
     }, 400);
     return () => clearTimeout(timer);
@@ -220,8 +225,19 @@ export default function FacturacionPanel({ mostrarToast }) {
 
   const resumen = reporte?.resumen;
 
+  // Loader bloqueante mientras el backend lee/procesa/guarda: el Excel puede tener miles
+  // de líneas y sin esto parecía que no pasaba nada.
+  const textoLoader = subiendo
+    ? 'Leyendo y procesando el Excel…'
+    : guardando
+      ? 'Guardando la liquidación…'
+      : cargando
+        ? 'Abriendo la liquidación…'
+        : null;
+
   return (
     <div className="fact-panel">
+      {textoLoader && <LoadingModal text={textoLoader} />}
       <div className="fact-header">
         <div>
           <h2 className="fact-title">🧾 Control de Facturación</h2>
@@ -254,6 +270,7 @@ export default function FacturacionPanel({ mostrarToast }) {
         onDrop={(e) => {
           e.preventDefault();
           setDragActivo(false);
+          if (subiendo) return;
           procesarArchivo(e.dataTransfer.files?.[0]);
         }}
       >
@@ -262,6 +279,7 @@ export default function FacturacionPanel({ mostrarToast }) {
           type="file"
           accept=".xlsx,.xls"
           className="fact-drop-input"
+          disabled={subiendo}
           onChange={(e) => procesarArchivo(e.target.files?.[0])}
         />
         <div className="fact-drop-icon">📄</div>
@@ -320,7 +338,9 @@ export default function FacturacionPanel({ mostrarToast }) {
               {resumen.levantes && (
                 <div className={`fact-card fact-card-levantes ${resumen.levantes.enSistema !== resumen.levantes.enDetalle ? 'fact-card-alerta' : ''}`}>
                   <div className="fact-card-label">Solicitudes de levante</div>
-                  <div className="fact-card-valor"><Money valor={resumen.levantes.total} /></div>
+                  <div className="fact-card-valor">
+                    {recalculando ? <span className="fact-recalculando">Recalculando…</span> : <Money valor={resumen.levantes.total} />}
+                  </div>
                   <div className="fact-card-detalle">
                     <label className="fact-levante-input">
                       <input

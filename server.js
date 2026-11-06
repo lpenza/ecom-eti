@@ -39,7 +39,15 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 // El límite por defecto (100 kb) se queda corto para /api/facturacion/cargar, que
 // recibe el .xlsx del courier en base64 (~85 kb para un mes típico).
-app.use(bodyParser.json({ charset: 'utf-8', limit: '15mb' }));
+// Los webhooks de Shopify se validan con un HMAC del cuerpo tal cual llegó, así que
+// para esas rutas se guarda también el body crudo antes de parsearlo.
+app.use(bodyParser.json({
+  charset: 'utf-8',
+  limit: '15mb',
+  verify: (req, _res, buf) => {
+    if (req.originalUrl && req.originalUrl.startsWith('/api/shopify/webhook')) req.rawBody = buf;
+  },
+}));
 app.use(express.static('public'));
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, 'dist')));
@@ -60,6 +68,8 @@ const marcoPostalWebService = require('./services/marcoPostalWebService');
 const etiquetaPdfService = require('./services/etiquetaPdfService');
 const etiquetaPdfCleanup = require('./services/etiquetaPdfCleanup');
 const shopifyService = require('./services/shopifyService');
+const zenseiService = require('./services/zenseiService');
+const { construirETicket, opcionesFecha, validarFechaEmision } = require('./services/comprobanteBuilder');
 const mercadolibreService = require('./services/mercadolibreService');
 const conformeEntregaService = require('./services/conformeEntregaService');
 const facturacionParserService = require('./services/facturacionParserService');
@@ -583,6 +593,88 @@ async function listarTrasladosStockPlanner(limite = 50) {
   });
 }
 
+// Movimientos de stock que StockPlanner aplicó en Shopify, con la misma forma que
+// las filas de stock_ajustes_nc para mezclarlos en el log de "Stock Colores".
+// StockPlanner suma/resta diferencias (no fija un valor), así que no hay "sistema"
+// ni "nuevo": sólo `diferencia`. Un traslado corregido después aporta dos filas —
+// lo que se mandó a Shopify al emitirlo (original_lines) y la corrección — porque
+// así fue como se movió el stock de verdad.
+async function listarMovimientosStockPlanner({ desde = null, hasta = null, sku = null } = {}) {
+  const token = await tokenStockPlannerDueno();
+  const headers = { apikey: STOCKPLANNER.anonKey, Authorization: `Bearer ${token}` };
+  const filtroFecha = [];
+  if (desde) filtroFecha.push(`created_at.gte.${desde}T00:00:00`);
+  if (hasta) filtroFecha.push(`created_at.lte.${hasta}T23:59:59.999`);
+  const params = (select) => ({
+    select,
+    order: 'created_at.desc',
+    limit: 1000,
+    ...(filtroFecha.length ? { and: `(${filtroFecha.join(',')})` } : {}),
+  });
+
+  const [{ data: traslados }, { data: ajustes }] = await Promise.all([
+    axios.get(`${STOCKPLANNER.supabaseUrl}/rest/v1/order_transfers`, {
+      params: params('id,created_at,lines,original_lines,shopify_sync,orders(excel_filename)'),
+      headers,
+      timeout: 20000,
+    }),
+    axios.get(`${STOCKPLANNER.supabaseUrl}/rest/v1/order_transfer_adjustments`, {
+      params: params('id,transfer_id,created_at,lines,shopify_sync'),
+      headers,
+      timeout: 20000,
+    }),
+  ]);
+
+  const filtroSku = sku ? String(sku).trim().toUpperCase() : '';
+  const okEnShopify = (sh, skuCode) => {
+    if (!sh) return false;
+    const r = (sh.results || []).find((x) => String(x.skuCode).trim() === skuCode);
+    return r ? r.status === 'ok' : !sh.skipped;
+  };
+  const filas = [];
+  const agregar = (base, lineas, sh, origen, usuario) => {
+    for (const l of Array.isArray(lineas) ? lineas : []) {
+      const skuCode = String(l.sku_code || '').trim();
+      const unidades = Number(l.units) || 0;
+      if (!skuCode || unidades === 0) continue;
+      if (filtroSku && !skuCode.toUpperCase().includes(filtroSku)) continue;
+      filas.push({
+        id: `sp-${base.id}-${l.line_id || skuCode}`,
+        created_at: base.created_at,
+        sku: skuCode,
+        stock_anterior: null,
+        stock_nuevo: null,
+        diferencia: unidades,
+        usuario_id: null,
+        usuario_email: base.detalle || null,
+        usuario_nombre: usuario,
+        origen,
+        shopify_ok: okEnShopify(sh, skuCode),
+      });
+    }
+  };
+
+  for (const t of Array.isArray(traslados) ? traslados : []) {
+    agregar(
+      { id: t.id, created_at: t.created_at, detalle: t.orders?.excel_filename || 'depósito → tienda' },
+      t.original_lines || t.lines,
+      t.shopify_sync,
+      'traslado_stockplanner',
+      'traslado StockPlanner'
+    );
+  }
+  for (const a of Array.isArray(ajustes) ? ajustes : []) {
+    agregar(
+      { id: a.id, created_at: a.created_at, detalle: 'corrección de un traslado' },
+      a.lines,
+      a.shopify_sync,
+      'correccion_traslado_sp',
+      'corrección StockPlanner'
+    );
+  }
+  return filas;
+}
+
 function errorStockPlanner(err) {
   return err.response?.data?.error || err.response?.data?.message
     || err.response?.data?.error_description || err.message;
@@ -944,13 +1036,35 @@ app.get('/api/admin/stock-ajustes-nc', requireAuth, requireAdmin, async (req, re
       productosPorId = Object.fromEntries(productos.map((p) => [p.id, p]));
     } catch (_) { /* si falla, el log sale igual pero sin nombre */ }
 
-    res.json({
-      success: true,
-      ajustes: ajustes.map((a) => ({
+    // Traslados depósito→tienda (y sus correcciones) hechos en StockPlanner: también
+    // mueven el stock de Shopify y sin ellos el log tiene saltos inexplicables.
+    // Best-effort: si StockPlanner no responde, se muestra el resto con un aviso.
+    let movimientosSp = [];
+    let aviso = null;
+    if (!usuario_id) {
+      try {
+        movimientosSp = await listarMovimientosStockPlanner({ desde, hasta, sku });
+      } catch (e) {
+        aviso = `No se pudieron leer los traslados de StockPlanner: ${errorStockPlanner(e)}`;
+      }
+    }
+    const nombrePorSku = {};
+    if (movimientosSp.length > 0) {
+      try {
+        const productos = await supabaseService.listarProductosPorPrefijoSku(STOCK_SKU_PREFIXES);
+        for (const p of productos) nombrePorSku[String(p.sku).trim()] = p.nombre;
+      } catch (_) { /* sin nombre */ }
+    }
+
+    const filas = [
+      ...ajustes.map((a) => ({
         ...a,
         producto_nombre: productosPorId[a.producto_id]?.nombre || null,
       })),
-    });
+      ...movimientosSp.map((m) => ({ ...m, producto_nombre: nombrePorSku[m.sku] || null })),
+    ].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    res.json({ success: true, ajustes: filas, ...(aviso ? { aviso } : {}) });
   } catch (err) {
     // La tabla puede no existir todavía (sql/create_stock_ajustes_nc.sql sin correr):
     // en ese caso no es un error de la app, devolvemos lista vacía + aviso.
@@ -4450,6 +4564,556 @@ app.delete('/api/pedidos/:pedidoId/conforme', requireAuth, requireAdmin, async (
   }
 });
 
+// ── Comprobantes fiscales (e-Ticket) en Zensei ──────────────────────────────
+// Emisión MANUAL: el admin abre el preview desde la fila del pedido y confirma.
+// Sólo pedidos de Shopify; las ventas de ML las factura la integración de ML
+// de Zensei. Siempre e-Ticket (101) a consumidor final; los reembolsos van por
+// fuera de la facturación electrónica. Ver services/comprobanteBuilder.js y
+// sql/add_cfe_to_pedidos.sql.
+
+// Evita que dos clicks (o dos admins) manden el mismo pedido a la vez. Igual la
+// Idempotency-Key fija por pedido impide que Zensei emita dos comprobantes.
+const comprobantesEnCurso = new Set();
+
+function datosComprobante(pedido) {
+  return {
+    cfeId: pedido.cfe_id || null,
+    tipo: pedido.cfe_tipo || null,
+    serie: pedido.cfe_serie || null,
+    numero: pedido.cfe_numero ?? null,
+    status: pedido.cfe_status || null,
+    total: pedido.cfe_total != null ? Number(pedido.cfe_total) : null,
+    emitidoAt: pedido.cfe_emitido_at || null,
+    emitidoPor: pedido.cfe_emitido_por || null,
+    fecha: pedido.cfe_detalle?.issueDate || null,
+    error: pedido.cfe_error || null,
+    // Números de todos los pedidos que cubre (si juntó varios del mismo cliente).
+    pedidos: (pedido.cfe_detalle?.pedidos || []).map((p) => p.numero),
+  };
+}
+
+// Dos pedidos del mismo cliente van en UN solo e-Ticket. "Mismo cliente" es el
+// cruce de services/clienteAgrupador.js (comprador de ML, email, teléfono,
+// nombre+dirección) o la misma guía (pedidos consolidados en un paquete), entre
+// pedidos de Shopify todavía sin e-Ticket entrados a menos de esta cantidad de
+// días: más separados son compras distintas que ya se facturaron por su lado.
+const DIAS_GRUPO_COMPROBANTE = 7;
+
+async function pedidosDelGrupoComprobante(pedido) {
+  if (pedido.cfe_id) return [pedido];
+  const t = new Date(pedido.created_at).getTime();
+  if (!Number.isFinite(t)) return [pedido];
+  const margen = DIAS_GRUPO_COMPROBANTE * 86400000;
+  const candidatos = await supabaseService.obtenerPedidosSinComprobante(
+    new Date(t - margen).toISOString(),
+    new Date(t + margen).toISOString()
+  );
+  const mismoId = (p) => String(p.id) === String(pedido.id);
+  if (!candidatos.some(mismoId)) candidatos.push(pedido);
+  const agrupados = asignarGruposCliente(candidatos);
+  const grupoCliente = agrupados.find(mismoId)?.grupo_cliente || null;
+  const tracking = String(pedido.numero_seguimiento_ues || '').trim();
+  return agrupados
+    .filter((p) => mismoId(p)
+      || (grupoCliente && p.grupo_cliente === grupoCliente)
+      || (tracking && String(p.numero_seguimiento_ues || '').trim() === tracking))
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+}
+
+const resumenGrupo = (grupo) => grupo.map((p) => ({ id: p.id, numero: p.numero_pedido, cliente: p.cliente_nombre || null }));
+const mismosIds = (a, b) => [...a].map(String).sort().join(',') === [...b].map(String).sort().join(',');
+const esCfeDuplicado = (e) => e?.code === '23505' && /cfe_id/i.test(String(e?.message || ''));
+const MSG_INDICE_CFE = 'La base todavía no permite un e-Ticket para varios pedidos: corré de nuevo sql/add_cfe_to_pedidos.sql en Supabase (quita el índice único de cfe_id).';
+
+function faltaColumnaCfe(error) {
+  return /cfe_[a-z_]+/i.test(String(error?.message || '')) && /column|columna/i.test(String(error?.message || ''));
+}
+const MSG_FALTA_SQL_CFE = 'Faltan las columnas de comprobantes en la tabla pedidos. Corré sql/add_cfe_to_pedidos.sql en Supabase.';
+
+// Valida que el pedido se pueda facturar por este flujo y trae su orden de Shopify
+// junto con las de los otros pedidos del mismo cliente (ver
+// pedidosDelGrupoComprobante): salen todas en un solo e-Ticket. `separado` emite
+// sólo este pedido. `eleccionFecha`: 'hoy' o 'pedido' (fecha en que entró el
+// pedido, con tope de días hacia atrás). La fecha se resuelve acá, nunca se toma
+// tal cual del front.
+async function prepararComprobante(pedidoId, eleccionFecha = 'hoy', { separado = false } = {}) {
+  let pedido = null;
+  try {
+    pedido = await supabaseService.obtenerPedido(pedidoId);
+  } catch (_) { /* .single() tira si no existe */ }
+  if (!pedido) return { status: 404, error: 'Pedido no encontrado' };
+  if (pedido.origen === 'mercadolibre' || pedido.ml_order_id) {
+    return { status: 400, error: 'Las ventas de MercadoLibre las factura Zensei con su integración de ML', pedido };
+  }
+
+  let candidatos;
+  try {
+    candidatos = await pedidosDelGrupoComprobante(pedido);
+  } catch (e) {
+    if (faltaColumnaCfe(e)) return { status: 500, error: MSG_FALTA_SQL_CFE, pedido };
+    throw e;
+  }
+  const grupo = separado ? [pedido] : candidatos;
+  const orders = [];
+  const shopifyOrderIds = [];
+  for (const p of grupo) {
+    const shopifyOrderId = await shopifyService.obtenerIdPorNumeroPedido(p.numero_pedido);
+    if (!shopifyOrderId) {
+      return { status: 404, error: `No se encontró el pedido #${p.numero_pedido} en Shopify`, pedido };
+    }
+    shopifyOrderIds.push(shopifyOrderId);
+    orders.push(await shopifyService.obtenerOrden(shopifyOrderId));
+  }
+  const fechas = opcionesFecha(orders);
+  let fecha = fechas.hoy;
+  // 'auto' (emisión masiva): la del pedido si está dentro de la ventana, si no hoy.
+  if (eleccionFecha === 'auto') eleccionFecha = fechas.pedidoPermitida ? 'pedido' : 'hoy';
+  if (eleccionFecha === 'pedido') {
+    if (!fechas.pedidoPermitida) {
+      return {
+        status: 422,
+        error: `El pedido es del ${fechas.pedido || '?'} (${fechas.diasAtras ?? '?'} días): sólo se puede emitir con fecha del pedido hasta ${fechas.maxDiasAtras} días atrás`,
+        pedido,
+      };
+    }
+    fecha = fechas.pedido;
+  }
+  const errorFecha = validarFechaEmision(fecha);
+  if (errorFecha) return { status: 422, error: errorFecha, pedido };
+  const armado = construirETicket(orders.length === 1 ? orders[0] : orders, { fecha });
+  return { pedido, grupo, candidatos, shopifyOrderIds, armado, fechas, fecha };
+}
+
+app.get('/api/pedidos/:pedidoId/comprobante/preview', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const r = await prepararComprobante(req.params.pedidoId, 'hoy', { separado: req.query.separado === '1' });
+    if (r.error) return res.status(r.status).json({ success: false, error: r.error });
+    const { pedido, armado, fechas, grupo, candidatos } = r;
+    res.json({
+      success: true,
+      fechas,
+      configurado: zenseiService.configurado(),
+      faltaConfigurar: zenseiService.faltantes(),
+      pedido: { id: pedido.id, numero: pedido.numero_pedido, cliente: pedido.cliente_nombre || null },
+      // Pedidos que cubre este e-Ticket (más de uno = mismo cliente) y los que
+      // se juntarían si no se pidió separado.
+      grupo: resumenGrupo(grupo),
+      companeros: resumenGrupo(candidatos.filter((p) => String(p.id) !== String(pedido.id))),
+      pedidoShopify: armado.pedidoShopify,
+      comprobante: datosComprobante(pedido),
+      documentType: '101',
+      lineas: armado.lineas,
+      totales: armado.totales,
+      avisos: armado.avisos,
+      bloqueos: armado.bloqueos,
+    });
+  } catch (error) {
+    logService.error('Error armando el preview del comprobante', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Emite el e-Ticket de un pedido (y de los otros del mismo cliente, en el mismo
+// comprobante). La comparten el botón individual y la emisión masiva. Devuelve
+// { http, body } sin tocar `res`, para que el lote pueda seguir con el pedido
+// siguiente aunque uno falle.
+// `esperados`: ids que el admin vio juntos en el preview. Si el grupo cambió
+// (entró otro pedido del cliente, o a uno lo facturaron aparte) no se emite: lo
+// que sale a DGI tiene que ser exactamente lo que se revisó.
+async function emitirComprobanteDePedido(pedidoId, eleccionFecha, por, { separado = false, esperados = null } = {}) {
+  if (comprobantesEnCurso.has(pedidoId)) {
+    return { http: 409, body: { success: false, error: 'Ya se está emitiendo el comprobante de este pedido' } };
+  }
+  comprobantesEnCurso.add(pedidoId);
+  const bloqueados = [pedidoId];
+  try {
+    const r = await prepararComprobante(pedidoId, eleccionFecha, { separado });
+    if (r.error) return { http: r.status, body: { success: false, error: r.error } };
+    const { pedido, armado, shopifyOrderIds, fecha, grupo } = r;
+    const ids = grupo.map((p) => p.id);
+
+    if (Array.isArray(esperados) && esperados.length && !mismosIds(esperados, ids)) {
+      return {
+        http: 409,
+        body: {
+          success: false,
+          grupoCambio: true,
+          error: `Cambiaron los pedidos de este cliente desde la revisión (ahora: ${grupo.map((p) => `#${p.numero_pedido}`).join(', ')}): volvé a abrir el e-Ticket`,
+        },
+      };
+    }
+    const otroEnCurso = grupo.find((p) => String(p.id) !== String(pedidoId) && comprobantesEnCurso.has(p.id));
+    if (otroEnCurso) {
+      return { http: 409, body: { success: false, error: `Ya se está emitiendo el comprobante del pedido #${otroEnCurso.numero_pedido}, que va en este mismo e-Ticket` } };
+    }
+    for (const p of grupo) {
+      if (String(p.id) === String(pedidoId)) continue;
+      comprobantesEnCurso.add(p.id);
+      bloqueados.push(p.id);
+    }
+
+    // Una vez emitido no se vuelve a emitir: el pedido queda atado a su CFE.
+    if (pedido.cfe_id) {
+      return {
+        http: 409,
+        body: {
+          success: false,
+          yaEmitido: true,
+          error: `El pedido #${pedido.numero_pedido} ya tiene el e-Ticket ${pedido.cfe_serie || ''}-${pedido.cfe_numero ?? ''}`,
+          comprobante: datosComprobante(pedido),
+        },
+      };
+    }
+    if (!zenseiService.configurado()) {
+      return { http: 503, body: { success: false, error: `Falta configurar ${zenseiService.faltantes().join(', ')} en el servidor` } };
+    }
+    if (armado.bloqueos.length) {
+      return { http: 422, body: { success: false, error: armado.bloqueos.join(' · '), bloqueos: armado.bloqueos } };
+    }
+
+    const resultado = await zenseiService.emitirCfe(armado.payload, armado.idempotencyKey);
+
+    if (!resultado.ok) {
+      // Sin comprobante: queda el error a la vista y se puede reintentar. La
+      // clave es la misma, así que un reintento nunca duplica.
+      try {
+        await supabaseService.actualizarPedidos(ids, { cfe_error: resultado.error, cfe_idempotency_key: armado.idempotencyKey });
+      } catch (e) {
+        if (faltaColumnaCfe(e)) return { http: 500, body: { success: false, error: MSG_FALTA_SQL_CFE } };
+        throw e;
+      }
+      logService.warning(`Zensei rechazó el e-Ticket del pedido #${pedido.numero_pedido}: ${resultado.error}`, {
+        pedidoId: pedido.id, status: resultado.status, respuesta: resultado.data, por,
+      });
+      const http = resultado.status === 0 ? 504 : (resultado.status >= 500 ? 502 : resultado.status);
+      return { http, body: { success: false, error: resultado.error, reintentable: resultado.reintentable, zenseiStatus: resultado.status } };
+    }
+
+    const cfe = resultado.data || {};
+    const cambios = {
+      cfe_id: cfe.cfeId || null,
+      cfe_tipo: '101',
+      cfe_serie: cfe.serie || null,
+      cfe_numero: cfe.number ?? null,
+      cfe_status: cfe.status || null,
+      cfe_total: armado.totales.total,
+      cfe_emitido_at: new Date().toISOString(),
+      cfe_emitido_por: por,
+      cfe_idempotency_key: armado.idempotencyKey,
+      cfe_error: null,
+      cfe_detalle: {
+        shopifyOrderIds,
+        pedidos: resumenGrupo(grupo),
+        pedidoShopify: armado.pedidoShopify,
+        issueDate: fecha,
+        items: armado.payload.items,
+        totales: armado.totales,
+        caeData: cfe.caeData || null,
+      },
+    };
+    let actualizado;
+    try {
+      // Todos los pedidos del grupo en una sola sentencia: nunca queda uno con el
+      // e-Ticket y otro "sin facturar" que alguien podría emitir de nuevo.
+      const filas = await supabaseService.actualizarPedidos(ids, cambios);
+      actualizado = filas.find((p) => String(p.id) === String(pedido.id));
+    } catch (e) {
+      // El comprobante YA existe en Zensei: no perder el dato aunque falle la base.
+      // Si se reintenta, la misma Idempotency-Key devuelve este mismo CFE.
+      logService.error(`e-Ticket ${cfe.serie}-${cfe.number} emitido para #${pedido.numero_pedido} pero NO se pudo guardar en la base`, { error: e.message, cfe, pedidos: ids });
+      return {
+        http: 500,
+        body: {
+          success: false,
+          error: faltaColumnaCfe(e)
+            ? `${MSG_FALTA_SQL_CFE} El e-Ticket ${cfe.serie}-${cfe.number} SÍ se emitió.`
+            : esCfeDuplicado(e)
+              ? `${MSG_INDICE_CFE} El e-Ticket ${cfe.serie}-${cfe.number} SÍ se emitió: después de correrlo, reintentá (Zensei devuelve el mismo comprobante).`
+              : `El e-Ticket ${cfe.serie}-${cfe.number} se emitió pero no se pudo guardar en el pedido: ${e.message}. Reintentar es seguro: Zensei devuelve el mismo comprobante.`,
+        },
+      };
+    }
+
+    const numeros = grupo.map((p) => `#${p.numero_pedido}`).join(', ');
+    logService.info(`e-Ticket ${cfe.serie}-${cfe.number} emitido para ${grupo.length > 1 ? 'los pedidos' : 'el pedido'} ${numeros}`, {
+      pedidoIds: ids, cfeId: cfe.cfeId, status: cfe.status, total: armado.totales.total, fecha, por,
+    });
+    // Marca visible en Shopify; si falla no afecta al comprobante.
+    if (cfe.serie && cfe.number != null) {
+      for (const shopifyOrderId of shopifyOrderIds) {
+        shopifyService.agregarTagAOrden(shopifyOrderId, `ETICKET-${cfe.serie}${cfe.number}`).catch((e) =>
+          logService.warning(`No se pudo agregar el tag del e-Ticket a la orden ${shopifyOrderId}: ${e.message}`)
+        );
+      }
+    }
+
+    return {
+      http: 200,
+      body: { success: true, pedidoIds: ids, comprobante: datosComprobante(actualizado || { ...pedido, ...cambios }) },
+    };
+  } finally {
+    for (const id of bloqueados) comprobantesEnCurso.delete(id);
+  }
+}
+
+const eleccionFechaValida = (v) => (['pedido', 'auto'].includes(v) ? v : 'hoy');
+
+app.post('/api/pedidos/:pedidoId/comprobante', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const por = req.user?.nombre || req.user?.email || null;
+    const { http, body } = await emitirComprobanteDePedido(req.params.pedidoId, eleccionFechaValida(req.body?.fecha), por, {
+      separado: req.body?.separado === true,
+      esperados: Array.isArray(req.body?.pedidoIds) ? req.body.pedidoIds : null,
+    });
+    res.status(http).json(body);
+  } catch (error) {
+    logService.error('Error emitiendo el comprobante', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ── Emisión masiva ───────────────────────────────────────────────────────────
+// Mismo flujo que el botón individual, de a un pedido por vez (Zensei pide un
+// comprobante por solicitud y hasta 60 por minuto). Con fecha 'auto' cada pedido
+// sale con su fecha si tiene hasta 2 días y con la de hoy si no.
+const MAX_LOTE_COMPROBANTES = 100;
+const ESPERA_ENTRE_EMISIONES_MS = 1100; // < 60 por minuto aunque Zensei responda al instante
+let loteComprobantesEnCurso = false;
+const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function idsDelLote(body) {
+  const ids = Array.isArray(body?.pedidoIds) ? [...new Set(body.pedidoIds.map(String).filter(Boolean))] : [];
+  if (!ids.length) return { error: 'No hay pedidos seleccionados' };
+  if (ids.length > MAX_LOTE_COMPROBANTES) return { error: `Máximo ${MAX_LOTE_COMPROBANTES} pedidos por tanda` };
+  return { ids };
+}
+
+// Revisión previa del lote: qué se puede emitir, por cuánto y con qué fecha. No emite.
+app.post('/api/comprobantes/lote/preview', requireAuth, requireAdmin, async (req, res) => {
+  const progreso = progresoNdjson(req, res);
+  try {
+    const { ids, error } = idsDelLote(req.body);
+    if (error) return progreso.responder(400, { success: false, error });
+    const items = [];
+    // pedidoId → item del e-Ticket que ya lo incluye (otro pedido del mismo
+    // cliente revisado antes en esta tanda): ese pedido no se emite por su lado.
+    const cubiertos = new Map();
+    for (let i = 0; i < ids.length; i++) {
+      const pedidoId = ids[i];
+      let item;
+      try {
+        const principal = cubiertos.get(String(pedidoId));
+        if (principal) {
+          item = { pedidoId, incluidoEn: principal.pedidoId, numeroPrincipal: principal.numero, listo: false, bloqueos: [] };
+          items.push(item);
+          progreso.paso({ mensaje: `Revisando pedidos ${i + 1}/${ids.length}`, hechos: i + 1, total: ids.length, item });
+          continue;
+        }
+        const r = await prepararComprobante(pedidoId, 'hoy');
+        if (r.error) {
+          item = { pedidoId, numero: r.pedido?.numero_pedido || null, cliente: r.pedido?.cliente_nombre || null, listo: false, bloqueos: [r.error] };
+        } else {
+          const { pedido, armado, fechas, grupo } = r;
+          const comprobante = datosComprobante(pedido);
+          item = {
+            pedidoId,
+            // Todos los pedidos que van en este e-Ticket (pueden incluir alguno
+            // del mismo cliente que no estaba seleccionado).
+            pedidoIds: grupo.map((p) => p.id),
+            numeros: grupo.map((p) => p.numero_pedido),
+            numero: pedido.numero_pedido,
+            cliente: pedido.cliente_nombre || null,
+            total: armado.totales.total,
+            totalShopify: armado.totales.totalShopify,
+            redondeo: armado.totales.noFacturable > 0,
+            fechas,
+            avisos: armado.avisos,
+            bloqueos: comprobante.cfeId ? [] : armado.bloqueos,
+            comprobante: comprobante.cfeId ? comprobante : null,
+            errorAnterior: comprobante.cfeId ? null : comprobante.error,
+            listo: !comprobante.cfeId && armado.bloqueos.length === 0,
+          };
+          for (const p of grupo) {
+            if (String(p.id) !== String(pedidoId)) cubiertos.set(String(p.id), item);
+          }
+        }
+      } catch (e) {
+        item = { pedidoId, listo: false, bloqueos: [`No se pudo revisar: ${e.message}`] };
+      }
+      items.push(item);
+      progreso.paso({ mensaje: `Revisando pedidos ${i + 1}/${ids.length}`, hechos: i + 1, total: ids.length, item });
+    }
+    progreso.responder(200, {
+      success: true,
+      configurado: zenseiService.configurado(),
+      faltaConfigurar: zenseiService.faltantes(),
+      items,
+    });
+  } catch (error) {
+    logService.error('Error revisando el lote de comprobantes', error);
+    progreso.responder(500, { success: false, error: error.message });
+  }
+});
+
+app.post('/api/comprobantes/lote', requireAuth, requireAdmin, async (req, res) => {
+  const progreso = progresoNdjson(req, res);
+  const { ids, error } = idsDelLote(req.body);
+  if (error) return progreso.responder(400, { success: false, error });
+  if (!zenseiService.configurado()) {
+    return progreso.responder(503, { success: false, error: `Falta configurar ${zenseiService.faltantes().join(', ')} en el servidor` });
+  }
+  if (loteComprobantesEnCurso) {
+    return progreso.responder(409, { success: false, error: 'Ya hay una emisión masiva en curso: esperá a que termine' });
+  }
+  loteComprobantesEnCurso = true;
+  const eleccionFecha = eleccionFechaValida(req.body?.fecha);
+  const por = req.user?.nombre || req.user?.email || null;
+  // pedidoId → ids que el preview juntó en su e-Ticket (mismo cliente).
+  const grupos = req.body?.grupos && typeof req.body.grupos === 'object' ? req.body.grupos : {};
+  const resultados = [];
+  let corte = null;
+  try {
+    for (let i = 0; i < ids.length; i++) {
+      const pedidoId = ids[i];
+      const opciones = { esperados: Array.isArray(grupos[pedidoId]) ? grupos[pedidoId] : null };
+      let r;
+      try {
+        r = await emitirComprobanteDePedido(pedidoId, eleccionFecha, por, opciones);
+        // Límite de Zensei: esperar a la ventana siguiente y reintentar una vez
+        // (misma clave, no duplica).
+        if (r.body?.zenseiStatus === 429) {
+          progreso.paso({ mensaje: 'Zensei pidió esperar (límite por minuto)… reintentando en 60 s', hechos: i, total: ids.length });
+          await esperar(61000);
+          r = await emitirComprobanteDePedido(pedidoId, eleccionFecha, por, opciones);
+        }
+      } catch (e) {
+        r = { http: 500, body: { success: false, error: e.message } };
+      }
+      const b = r.body || {};
+      const item = {
+        pedidoId,
+        pedidoIds: b.pedidoIds || [pedidoId],
+        ok: Boolean(b.success),
+        yaEmitido: Boolean(b.yaEmitido),
+        comprobante: b.comprobante || null,
+        error: b.success ? null : (b.error || `HTTP ${r.http}`),
+      };
+      resultados.push(item);
+      progreso.paso({ mensaje: `Emitiendo ${i + 1}/${ids.length}`, hechos: i + 1, total: ids.length, item });
+
+      // Errores de cuenta (key, permisos, suscripción, DGI): van a fallar todos
+      // igual, así que se corta la tanda en vez de insistir con cada pedido.
+      if ([401, 402, 403, 503].includes(b.zenseiStatus) || r.http === 503) {
+        corte = b.error;
+        break;
+      }
+      if (b.success && i < ids.length - 1) await esperar(ESPERA_ENTRE_EMISIONES_MS);
+    }
+  } finally {
+    loteComprobantesEnCurso = false;
+  }
+  const emitidos = resultados.filter((x) => x.ok).length;
+  logService.info(`Emisión masiva de e-Tickets: ${emitidos}/${ids.length} emitidos`, { por, corte });
+  progreso.responder(200, {
+    success: true,
+    emitidos,
+    total: ids.length,
+    pendientes: ids.length - resultados.length,
+    corte,
+    resultados,
+  });
+});
+
+// Vuelve a consultar el estado en Zensei (para READY_TO_SEND o ERROR).
+app.post('/api/pedidos/:pedidoId/comprobante/actualizar', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const pedido = await supabaseService.obtenerPedido(req.params.pedidoId).catch(() => null);
+    if (!pedido) return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    if (!pedido.cfe_id) return res.status(400).json({ success: false, error: 'El pedido todavía no tiene comprobante' });
+    const cfe = await zenseiService.obtenerCfe(pedido.cfe_id);
+    const cambios = {
+      cfe_status: cfe.status || pedido.cfe_status,
+      cfe_serie: cfe.serie || pedido.cfe_serie,
+      cfe_numero: cfe.number ?? pedido.cfe_numero,
+    };
+    // Todos los pedidos que comparten el comprobante (mismo cliente) quedan iguales.
+    const filas = await supabaseService.actualizarPedidosPorCfe(pedido.cfe_id, cambios);
+    const actualizado = filas.find((p) => String(p.id) === String(pedido.id));
+    const totalZensei = cfe.totalAmount != null ? Number(cfe.totalAmount) : null;
+    res.json({
+      success: true,
+      comprobante: datosComprobante(actualizado || { ...pedido, ...cambios }),
+      dgi: cfe.dgiLastStatusText || null,
+      totalZensei,
+    });
+  } catch (error) {
+    logService.error('Error consultando el comprobante en Zensei', error);
+    res.status(error.status === 404 ? 404 : 500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/pedidos/:pedidoId/comprobante/pdf', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const pedido = await supabaseService.obtenerPedido(req.params.pedidoId).catch(() => null);
+    if (!pedido) return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    if (!pedido.cfe_id) return res.status(400).json({ success: false, error: 'El pedido todavía no tiene comprobante' });
+    const pdf = await zenseiService.obtenerPdf(pedido.cfe_id);
+    const nombre = `eticket-${pedido.cfe_serie || ''}${pedido.cfe_numero ?? pedido.numero_pedido}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${nombre}"`);
+    res.send(pdf);
+  } catch (error) {
+    logService.error('Error bajando el PDF del comprobante', error);
+    res.status(error.status === 404 ? 404 : 500).json({ success: false, error: error.message });
+  }
+});
+
+// ── Eliminar pedido cargado por error ───────────────────────────────────────
+// Sólo admin y sólo mientras no tenga etiqueta: con etiqueta ya hay una guía
+// emitida (y quizás un paquete armado) que hay que resolver por otro lado.
+// Las ventas de ML no se borran sino que se cancelan: el sync de ML las vuelve
+// a dar de alta si desaparecen, pero nunca pisa el estado de una existente.
+app.delete('/api/pedidos/:pedidoId', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    let pedido = null;
+    try {
+      pedido = await supabaseService.obtenerPedido(req.params.pedidoId);
+    } catch (_) { /* .single() tira si no existe */ }
+    if (!pedido) return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+
+    if (pedido.etiqueta_generada || pedido.link_etiqueta_drive || pedido.numero_seguimiento_ues) {
+      return res.status(409).json({
+        success: false,
+        error: `El pedido #${pedido.numero_pedido} ya tiene etiqueta: descartala primero`,
+      });
+    }
+    if (['despachado', 'enviado', 'procesado'].includes(pedido.estado)) {
+      return res.status(409).json({
+        success: false,
+        error: `El pedido #${pedido.numero_pedido} ya está ${pedido.estado}`,
+      });
+    }
+
+    const por = req.user?.nombre || req.user?.email || null;
+    if (pedido.ml_order_id) {
+      await supabaseService.actualizarPedido(pedido.id, { estado: 'cancelado' });
+      logService.info(`Pedido ${pedido.numero_pedido} (ML) cancelado desde el panel`, { pedidoId: pedido.id, por });
+      return res.json({ success: true, cancelado: true });
+    }
+
+    await supabaseService.eliminarPedido(pedido.id);
+    logService.info(`Pedido ${pedido.numero_pedido} eliminado desde el panel`, {
+      pedidoId: pedido.id,
+      cliente: pedido.cliente_nombre,
+      por,
+    });
+    res.json({ success: true });
+  } catch (error) {
+    logService.error('Error eliminando pedido', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ── Sincronización automática de stock ML ↔ Shopify ─────────────────────────
 // Shopify es el master: el stock real vive ahí y `productos` lo espeja. Una venta
 // de ML descuenta en Shopify (ML ya descontó lo suyo solo); cualquier cambio de
@@ -4459,6 +5123,25 @@ app.delete('/api/pedidos/:pedidoId/conforme', requireAuth, requireAdmin, async (
 // Nombre con el que quedan firmados en la auditoría los descuentos automáticos,
 // para distinguirlos de un conteo físico hecho por una persona.
 const USUARIO_VENTA_ML = 'venta ML';
+
+// Stock actual del SKU leído en vivo de Shopify (la mínima entre sus variantes). Puede
+// ser negativo si hay sobreventa: el descuento lo lleva a 0 antes de restar (si no,
+// anotaría que "descontó" una cantidad negativa) y la devolución lo suma tal cual
+// (−1 + 1 = 0: esa unidad ya estaba comprometida por otro pedido).
+// Si falla la lectura, tira: el ítem no se marca y se reintenta en la próxima corrida,
+// que es mejor que escribir un absoluto calculado sobre un dato viejo.
+async function stockVivoParaMl(producto, numeroPedido) {
+  const vivo = await shopifyService.obtenerStockDisponiblePorSku(String(producto.sku).trim());
+  const bd = Number(producto.stock || 0);
+  if (vivo.desfasado || vivo.available !== bd) {
+    logService.info(
+      `[ML stock] ${vivo.sku} (pedido ${numeroPedido}): Shopify ${vivo.available}` +
+      (vivo.desfasado ? ` (variantes desfasadas: ${vivo.valores.join('/')})` : '') +
+      ` · BD ${bd}`
+    );
+  }
+  return vivo.available;
+}
 
 // Descuenta el stock de las ventas de ML que todavía no lo hicieron.
 // La idempotencia es lo crítico acá: el cron reprocesa una ventana de 72 h cada
@@ -4491,7 +5174,10 @@ async function descontarStockVentasML() {
           continue;
         }
 
-        const anterior = Number(producto.stock || 0);
+        // Se parte del stock vivo de Shopify, no de `productos.stock`: éste se
+        // refresca cada pocos minutos y, como acá se escribe un valor absoluto, una
+        // venta web o un traslado entrados en ese intervalo quedarían pisados.
+        const anterior = Math.max(0, await stockVivoParaMl(producto, pedido.numero_pedido));
         const nuevo = Math.max(0, anterior - cantidad);
 
         // Shopify primero (es el master); si falla, no se marca y se reintenta.
@@ -4582,8 +5268,9 @@ async function devolverStockCancelacionesML() {
           continue;
         }
 
-        const anterior = Number(producto.stock || 0);
-        const nuevo = anterior + aDevolver;
+        // Igual que en el descuento: sobre el stock vivo, no el de la BD.
+        const anterior = await stockVivoParaMl(producto, pedido.numero_pedido);
+        const nuevo = Math.max(0, anterior + aDevolver);
 
         // Shopify primero (es el master); si falla, no se marca y se reintenta.
         await shopifyService.fijarStockDisponiblePorSku(String(producto.sku).trim(), nuevo);
@@ -4709,7 +5396,9 @@ async function sincronizarStockShopifyHaciaML() {
   for (const p of productos) {
     const publicaciones = indice.get(String(p.sku).trim().toUpperCase());
     if (!publicaciones || publicaciones.length === 0) continue;
-    const nuestro = Number(p.stock || 0);
+    // Sobrevendido en Shopify (available < 0) vale 0 en ML: si no, la diferencia
+    // contra el 0 de ML dispararía un push inútil en cada corrida.
+    const nuestro = Math.max(0, Number(p.stock || 0));
     if (publicaciones.some((pub) => Number(pub.cantidadML) !== nuestro)) {
       cantidades[String(p.sku).trim()] = nuestro;
     }
@@ -4728,6 +5417,84 @@ async function sincronizarStockShopifyHaciaML() {
     (push.fallados.length ? ` · FALLAS: ${push.fallados.map((f) => f.sku + ' (' + f.error + ')').join(', ')}` : '')
   );
   return { desdeShopify, push };
+}
+
+// ── Webhook de inventario de Shopify ────────────────────────────────────────
+// Shopify avisa (topic inventory_levels/update) cada vez que cambia el stock de un
+// inventory item: venta web, cancelación, devolución, traslado de StockPlanner,
+// ajuste a mano. Con eso el cambio llega a ML en segundos en vez de esperar al
+// cron. Se valida con el "API secret key" de la app (SHOPIFY_WEBHOOK_SECRET).
+const SHOPIFY_WEBHOOK_SECRET = String(process.env.SHOPIFY_WEBHOOK_SECRET || '').trim();
+const SHOPIFY_WEBHOOK_INVENTARIO_PATH = '/api/shopify/webhook/inventario';
+// Una venta genera varios avisos seguidos (uno por variante, más los que dispara
+// Easify al igualarlas): el primero agenda una corrida a los N segundos y los que
+// llegan mientras tanto se suman a esa misma. Así nunca se posterga indefinidamente.
+const SHOPIFY_WEBHOOK_ESPERA_MS = Number(process.env.SHOPIFY_WEBHOOK_ESPERA_MS || 15000);
+
+function hmacShopifyValido(rawBody, firma) {
+  if (!SHOPIFY_WEBHOOK_SECRET || !rawBody || !firma) return false;
+  const esperado = crypto.createHmac('sha256', SHOPIFY_WEBHOOK_SECRET).update(rawBody).digest();
+  let recibido;
+  try { recibido = Buffer.from(String(firma), 'base64'); } catch (_) { return false; }
+  return recibido.length === esperado.length && crypto.timingSafeEqual(recibido, esperado);
+}
+
+// Corredor único de la sync Shopify→ML, compartido por el webhook y el cron: nunca
+// dos a la vez, y si llega un pedido mientras corre, se repite una vez al terminar
+// (el cambio que lo disparó pudo entrar después de la lectura en curso).
+let syncShopifyEnCurso = false;
+let syncShopifyPendiente = false;
+let syncShopifyTimer = null;
+
+async function correrSyncShopifyHaciaML(origen) {
+  if (syncShopifyEnCurso) { syncShopifyPendiente = true; return; }
+  syncShopifyEnCurso = true;
+  try {
+    do {
+      syncShopifyPendiente = false;
+      try {
+        await sincronizarStockShopifyHaciaML();
+      } catch (err) {
+        logService.error(`[ML stock/shopify] Error en la sync (${origen})`, err);
+      }
+    } while (syncShopifyPendiente);
+  } finally {
+    syncShopifyEnCurso = false;
+  }
+}
+
+function agendarSyncShopifyPorWebhook() {
+  if (syncShopifyTimer) return;
+  syncShopifyTimer = setTimeout(() => {
+    syncShopifyTimer = null;
+    correrSyncShopifyHaciaML('webhook');
+  }, SHOPIFY_WEBHOOK_ESPERA_MS);
+}
+
+app.post(SHOPIFY_WEBHOOK_INVENTARIO_PATH, async (req, res) => {
+  if (!hmacShopifyValido(req.rawBody, req.get('X-Shopify-Hmac-Sha256'))) {
+    return res.status(401).json({ success: false });
+  }
+  // Shopify espera la respuesta en pocos segundos: se contesta primero.
+  res.status(200).json({ success: true });
+
+  // Sólo interesa la locación de la que sale el stock (Bvar España); los
+  // movimientos de Pick-UP no cambian lo que se ofrece en ML.
+  try {
+    const location = await shopifyService.obtenerLocationPrincipal();
+    const locationId = String(req.body?.location_id || '');
+    if (locationId && locationId !== String(location.id)) return;
+  } catch (_) { /* ante la duda, se sincroniza */ }
+  agendarSyncShopifyPorWebhook();
+});
+
+// URL pública a la que Shopify manda el aviso: SHOPIFY_WEBHOOK_URL si está, o el
+// dominio que Railway publica solo. En local no hay ninguna y no se registra nada.
+function urlWebhookInventarioShopify() {
+  const explicita = String(process.env.SHOPIFY_WEBHOOK_URL || '').trim();
+  if (explicita) return explicita;
+  const dominio = String(process.env.RAILWAY_PUBLIC_DOMAIN || '').trim();
+  return dominio ? `https://${dominio}${SHOPIFY_WEBHOOK_INVENTARIO_PATH}` : null;
 }
 
 // Barrido completo (red de seguridad, 1×hora): relee TODO el catálogo de ML y
@@ -8212,9 +8979,35 @@ app.post('/api/atencion-faq/casos', requireAuth, requireAdmin, async (req, res) 
   }
 });
 
-app.put('/api/atencion-faq/casos/:id', requireAuth, requireAdmin, async (req, res) => {
+app.put('/api/atencion-faq/casos/:id', requireAuth, requireAtencion, async (req, res) => {
   try {
-    const caso = await supabaseService.actualizarAtencionFaqCaso(req.params.id, req.body || {});
+    let cambios = req.body || {};
+
+    // Atención sólo puede editar la respuesta y sumar variables nuevas: la regla
+    // de negocio, cuándo escalar y el resto de los campos son sólo de admin.
+    if (req.user?.role !== 'admin') {
+      const existentes = await supabaseService.obtenerAtencionFaqCasos();
+      const actual = existentes.find((c) => c.id === req.params.id);
+      if (!actual) {
+        return res.status(404).json({ success: false, error: 'Caso no encontrado' });
+      }
+
+      cambios = {};
+      if (typeof req.body?.respuesta !== 'undefined') cambios.respuesta = req.body.respuesta;
+
+      if (typeof req.body?.variantes !== 'undefined') {
+        const originales = Array.isArray(actual.variantes) ? actual.variantes : [];
+        const nuevas = Array.isArray(req.body.variantes) ? req.body.variantes : [];
+        const intactas = originales.every((v, i) =>
+          nuevas[i] && nuevas[i].condicion === v.condicion && nuevas[i].respuesta === v.respuesta);
+        if (!intactas) {
+          return res.status(403).json({ success: false, error: 'Atención sólo puede agregar variables nuevas, no modificar ni borrar las existentes' });
+        }
+        cambios.variantes = nuevas;
+      }
+    }
+
+    const caso = await supabaseService.actualizarAtencionFaqCaso(req.params.id, cambios);
     res.json({ success: true, data: caso });
   } catch (error) {
     if (esFaltaTablaAtencionFaq(error)) {
@@ -8851,16 +9644,23 @@ app.listen(PORT, async () => {
     });
     console.log(`📦 Cron stock ML activo (${mlStockCron})`);
 
-    // Stock — ventas de Shopify. Una consulta a Shopify y, sólo si algo cambió,
-    // un push puntual a ML por el índice cacheado. Barato, así que corre seguido.
-    const mlShopifyCron = process.env.ML_STOCK_SHOPIFY_CRON || '*/3 * * * *';
-    cron.schedule(mlShopifyCron, async () => {
+    // Stock — cambios en Shopify. El camino rápido es el webhook de inventario;
+    // con el webhook registrado, el cron queda como red de seguridad cada 10 min
+    // (sin webhook, cada 3). Una consulta a Shopify y, sólo si algo cambió, un
+    // push puntual a ML por el índice cacheado.
+    const urlWebhookInv = SHOPIFY_WEBHOOK_SECRET ? urlWebhookInventarioShopify() : null;
+    let webhookInvActivo = false;
+    if (urlWebhookInv) {
       try {
-        await sincronizarStockShopifyHaciaML();
+        const r = await shopifyService.asegurarWebhookInventario(urlWebhookInv);
+        webhookInvActivo = true;
+        console.log(`🪝 Webhook de inventario de Shopify ${r.creado ? 'registrado' : 'ya registrado'} (${urlWebhookInv})`);
       } catch (err) {
-        logService.error('[cron] Error empujando stock de Shopify a MercadoLibre', err);
+        logService.error('No se pudo registrar el webhook de inventario de Shopify', err);
       }
-    });
+    }
+    const mlShopifyCron = process.env.ML_STOCK_SHOPIFY_CRON || (webhookInvActivo ? '*/10 * * * *' : '*/3 * * * *');
+    cron.schedule(mlShopifyCron, () => correrSyncShopifyHaciaML('cron'));
     console.log(`🛍️  Cron stock Shopify→ML activo (${mlShopifyCron})`);
 
     // Stock — barrido completo. Relee todo el catálogo de ML y corrige lo que se

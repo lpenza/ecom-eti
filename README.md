@@ -60,7 +60,7 @@ HOSTINGER_MAILBOX_ID=
 # Alias del buzón madre. MAIL_ALIASES = lista que ve el admin (separados por coma).
 # MAIL_ALIASES_ATENCION = alias que ve/usa el rol "atención al cliente".
 MAIL_MADRE=info@velinneuy.com
-MAIL_ALIASES=info@velinneuy.com,ventas@velinneuy.com,consultas@velinneuy.com,facturacion@velinneuy.com
+MAIL_ALIASES=info@velinneuy.com,ventas@velinneuy.com,consultas@velinneuy.com,facturacion@velinneuy.com,mercadopago@velinneuy.com
 MAIL_ALIASES_ATENCION=consultas@velinneuy.com
 
 # Los crons (levante, pickups, stock, correos nuevos…) hacen cambios compartidos
@@ -281,6 +281,66 @@ tomada, no un bug.
 | POST | `/api/mercadolibre/sincronizar` | Trae ventas y etiquetas ahora |
 | GET | `/api/mercadolibre/etiqueta/:pedidoId` | Baja/refresca la etiqueta (`?forzar=1`) |
 | POST | `/api/mercadolibre/webhook` | Notificaciones de ML (`orders_v2`, `shipments`) |
+
+## 🧾 e-Ticket (Zensei)
+
+Emisión **manual** de e-Tickets para pedidos de **Shopify**: el admin aprieta
+**🧾 Emitir** en la columna *Comprobante* de la tabla, revisa el preview y confirma.
+Las ventas de MercadoLibre no pasan por acá (las factura la integración de ML que
+trae Zensei).
+
+**Reglas**
+
+- Siempre **e-Ticket (101)** a consumidor final, sin receptor.
+- Los precios de Shopify incluyen IVA; la API de Zensei pide el unitario **sin**
+  IVA y calcula el 22% sobre el total gravado. `services/comprobanteBuilder.js`
+  pasa cada línea a neto (4 decimales) y garantiza que el total cierre al
+  centésimo con lo cobrado. Cuando un total no se puede expresar como neto + IVA
+  redondeados (ej. $2.760 → 2.759,99 ó 2.760,01) agrega una línea **Redondeo** de
+  $0,01 no facturable (`NON_BILLABLE`).
+- Descuentos (escalera de tonos, códigos, automáticos) salen de los
+  `discount_allocations` de cada línea; el envío va como una línea más con IVA.
+- No se emite si el pedido no está pagado, está cancelado, reembolsado del todo,
+  editado después de la compra o no cierra el total. Los reembolsos parciales se
+  facturan por lo cobrado originalmente (los reembolsos van por fuera).
+- **Fecha de emisión:** hoy, o la fecha en que entró el pedido (hora de Uruguay)
+  si tiene como máximo **2 días** — tope confirmado con el contador / Zensei
+  (`MAX_DIAS_ATRAS` en `comprobanteBuilder.js`). El server valida la ventana.
+- `Idempotency-Key: shopify-<order_id>`: un reintento (timeout, doble click)
+  nunca emite dos comprobantes.
+- Al emitir se guarda serie/número/estado en `pedidos.cfe_*` y se agrega el tag
+  `ETICKET-<serie><número>` a la orden de Shopify.
+
+**Puesta en marcha**
+
+1. Correr `sql/add_cfe_to_pedidos.sql` en Supabase.
+2. Crear la API key en Zensei → Configuración → API Keys (permisos `cfe:issue` y
+   `cfe:read`) y cargar `ZENSEI_API_KEY`, `ZENSEI_TENANT_ID`, `ZENSEI_COMPANY_ID`
+   y `ZENSEI_BRANCH_ID` en `.env` y en Railway.
+3. Probar primero con un pedido real chico: `app.zensei.uy` es producción.
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| GET | `/api/pedidos/:id/comprobante/preview` | Arma el e-Ticket desde Shopify sin emitir |
+| POST | `/api/pedidos/:id/comprobante` | Emite el e-Ticket en Zensei |
+| POST | `/api/pedidos/:id/comprobante/actualizar` | Reconsulta el estado en Zensei |
+| GET | `/api/pedidos/:id/comprobante/pdf` | PDF del comprobante |
+| POST | `/api/comprobantes/lote/preview` | Revisa una tanda (`{ pedidoIds }`) sin emitir — progreso NDJSON |
+| POST | `/api/comprobantes/lote` | Emite la tanda (`{ pedidoIds, fecha: 'auto'\|'hoy' }`) de a uno — progreso NDJSON |
+
+**Emisión masiva.** Barra *🧾 Emitir e-Tickets (N)* arriba de la tabla: toma
+**sólo los pedidos seleccionados** con el checkbox (sin selección queda
+deshabilitada; máx. 100 por tanda). Los seleccionados que ya tienen comprobante
+o son de ML se dejan afuera. Primero revisa todo y muestra qué está listo y qué no; al
+confirmar emite de a uno (≥ 1,1 s entre emisiones por el límite de 60/min de
+Zensei; ante un 429 espera un minuto y reintenta) y corta la tanda si el error es
+de cuenta (key, permisos, suscripción). Con fecha `auto` cada pedido sale con su
+fecha si tiene hasta 2 días y con la de hoy si no.
+
+**Un pedido, un comprobante.** Con `cfe_id` cargado la fila muestra el número en
+vez de *Emitir*, el modal no ofrece emitir y el server responde 409. Si el
+comprobante se emitió pero falló el guardado en la base, reintentar devuelve el
+mismo CFE (misma `Idempotency-Key`).
 
 ## 📚 Documentación
 

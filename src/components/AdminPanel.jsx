@@ -694,6 +694,14 @@ export default function AdminPanel() {
     // Sólo al entrar a la pestaña o cambiar el rango: el SKU se aplica con el botón.
   }, [tab, ajustesDesde, ajustesHasta]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Los traslados de StockPlanner traen la diferencia directa (suman/restan, no fijan
+  // un valor); el resto se calcula de anterior → nuevo.
+  function diferenciaAjuste(a) {
+    if (a.diferencia != null) return Number(a.diferencia);
+    if (a.stock_anterior == null || a.stock_nuevo == null) return null;
+    return Number(a.stock_nuevo) - Number(a.stock_anterior);
+  }
+
   // Exportar el log filtrado a CSV para revisarlo fuera del sistema.
   function exportarAjustesCsv() {
     if (ajustes.length === 0) {
@@ -708,8 +716,8 @@ export default function AdminPanel() {
         a.sku,
         a.producto_nombre ?? '',
         a.stock_anterior ?? '',
-        a.stock_nuevo,
-        a.stock_anterior == null ? '' : Number(a.stock_nuevo) - Number(a.stock_anterior),
+        a.stock_nuevo ?? '',
+        diferenciaAjuste(a) ?? '',
         a.usuario_nombre ?? '',
         a.usuario_email ?? '',
         a.origen ?? '',
@@ -1785,18 +1793,18 @@ export default function AdminPanel() {
       {/* ══════════════ TAB STOCK COLORES (log de ajustes) ══════════════ */}
       {tab === 'stock' && (() => {
         const totalPos = ajustes.reduce((s, a) => {
-          const d = a.stock_anterior == null ? 0 : Number(a.stock_nuevo) - Number(a.stock_anterior);
+          const d = diferenciaAjuste(a) ?? 0;
           return d > 0 ? s + d : s;
         }, 0);
         const totalNeg = ajustes.reduce((s, a) => {
-          const d = a.stock_anterior == null ? 0 : Number(a.stock_nuevo) - Number(a.stock_anterior);
+          const d = diferenciaAjuste(a) ?? 0;
           return d < 0 ? s + d : s;
         }, 0);
 
         return (
           <section className="admin-section">
             <div className="admin-section-header-row">
-              <h2 className="admin-section-title" style={{ margin: 0 }}>Ajustes manuales de stock (Stock Colores)</h2>
+              <h2 className="admin-section-title" style={{ margin: 0 }}>Movimientos de stock (Stock Colores)</h2>
               <div style={{ display: 'flex', gap: '0.4rem' }}>
                 <button className="btn btn-secondary btn-sm" onClick={exportarAjustesCsv} disabled={ajustes.length === 0}>
                   ⬇️ CSV
@@ -1807,9 +1815,11 @@ export default function AdminPanel() {
               </div>
             </div>
             <p className="admin-section-desc">
-              Cada vez que alguien guarda un conteo físico en la pantalla "Stock Colores" queda registrado
-              acá: quién lo hizo, el valor que tenía el sistema, el valor nuevo y cuándo.
-              La sincronización automática desde Shopify no se registra — sólo los cambios manuales.
+              Acá queda cada cambio de stock que hace el sistema o una persona: los conteos físicos de la
+              pantalla "Stock Colores", las ventas y cancelaciones de MercadoLibre, y los traslados
+              depósito→tienda de StockPlanner (con sus correcciones). Los traslados suman o restan
+              unidades, por eso no tienen "Sistema"/"Nuevo". Las ventas de la tienda web las descuenta
+              Shopify solo y no aparecen acá.
             </p>
 
             {avisoAjustes && (
@@ -1844,7 +1854,7 @@ export default function AdminPanel() {
 
             {!loadingAjustes && ajustes.length > 0 && (
               <p className="admin-section-desc" style={{ marginTop: 4 }}>
-                {ajustes.length} ajuste(s) · sumaron <strong style={{ color: '#16a34a' }}>+{totalPos}</strong> ·
+                {ajustes.length} movimiento(s) · sumaron <strong style={{ color: '#16a34a' }}>+{totalPos}</strong> ·
                 {' '}restaron <strong style={{ color: '#dc2626' }}>{totalNeg}</strong> unidades
               </p>
             )}
@@ -1852,7 +1862,7 @@ export default function AdminPanel() {
             {loadingAjustes && <p className="admin-rep-empty">Cargando...</p>}
 
             {!loadingAjustes && ajustes.length === 0 && !avisoAjustes && (
-              <p className="admin-rep-empty">No hay ajustes manuales de stock en el período seleccionado.</p>
+              <p className="admin-rep-empty">No hay movimientos de stock en el período seleccionado.</p>
             )}
 
             {!loadingAjustes && ajustes.length > 0 && (
@@ -1870,9 +1880,7 @@ export default function AdminPanel() {
                 </thead>
                 <tbody>
                   {ajustes.map((a) => {
-                    const diff = a.stock_anterior == null
-                      ? null
-                      : Number(a.stock_nuevo) - Number(a.stock_anterior);
+                    const diff = diferenciaAjuste(a);
                     return (
                       <tr key={a.id}>
                         <td>{formatFechaHoraCompletaUy(a.created_at)}</td>
@@ -1881,7 +1889,7 @@ export default function AdminPanel() {
                           <span className="admin-rep-email">{a.producto_nombre || '—'}</span>
                         </td>
                         <td className="admin-rep-num">{a.stock_anterior ?? '—'}</td>
-                        <td className="admin-rep-num"><strong>{a.stock_nuevo}</strong></td>
+                        <td className="admin-rep-num"><strong>{a.stock_nuevo ?? '—'}</strong></td>
                         <td className="admin-rep-num">
                           {diff === null ? '—' : (
                             <span style={{ fontWeight: 600, color: diff > 0 ? '#16a34a' : diff < 0 ? '#dc2626' : '#6b7280' }}>
@@ -1893,7 +1901,12 @@ export default function AdminPanel() {
                           <span className="admin-rep-nombre">{a.usuario_nombre || '—'}</span>
                           <span className="admin-rep-email">{a.usuario_email || '—'}</span>
                         </td>
-                        <td>{a.origen || '—'}</td>
+                        <td>
+                          {a.origen || '—'}
+                          {a.shopify_ok === false && (
+                            <span className="admin-rep-email" style={{ color: '#dc2626' }}>no llegó a Shopify</span>
+                          )}
+                        </td>
                       </tr>
                     );
                   })}

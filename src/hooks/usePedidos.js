@@ -1,10 +1,24 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import * as api from '../services/api';
 
 export function usePedidos() {
   const [pedidos, setPedidos] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [loadingText, setLoadingText] = useState('Procesando...');
+  // Loader anidable: cada setLoading(true) suma y cada setLoading(false) resta, y el
+  // modal se cierra recién cuando no queda ninguna operación abierta. Así un flujo
+  // largo (generar N etiquetas + recargar pedidos) no hace parpadear el loader cada
+  // vez que una operación interna (generarEtiqueta, cargarPedidos) termina.
+  const loadingDepthRef = useRef(0);
+  const [loadingDepth, setLoadingDepth] = useState(0);
+  const loading = loadingDepth > 0;
+  const setLoading = useCallback((activo) => {
+    loadingDepthRef.current = Math.max(0, loadingDepthRef.current + (activo ? 1 : -1));
+    setLoadingDepth(loadingDepthRef.current);
+  }, []);
+  // El texto lo decide la operación más externa: las internas no pisan su progreso.
+  const [loadingText, setLoadingTextState] = useState('Procesando...');
+  const setLoadingText = useCallback((texto) => {
+    if (loadingDepthRef.current <= 1) setLoadingTextState(texto);
+  }, []);
   const [selectedPedidos, setSelectedPedidos] = useState([]);
   const [uesAuthenticated, setUesAuthenticated] = useState(false);
 

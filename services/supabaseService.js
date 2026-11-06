@@ -1268,6 +1268,45 @@ class SupabaseService {
     return data[0];
   }
 
+  // Mismo cambio a varios pedidos en UNA sola sentencia: o quedan todos o
+  // ninguno (lo usa el e-Ticket que junta pedidos del mismo cliente).
+  async actualizarPedidos(pedidoIds, datos) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .update(datos)
+      .in('id', pedidoIds)
+      .select();
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Todos los pedidos atados a un mismo comprobante fiscal.
+  async actualizarPedidosPorCfe(cfeId, datos) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .update(datos)
+      .eq('cfe_id', cfeId)
+      .select();
+    if (error) throw error;
+    return data || [];
+  }
+
+  // Pedidos de Shopify sin e-Ticket ni cancelar, entrados en [desde, hasta]:
+  // los candidatos a ir en el mismo comprobante que otro del mismo cliente.
+  async obtenerPedidosSinComprobante(desdeIso, hastaIso) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('*')
+      .is('cfe_id', null)
+      .is('ml_order_id', null)
+      .or('origen.is.null,origen.neq.mercadolibre')
+      .neq('estado', 'cancelado')
+      .gte('created_at', desdeIso)
+      .lte('created_at', hastaIso);
+    if (error) throw error;
+    return data || [];
+  }
+
   // Sincronizar órdenes desde Shopify
   async sincronizarOrdenes(ordenes) {
     const googleMapsService = require('./googleMapsService');
@@ -3154,6 +3193,21 @@ class SupabaseService {
     return resultados;
   }
 
+  // Ventas de ML con envío Flex (logistic_type 'self_service') creadas en el rango. Las
+  // reparte MarcoPostal, pero su Excel no trae ni el número de venta ni el envío de ML:
+  // la auditoría las asocia por destinatario, CP y localidad.
+  async buscarPedidosFlexML(desde, hasta) {
+    const { data, error } = await supabase
+      .from('pedidos')
+      .select('id, numero_pedido, numero_seguimiento_ues, cliente_nombre, localidad, codigo_postal, estado, es_reenvio, es_reclamo, created_at')
+      .eq('origen', 'mercadolibre')
+      .eq('ml_logistic_type', 'self_service')
+      .gte('created_at', desde)
+      .lte('created_at', hasta);
+    if (error) throw error;
+    return data || [];
+  }
+
   // Pedidos con etiqueta generada dentro del período que deberían aparecer en el archivo
   // del courier. Sirve para el chequeo inverso "esto lo despaché pero no me lo cobraron".
   async obtenerPedidosConGuiaEnPeriodo(desde, hasta) {
@@ -3218,6 +3272,24 @@ class SupabaseService {
     if (tipo === 'conforme_ml') {
       await supabase.from('pedidos').update({ conforme_adjunto_at: null }).eq('id', pedidoId);
     }
+  }
+
+  // Borra un pedido cargado por error junto con lo que cuelga de él. Las tablas
+  // hijas se limpian a mano porque no todas tienen ON DELETE CASCADE.
+  async eliminarPedido(pedidoId) {
+    const pasos = [
+      ['pedido_items', () => supabase.from('pedido_items').delete().eq('pedido_id', pedidoId)],
+      ['pedido_adjuntos', () => supabase.from('pedido_adjuntos').delete().eq('pedido_id', pedidoId)],
+      ['pedido_revision_contacto', () => supabase.from('pedido_revision_contacto').delete().eq('pedido_id', String(pedidoId))],
+      // Un reenvío que apunte a este pedido queda huérfano en vez de bloquear el borrado.
+      ['pedidos', () => supabase.from('pedidos').update({ pedido_origen_id: null }).eq('pedido_origen_id', pedidoId)],
+    ];
+    for (const [tabla, paso] of pasos) {
+      const { error } = await paso();
+      if (error && !this.isMissingRelationError(error, tabla)) throw error;
+    }
+    const { error } = await supabase.from('pedidos').delete().eq('id', pedidoId);
+    if (error) throw error;
   }
 
   // ── MercadoLibre ────────────────────────────────────────────────────────────

@@ -77,6 +77,13 @@ const FLAGS = {
     severidad: 'baja',
     reclamable: false,
   },
+  // La asociación de un Flex a su venta de ML es por aproximación (el Excel no trae el
+  // número de venta): se marca para que se pueda verificar a ojo.
+  flex_asociado_ml: {
+    label: 'Flex asociado a venta de ML',
+    severidad: 'info',
+    reclamable: false,
+  },
   reenvio_justificado: {
     label: 'Reenvío justificado',
     severidad: 'info',
@@ -111,6 +118,99 @@ function ordenBase(orden) {
   if (!orden) return null;
   const m = String(orden).match(/^(?:RCL|COL)-(\d+)/i);
   return m ? m[1] : String(orden);
+}
+
+// ── Flex de MercadoLibre ─────────────────────────────────────────────────────────
+// MarcoPostal reparte las ventas de ML con envío Flex, pero en su Excel esas líneas
+// vienen sin número de orden (Obs 1 vacío o con la referencia de la dirección) y a
+// veces sin destinatario. Se asocian a los pedidos ML 'self_service' de la app por
+// nombre del destinatario, código postal y localidad, dentro de una ventana de fechas.
+
+const esFlex = (linea) => normalizarTexto(linea.servicio) === 'flex';
+
+const DIA_MS = 24 * 60 * 60 * 1000;
+// El pedido se crea antes de que MarcoPostal lo levante: hasta 10 días antes de la
+// fecha de la línea, y 1 día después por las diferencias de zona horaria.
+const FLEX_DIAS_ANTES = 10;
+const FLEX_DIAS_DESPUES = 1;
+
+// Palabras de 3+ letras, sin tildes: "Avenida Joaquín" → ['avenida', 'joaquin'].
+const palabras = (texto) => normalizarTexto(texto)
+  .replace(/[^a-z0-9 ]/g, ' ')
+  .split(' ')
+  .filter((p) => p.length >= 3);
+
+// Coinciden si comparten al menos 2 palabras (nombre + apellido), o todas las del más
+// corto cuando alguno de los dos es una sola palabra.
+function mismoNombre(a, b) {
+  const pa = new Set(palabras(a));
+  const pb = palabras(b);
+  if (pa.size === 0 || pb.length === 0) return false;
+  const comunes = pb.filter((p) => pa.has(p)).length;
+  return comunes >= Math.min(2, pa.size, pb.length);
+}
+
+// MarcoPostal manda "PRADO, NUEVA SAVONA"; ML manda "Prado".
+function mismaLocalidad(localidadLinea, localidadPedido) {
+  const pl = new Set(palabras(localidadLinea));
+  const pp = palabras(localidadPedido);
+  return pp.length > 0 && pp.every((p) => pl.has(p));
+}
+
+function puntuarFlex(linea, pedido) {
+  const fechaLinea = linea.fecha?.getTime();
+  const fechaPedido = new Date(pedido.created_at).getTime();
+  if (!fechaLinea || Number.isNaN(fechaPedido)) return null;
+  const diferencia = fechaLinea - fechaPedido;
+  if (diferencia > FLEX_DIAS_ANTES * DIA_MS || diferencia < -FLEX_DIAS_DESPUES * DIA_MS) return null;
+
+  const nombre = linea.destinatario ? mismoNombre(linea.destinatario, pedido.cliente_nombre) : false;
+  const cpLinea = String(linea.raw?.cp || '').trim();
+  const cp = Boolean(cpLinea) && cpLinea === String(pedido.codigo_postal || '').trim();
+  const localidad = mismaLocalidad(linea.localidad, pedido.localidad);
+
+  // Si la línea trae un destinatario distinto, el CP solo no alcanza: puede ser otra
+  // venta al mismo barrio.
+  if (linea.destinatario && !nombre) return null;
+  if (!nombre && !(cp && localidad)) return null;
+
+  const motivos = [nombre && 'destinatario', cp && 'CP', localidad && 'localidad'].filter(Boolean);
+  return {
+    puntaje: (nombre ? 5 : 0) + (cp ? 2 : 0) + (localidad ? 2 : 0),
+    diferencia: Math.abs(diferencia),
+    motivos,
+  };
+}
+
+// Devuelve Map<linea, { pedido, motivos }>. Cada venta de ML se asigna a una sola
+// línea: si MarcoPostal cobró dos veces el mismo Flex, la segunda queda sin pedido.
+async function asociarFlexML(lineas, pedidosYaAsociados) {
+  const pendientes = lineas.filter((l) => esFlex(l) && l.fecha);
+  if (pendientes.length === 0) return new Map();
+
+  const tiempos = pendientes.map((l) => l.fecha.getTime());
+  const desde = new Date(Math.min(...tiempos) - FLEX_DIAS_ANTES * DIA_MS).toISOString();
+  const hasta = new Date(Math.max(...tiempos) + FLEX_DIAS_DESPUES * DIA_MS).toISOString();
+  const pedidos = (await supabaseService.buscarPedidosFlexML(desde, hasta))
+    .filter((p) => !pedidosYaAsociados.has(p.id));
+
+  const pares = [];
+  for (const linea of pendientes) {
+    for (const pedido of pedidos) {
+      const r = puntuarFlex(linea, pedido);
+      if (r) pares.push({ linea, pedido, ...r });
+    }
+  }
+  pares.sort((a, b) => b.puntaje - a.puntaje || a.diferencia - b.diferencia);
+
+  const asociados = new Map();
+  const usados = new Set();
+  for (const par of pares) {
+    if (asociados.has(par.linea) || usados.has(par.pedido.id)) continue;
+    asociados.set(par.linea, { pedido: par.pedido, motivos: par.motivos });
+    usados.add(par.pedido.id);
+  }
+  return asociados;
 }
 
 // ── Auditoría ────────────────────────────────────────────────────────────────────
@@ -272,18 +372,41 @@ async function auditarLineas({
     mapaNumero.get(base).push(p);
   }
 
+  // Primero por guía (match exacto), después por número de orden: así una guía
+  // regenerada a mano —que nunca quedó registrada en la app— igual se asocia al
+  // pedido y no dispara `sin_pedido` de más.
+  const matchDirecto = (linea) => {
+    const base = ordenBase(linea.orden);
+    return mapaTracking.get(linea.guia) || (base ? (mapaNumero.get(base) || [])[0] : null) || null;
+  };
+
+  // Los Flex de ML que no se encontraron por guía ni por orden se buscan entre las
+  // ventas Flex de la app (sólo MarcoPostal reparte Flex).
+  const flexML = proveedor === 'marcopostal'
+    ? await asociarFlexML(
+      lineas.filter((l) => !matchDirecto(l)),
+      new Set(lineas.map(matchDirecto).filter(Boolean).map((p) => p.id))
+    )
+    : new Map();
+
   for (const linea of lineas) {
-    // Primero por guía (match exacto), después por número de orden: así una guía
-    // regenerada a mano —que nunca quedó registrada en la app— igual se asocia al
-    // pedido y no dispara `sin_pedido` de más.
     const porTracking = mapaTracking.get(linea.guia) || null;
     const base = ordenBase(linea.orden);
     const candidatosOrden = base ? (mapaNumero.get(base) || []) : [];
-    const pedido = porTracking || candidatosOrden[0] || null;
+    const flex = flexML.get(linea) || null;
+    const pedido = porTracking || candidatosOrden[0] || flex?.pedido || null;
 
     linea.pedidoId = pedido?.id || null;
     linea.pedidoNumero = pedido?.numero_pedido || null;
-    linea.matchPor = porTracking ? 'guia' : (pedido ? 'orden' : null);
+    linea.matchPor = porTracking ? 'guia' : (candidatosOrden[0] ? 'orden' : (flex ? 'flex_ml' : null));
+
+    if (linea.matchPor === 'flex_ml') {
+      agregarFlag(
+        linea,
+        'flex_asociado_ml',
+        `${pedido.numero_pedido} (${pedido.cliente_nombre || 's/nombre'}) por ${flex.motivos.join(', ')}`
+      );
+    }
 
     if (!pedido) {
       // Los "Retiro sin Costo" son retiros del propio depósito: no tienen pedido y no
