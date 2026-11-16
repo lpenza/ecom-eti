@@ -124,7 +124,10 @@ export function usePedidos() {
     setLoadingText('Ejecutando fulfillment Shopify...');
 
     try {
-      const result = await api.ejecutarFulfillmentShopify(pedidoIds, trackingTemplate);
+      const result = await api.ejecutarFulfillmentShopify(pedidoIds, trackingTemplate, (ev) => {
+        if (ev?.mensaje) setLoadingText(ev.mensaje);
+      });
+      setLoadingText('Actualizando lista de pedidos...');
       await cargarPedidos();
       return { success: true, ...result };
     } catch (error) {

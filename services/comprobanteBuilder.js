@@ -51,8 +51,10 @@ function fechaHoyUy(ahora = new Date()) {
 
 // Máximo de días hacia atrás que se acepta como fecha de emisión (confirmado con
 // el contador / Zensei). El CFE puede llevar la fecha en que entró el pedido
-// sólo si no pasaron más de estos días.
-const MAX_DIAS_ATRAS = 2;
+// sólo si no pasaron más de estos días. Era 2; se subió a 4 (confirmado) para
+// que los pedidos del fin de semana que se despachan y facturan el lunes salgan
+// igual con la fecha del día del pedido, que es el requisito.
+const MAX_DIAS_ATRAS = 4;
 
 // Fecha (YYYY-MM-DD, hora de Uruguay) en que se recibió el pedido en Shopify.
 function fechaPedidoUy(order) {
@@ -127,6 +129,12 @@ function unitarioParaNeto(neto, cantidad) {
     if (r2(cantidad * v) === neto) return v;
   }
   return u;
+}
+
+// Pedidos con costo cero en Shopify (colaboraciones, reclamos, reenvíos): no se
+// facturan. Cuenta lo que pagó el cliente, sin propina.
+function esCostoCero(order) {
+  return r2(num(order?.total_price) - num(order?.total_tip_received)) <= 0;
 }
 
 // Totales tal como los va a armar Zensei: neto gravado al 22%, su IVA y lo no
@@ -332,4 +340,4 @@ function construirETicket(entrada, { fecha } = {}) {
   };
 }
 
-module.exports = { construirETicket, fechaHoyUy, fechaPedidoUy, opcionesFecha, validarFechaEmision, MAX_DIAS_ATRAS, TASA_IVA };
+module.exports = { construirETicket, esCostoCero, fechaHoyUy, fechaPedidoUy, opcionesFecha, validarFechaEmision, MAX_DIAS_ATRAS, TASA_IVA };

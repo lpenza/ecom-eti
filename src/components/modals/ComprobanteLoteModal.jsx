@@ -69,7 +69,7 @@ export default function ComprobanteLoteModal({ pedidos, onClose, onTerminado, mo
     const ok = window.confirm(
       `Se van a emitir ${listos.length} e-Ticket(s) REALES a DGI por un total de ${pesos(totalListos)}` +
       `${pedidosCubiertos > listos.length ? ` (cubren ${pedidosCubiertos} pedidos: los del mismo cliente van juntos)` : ''}.\n\n` +
-      `Fecha: ${modoFecha === 'auto' ? 'la del pedido cuando tenga hasta 2 días, si no la de hoy' : 'hoy para todos'}.\n\n¿Confirmás?`
+      `Fecha: ${modoFecha === 'auto' ? 'la del pedido cuando tenga hasta 4 días, si no la de hoy' : 'hoy para todos'}.\n\n¿Confirmás?`
     );
     if (!ok) return;
     setFase('emitiendo');
@@ -157,7 +157,7 @@ export default function ComprobanteLoteModal({ pedidos, onClose, onTerminado, mo
               <strong>Fecha de emisión:</strong>
               <label style={{ cursor: 'pointer' }}>
                 <input type="radio" name="fecha-lote" checked={modoFecha === 'auto'} disabled={fase === 'emitiendo'} onChange={() => setModoFecha('auto')} />{' '}
-                La del pedido si tiene hasta 2 días (si no, hoy)
+                La del pedido si tiene hasta 4 días (si no, hoy)
               </label>
               <label style={{ cursor: 'pointer' }}>
                 <input type="radio" name="fecha-lote" checked={modoFecha === 'hoy'} disabled={fase === 'emitiendo'} onChange={() => setModoFecha('hoy')} />{' '}

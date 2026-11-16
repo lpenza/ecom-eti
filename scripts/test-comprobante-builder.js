@@ -3,7 +3,7 @@
 // centésimo con lo cobrado. Correr después de tocar services/comprobanteBuilder.js:
 //   node scripts/test-comprobante-builder.js
 const assert = require('assert');
-const { construirETicket, opcionesFecha, validarFechaEmision } = require('../services/comprobanteBuilder');
+const { construirETicket, esCostoCero, opcionesFecha, validarFechaEmision } = require('../services/comprobanteBuilder');
 
 const base = { id: 1, name: '#1', financial_status: 'paid', currency: 'UYU', taxes_included: false, total_tax: '0.00', refunds: [] };
 const PRECIOS = [190, 290, 390, 490, 590, 690, 790, 830, 1490, 1890, 2550, 2680, 3470];
@@ -55,16 +55,21 @@ assert.ok(gPend.bloqueos.length === 1 && gPend.bloqueos[0].startsWith('#1010: ')
 // La fecha "del pedido" de un grupo es la de su pedido más reciente.
 assert.strictEqual(opcionesFecha([p2, p1], new Date('2026-11-02T15:00:00Z')).pedido, '2026-11-01');
 
+// Costo cero en Shopify (colaboración, reclamo, reenvío): no se factura.
+assert.strictEqual(esCostoCero({ ...base, total_price: '0.00' }), true);
+assert.strictEqual(esCostoCero({ ...base, total_price: '490.00' }), false);
+
 // Pendiente de pago: no se emite.
 assert.ok(construirETicket({ ...base, financial_status: 'pending', line_items: [{ title: 'X', price: '790', quantity: 1 }], total_price: '790', current_total_price: '790' }).bloqueos.length === 1);
 
-// Fecha de emisión: la del pedido sólo hasta 2 días atrás (hora de Uruguay).
-const ahora = new Date('2026-11-02T15:00:00Z');
-assert.strictEqual(opcionesFecha({ created_at: '2026-10-31T23:30:00-03:00' }, ahora).pedidoPermitida, true);
+// Fecha de emisión: la del pedido sólo hasta 4 días atrás (hora de Uruguay).
+// Caso real: entra el jueves y se despacha (y factura) el lunes.
+const ahora = new Date('2026-11-02T15:00:00Z'); // lunes
+assert.strictEqual(opcionesFecha({ created_at: '2026-10-29T23:30:00-03:00' }, ahora).pedidoPermitida, true); // jueves
 assert.strictEqual(opcionesFecha({ created_at: '2026-11-01T02:30:00Z' }, ahora).pedido, '2026-10-31'); // 23:30 del 31 en UY
-assert.strictEqual(opcionesFecha({ created_at: '2026-10-30T10:00:00-03:00' }, ahora).pedidoPermitida, false);
-assert.strictEqual(validarFechaEmision('2026-10-31', ahora), null);
-assert.ok(validarFechaEmision('2026-10-30', ahora));
+assert.strictEqual(opcionesFecha({ created_at: '2026-10-28T10:00:00-03:00' }, ahora).pedidoPermitida, false); // 5 días
+assert.strictEqual(validarFechaEmision('2026-10-29', ahora), null);
+assert.ok(validarFechaEmision('2026-10-28', ahora));
 assert.ok(validarFechaEmision('2026-11-03', ahora));
 
 console.log(`OK: ${casos} pedidos al azar cierran al centésimo y la ventana de fechas se respeta`);

@@ -44,7 +44,7 @@ export default function ComprobanteModal({ pedido, onClose, onEmitido, mostrarTo
   const [consultando, setConsultando] = useState(false);
   const [error, setError] = useState(null);
   const [infoDgi, setInfoDgi] = useState(null);
-  // 'pedido' = fecha en que entró el pedido (si tiene hasta 2 días), 'hoy' si no.
+  // 'pedido' = fecha en que entró el pedido (si tiene hasta 4 días), 'hoy' si no.
   const [eleccionFecha, setEleccionFecha] = useState('hoy');
   // true = emitir sólo este pedido aunque el cliente tenga otros sin facturar.
   const [separado, setSeparado] = useState(false);

@@ -269,11 +269,13 @@ export async function reprocesarPedidoShopify(orderNumber) {
 /**
  * Ejecutar fulfillment Shopify para pedidos con etiqueta generada
  */
-export async function ejecutarFulfillmentShopify(pedidoIds = null, trackingTemplate = null) {
-  return await fetchAPI('/fulfillment-shopify', {
+export async function ejecutarFulfillmentShopify(pedidoIds = null, trackingTemplate = null, onProgreso) {
+  // Con progreso: después del fulfillment el server emite los e-Tickets de los
+  // pedidos despachados, y eso puede tardar.
+  return await fetchAPIConProgreso('/fulfillment-shopify', {
     method: 'POST',
     body: JSON.stringify({ pedidoIds, trackingTemplate })
-  });
+  }, onProgreso);
 }
 
 /**
@@ -1287,7 +1289,7 @@ export async function obtenerPreviewComprobante(pedidoId, { separado = false } =
 
 /**
  * Emite el e-Ticket en Zensei (comprobante REAL a DGI).
- * fecha: 'hoy' o 'pedido' (fecha en que entró el pedido, hasta 2 días atrás).
+ * fecha: 'hoy' o 'pedido' (fecha en que entró el pedido, hasta 4 días atrás).
  * pedidoIds: los pedidos que se vieron juntos en el preview; si el grupo cambió
  * el server no emite.
  */
@@ -1327,7 +1329,7 @@ export async function previewLoteComprobantes(pedidoIds, onProgreso) {
 
 /**
  * Emisión masiva de e-Tickets (comprobantes REALES a DGI), de a uno.
- * fecha: 'auto' (la del pedido si tiene hasta 2 días, si no hoy) u 'hoy'.
+ * fecha: 'auto' (la del pedido si tiene hasta 4 días, si no hoy) u 'hoy'.
  * onProgreso recibe { mensaje, hechos, total, item } por cada pedido.
  * grupos: pedidoId → ids del mismo cliente que el preview juntó en su e-Ticket.
  */

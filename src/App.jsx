@@ -368,6 +368,12 @@ function AppContent({ user, logout }) {
     .map((p) => p.fulfillment_pickup_programado_at)
     .sort()[0] || null;
 
+  // Pickups cuyo despacho automático falló: no se reintentan solos, hay que hacer el
+  // fulfillment a mano en Shopify y marcarlos como procesados.
+  const pickupsFallidos = pedidosDespachadosList.filter(
+    (p) => getCourierPedido(p) === 'marcopostal_pickup' && p.fulfillment_pickup_error
+  );
+
   // Lista accionable: despachados sin los pickup ya programados (salen solos).
   const pedidosDespachadosActivos = pedidosDespachadosList.filter(
     (p) => !idsPickupsProgramados.has(p.id)
@@ -1077,6 +1083,27 @@ function AppContent({ user, logout }) {
     setTimeout(() => setToast({ show: false, message: '', type: '' }), 3000);
   };
 
+  // Toast del fulfillment sumando el resultado de los e-Tickets que el server
+  // emite al despachar. Va en el mismo toast: uno nuevo pisaría al anterior.
+  // Los que quedaron sin factura además llegan al panel de notificaciones.
+  const mostrarToastFulfillment = (resultado, mensaje, tipo) => {
+    const f = resultado?.facturacion;
+    const partes = [mensaje];
+    let tipoFinal = tipo;
+    if (f && !f.desactivada) {
+      if (f.emitidos?.length) partes.push(`🧾 ${f.emitidos.length} e-Ticket(s) emitidos`);
+      const sinFactura = (f.errores || []).map((e) => `#${e.numero}`);
+      if (sinFactura.length) {
+        partes.push(`⚠️ sin factura: ${sinFactura.join(', ')} (emitila desde la columna e-Ticket)`);
+        tipoFinal = 'warning';
+      } else if (f.corte) {
+        partes.push(`⚠️ no se facturó: ${f.corte}`);
+        tipoFinal = 'warning';
+      }
+    }
+    mostrarToast(partes.join(' · '), tipoFinal);
+  };
+
   // ==================== FUNCIONES DE PLANTILLAS ====================
 
   // Recargar plantillas desde la API
@@ -1432,9 +1459,9 @@ function AppContent({ user, logout }) {
       }
 
       if (resultado.failCount > 0) {
-        mostrarToast(`⚠️ Fulfillment: ${resultado.successCount}/${resultado.count} OK`, 'warning');
+        mostrarToastFulfillment(resultado, `⚠️ Fulfillment: ${resultado.successCount}/${resultado.count} OK`, 'warning');
       } else {
-        mostrarToast(`✅ ${resultado.successCount} fulfillment(s) creados`, 'success');
+        mostrarToastFulfillment(resultado, `✅ ${resultado.successCount} fulfillment(s) creados`, 'success');
       }
 
       // Obtener la plantilla activa de tracking
@@ -2010,9 +2037,9 @@ function AppContent({ user, logout }) {
       return;
     }
     if (resultado.failCount > 0) {
-      mostrarToast(`⚠️ Fulfillment: ${resultado.successCount}/${resultado.count} OK`, 'warning');
+      mostrarToastFulfillment(resultado, `⚠️ Fulfillment: ${resultado.successCount}/${resultado.count} OK`, 'warning');
     } else {
-      mostrarToast(`✅ ${resultado.successCount} fulfillment(s) enviados`, 'success');
+      mostrarToastFulfillment(resultado, `✅ ${resultado.successCount} fulfillment(s) enviados`, 'success');
     }
     cargarPedidosEnviados();
     cargarPedidosDespachados();
@@ -2954,6 +2981,19 @@ function AppContent({ user, logout }) {
                   </button>
                 </>
               )}
+              {/* Pickups que fallaron en el despacho automático: quedan para manual */}
+              {pickupsFallidos.length > 0 && (
+                <span
+                  className="cadeteria-guard-hint cadeteria-guard-hint-pending"
+                  title={pickupsFallidos
+                    .map((p) => `#${p.numero_pedido}: ${p.fulfillment_pickup_error}`)
+                    .join('\n')}
+                >
+                  ⚠️ {pickupsFallidos.length} pickup(s) con fulfillment fallido (
+                  {pickupsFallidos.map((p) => `#${p.numero_pedido}`).join(', ')}) · no se reintentan:
+                  hacelo a mano en Shopify y marcá "Ya procesados"
+                </span>
+              )}
             </div>
           )}
 
@@ -3015,12 +3055,12 @@ function AppContent({ user, logout }) {
                   // Pickups que quedaron listos/notificados pero sin cerrar como retirados
                   const sinRetirar = (resultado.data || []).filter((r) => r.success && r.retiradoOk === false).length;
                   if (resultado.failCount > 0) {
-                    mostrarToast(`⚠️ Fulfillment: ${resultado.successCount}/${resultado.count} OK`, 'warning');
+                    mostrarToastFulfillment(resultado, `⚠️ Fulfillment: ${resultado.successCount}/${resultado.count} OK`, 'warning');
                   } else if (sinRetirar > 0) {
-                    mostrarToast(`⚠️ ${resultado.successCount} OK, pero ${sinRetirar} pickup(s) no se cerraron como retirados — cerralos en Shopify`, 'warning');
+                    mostrarToastFulfillment(resultado, `⚠️ ${resultado.successCount} OK, pero ${sinRetirar} pickup(s) no se cerraron como retirados — cerralos en Shopify`, 'warning');
                   } else if (resultado.successCount > 0) {
                     // Los pickup no suman acá: se agendan y se avisan con el toast de programados.
-                    mostrarToast(`✅ ${resultado.successCount} fulfillment(s) enviados`, 'success');
+                    mostrarToastFulfillment(resultado, `✅ ${resultado.successCount} fulfillment(s) enviados`, 'success');
                   }
                   // Los pickup no salen ahora: quedan agendados y los manda el cron.
                   const programados = resultado.pickupsProgramados?.programados || 0;

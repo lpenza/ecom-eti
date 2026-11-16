@@ -69,7 +69,7 @@ const etiquetaPdfService = require('./services/etiquetaPdfService');
 const etiquetaPdfCleanup = require('./services/etiquetaPdfCleanup');
 const shopifyService = require('./services/shopifyService');
 const zenseiService = require('./services/zenseiService');
-const { construirETicket, opcionesFecha, validarFechaEmision } = require('./services/comprobanteBuilder');
+const { construirETicket, esCostoCero, opcionesFecha, validarFechaEmision } = require('./services/comprobanteBuilder');
 const mercadolibreService = require('./services/mercadolibreService');
 const conformeEntregaService = require('./services/conformeEntregaService');
 const facturacionParserService = require('./services/facturacionParserService');
@@ -4653,17 +4653,30 @@ async function prepararComprobante(pedidoId, eleccionFecha = 'hoy', { separado =
     if (faltaColumnaCfe(e)) return { status: 500, error: MSG_FALTA_SQL_CFE, pedido };
     throw e;
   }
-  const grupo = separado ? [pedido] : candidatos;
+  const grupo = [];
   const orders = [];
   const shopifyOrderIds = [];
-  for (const p of grupo) {
+  const sinCosto = new Set();
+  for (const p of separado ? [pedido] : candidatos) {
     const shopifyOrderId = await shopifyService.obtenerIdPorNumeroPedido(p.numero_pedido);
     if (!shopifyOrderId) {
       return { status: 404, error: `No se encontró el pedido #${p.numero_pedido} en Shopify`, pedido };
     }
+    const order = await shopifyService.obtenerOrden(shopifyOrderId);
+    // Costo cero (colaboración, reclamo, reenvío): no se factura. Si es otro
+    // pedido del cliente, simplemente no entra en el e-Ticket.
+    if (esCostoCero(order)) {
+      if (String(p.id) === String(pedido.id)) {
+        return { status: 422, error: `El pedido #${pedido.numero_pedido} tiene costo cero en Shopify (colaboración, reclamo o reenvío): no se factura`, pedido, noFacturable: true };
+      }
+      sinCosto.add(String(p.id));
+      continue;
+    }
+    grupo.push(p);
     shopifyOrderIds.push(shopifyOrderId);
-    orders.push(await shopifyService.obtenerOrden(shopifyOrderId));
+    orders.push(order);
   }
+  candidatos = candidatos.filter((p) => !sinCosto.has(String(p.id)));
   const fechas = opcionesFecha(orders);
   let fecha = fechas.hoy;
   // 'auto' (emisión masiva): la del pedido si está dentro de la ventana, si no hoy.
@@ -4728,7 +4741,7 @@ async function emitirComprobanteDePedido(pedidoId, eleccionFecha, por, { separad
   const bloqueados = [pedidoId];
   try {
     const r = await prepararComprobante(pedidoId, eleccionFecha, { separado });
-    if (r.error) return { http: r.status, body: { success: false, error: r.error } };
+    if (r.error) return { http: r.status, body: { success: false, error: r.error, noFacturable: Boolean(r.noFacturable) } };
     const { pedido, armado, shopifyOrderIds, fecha, grupo } = r;
     const ids = grupo.map((p) => p.id);
 
@@ -4875,7 +4888,7 @@ app.post('/api/pedidos/:pedidoId/comprobante', requireAuth, requireAdmin, async 
 // ── Emisión masiva ───────────────────────────────────────────────────────────
 // Mismo flujo que el botón individual, de a un pedido por vez (Zensei pide un
 // comprobante por solicitud y hasta 60 por minuto). Con fecha 'auto' cada pedido
-// sale con su fecha si tiene hasta 2 días y con la de hoy si no.
+// sale con su fecha si tiene hasta 4 días y con la de hoy si no.
 const MAX_LOTE_COMPROBANTES = 100;
 const ESPERA_ENTRE_EMISIONES_MS = 1100; // < 60 por minuto aunque Zensei responda al instante
 let loteComprobantesEnCurso = false;
@@ -5023,6 +5036,87 @@ app.post('/api/comprobantes/lote', requireAuth, requireAdmin, async (req, res) =
     resultados,
   });
 });
+
+// ── Facturación al despachar ─────────────────────────────────────────────────
+// Al hacer fulfillment (y al despachar los pickup agendados) se emite el e-Ticket
+// de cada pedido de Shopify que salió, con fecha 'auto' (la del pedido si tiene
+// hasta 4 días, si no hoy). Al despachar, el grupo del cliente ya está cerrado y
+// el pedido casi no se cancela. Si la factura falla el pedido se despacha igual:
+// el error queda en el pedido y se emite a mano desde la columna e-Ticket.
+// ETICKET_AL_FULFILLMENT=0 lo apaga sin tocar código.
+const ETICKET_AL_FULFILLMENT = process.env.ETICKET_AL_FULFILLMENT !== '0';
+
+async function facturarDespachados(pedidos, por, onPaso = () => {}) {
+  const resumen = { emitidos: [], sinCosto: [], errores: [], desactivada: false, corte: null };
+  const aFacturar = (pedidos || []).filter((p) => p && p.origen !== 'mercadolibre' && !p.ml_order_id && !p.cfe_id);
+  if (!aFacturar.length) return resumen;
+  if (!ETICKET_AL_FULFILLMENT) {
+    resumen.desactivada = true;
+    return resumen;
+  }
+  if (!zenseiService.configurado()) {
+    resumen.corte = `falta configurar ${zenseiService.faltantes().join(', ')} en el servidor`;
+    return resumen;
+  }
+
+  // Pedidos que ya salieron en el e-Ticket de otro del mismo cliente.
+  const cubiertos = new Set();
+  for (let i = 0; i < aFacturar.length; i++) {
+    const p = aFacturar[i];
+    if (cubiertos.has(String(p.id))) continue;
+    onPaso({ mensaje: `Facturando ${i + 1}/${aFacturar.length} (#${p.numero_pedido})…`, hechos: i, total: aFacturar.length });
+    let r;
+    try {
+      r = await emitirComprobanteDePedido(p.id, 'auto', por);
+      // Límite de Zensei: esperar a la ventana siguiente y reintentar una vez
+      // (misma clave, no duplica).
+      if (r.body?.zenseiStatus === 429) {
+        onPaso({ mensaje: 'Zensei pidió esperar (límite por minuto)… reintentando en 60 s', hechos: i, total: aFacturar.length });
+        await esperar(61000);
+        r = await emitirComprobanteDePedido(p.id, 'auto', por);
+      }
+    } catch (e) {
+      r = { http: 500, body: { success: false, error: e.message } };
+    }
+    const b = r.body || {};
+    if (b.success) {
+      for (const id of b.pedidoIds || [p.id]) cubiertos.add(String(id));
+      const c = b.comprobante || {};
+      resumen.emitidos.push({ numeros: c.pedidos?.length ? c.pedidos : [p.numero_pedido], serie: c.serie, numero: c.numero });
+    } else if (b.noFacturable) {
+      resumen.sinCosto.push(p.numero_pedido);
+    } else if (!b.yaEmitido) {
+      resumen.errores.push({ numero: p.numero_pedido, error: b.error || `HTTP ${r.http}` });
+      // Los bloqueos (pago pendiente, total editado) no pasan por Zensei: se
+      // guardan igual para que la fila muestre "Reintentar" con el motivo.
+      if (r.http !== 409) {
+        supabaseService.actualizarPedido(p.id, { cfe_error: b.error || `HTTP ${r.http}` }).catch(() => {});
+      }
+      // Errores de cuenta (key, permisos, suscripción, DGI): fallarían todos.
+      if ([401, 402, 403, 503].includes(b.zenseiStatus) || r.http === 503) {
+        resumen.corte = b.error;
+        break;
+      }
+    }
+    if (b.success && i < aFacturar.length - 1) await esperar(ESPERA_ENTRE_EMISIONES_MS);
+  }
+
+  logService.info(`e-Tickets al despachar: ${resumen.emitidos.length} emitido(s), ${resumen.sinCosto.length} sin costo, ${resumen.errores.length} con error`, {
+    por, errores: resumen.errores, corte: resumen.corte,
+  });
+  if (resumen.errores.length || resumen.corte) {
+    await notificar({
+      tipo: 'eticket',
+      nivel: 'error',
+      titulo: `${resumen.errores.length} pedido(s) despachados sin e-Ticket`,
+      mensaje: `${resumen.corte ? `Se cortó la facturación: ${resumen.corte}. ` : ''}${resumen.errores
+        .map((e) => `#${e.numero}: ${e.error}`)
+        .join(' | ')} — emitilos desde la columna e-Ticket.`,
+      data: { errores: resumen.errores, corte: resumen.corte },
+    }).catch(() => {});
+  }
+  return resumen;
+}
 
 // Vuelve a consultar el estado en Zensei (para READY_TO_SEND o ERROR).
 app.post('/api/pedidos/:pedidoId/comprobante/actualizar', requireAuth, requireAdmin, async (req, res) => {
@@ -5763,17 +5857,34 @@ const PICKUP_FULFILLMENT_DELAY_MIN = Number(process.env.PICKUP_FULFILLMENT_DELAY
 // `fulfillment_pickup_programado_at` es una columna nueva (ver
 // sql/add_fulfillment_pickup_programado_at.sql). Si la migración todavía no corrió,
 // el update se reintenta sin ese campo en vez de romper el despacho.
+// Lo mismo vale para `fulfillment_pickup_error` (sql/add_fulfillment_pickup_error.sql).
+const COLUMNAS_PICKUP_OPCIONALES = ['fulfillment_pickup_programado_at', 'fulfillment_pickup_error'];
+
 async function actualizarPedidoConProgramacion(pedidoId, datos) {
-  try {
-    return await supabaseService.actualizarPedido(pedidoId, datos);
-  } catch (err) {
-    if (!/fulfillment_pickup_programado_at/i.test(String(err?.message || ''))) throw err;
-    logService.warning(
-      'Falta la columna fulfillment_pickup_programado_at — corré sql/add_fulfillment_pickup_programado_at.sql'
-    );
-    const { fulfillment_pickup_programado_at: _omitido, ...resto } = datos;
-    return await supabaseService.actualizarPedido(pedidoId, resto);
+  let pendientes = { ...datos };
+  for (;;) {
+    try {
+      return await supabaseService.actualizarPedido(pedidoId, pendientes);
+    } catch (err) {
+      const mensaje = String(err?.message || '');
+      const faltante = COLUMNAS_PICKUP_OPCIONALES.find(
+        (col) => col in pendientes && new RegExp(`\\b${col}\\b`, 'i').test(mensaje)
+      );
+      if (!faltante) throw err;
+      logService.warning(`Falta la columna ${faltante} — corré sql/add_${faltante}.sql`);
+      const { [faltante]: _omitido, ...resto } = pendientes;
+      pendientes = resto;
+    }
   }
+}
+
+// Pickups cuyo despacho automático falló: no se vuelven a intentar solos, quedan
+// para hacer a mano. La marca persistente es `fulfillment_pickup_error`; este Set
+// cubre el caso de que la columna todavía no exista (dura hasta el próximo reinicio).
+const pickupsConFalloAutomatico = new Set();
+
+function pickupBloqueadoParaAutomatico(pedido) {
+  return Boolean(pedido?.fulfillment_pickup_error) || pickupsConFalloAutomatico.has(pedido?.id);
 }
 
 // Despacho de un pickup: no lleva fulfillment con tracking sino "listo para retirar"
@@ -5792,7 +5903,9 @@ async function ejecutarFulfillmentPickup(pedido, shopifyOrderIdConocido = null) 
     estado: 'enviado',
     notificacion_enviada_at: new Date().toISOString(),
     fulfillment_pickup_programado_at: null,
+    fulfillment_pickup_error: null,
   });
+  pickupsConFalloAutomatico.delete(pedido.id);
 
   const resumenTransfer = (resultadoPickup.transferencias || [])
     .map((t) => `${t.inventoryItemId}x${t.cantidad}`)
@@ -5821,7 +5934,9 @@ async function programarPickupsDiferidos({ excluirIds = [] } = {}) {
   if (!(PICKUP_FULFILLMENT_DELAY_MIN > 0)) return { programados: 0, programadoPara: null };
 
   const pendientes = (await supabaseService.obtenerPickupsDespachados({ soloSinProgramar: true }))
-    .filter((p) => !excluirIds.includes(p.id) && p.numero_pedido && p.numero_seguimiento_ues);
+    .filter((p) => !excluirIds.includes(p.id) && p.numero_pedido && p.numero_seguimiento_ues)
+    // Los que ya fallaron una vez no se reagendan: se resuelven a mano.
+    .filter((p) => !pickupBloqueadoParaAutomatico(p));
 
   if (pendientes.length === 0) return { programados: 0, programadoPara: null };
 
@@ -5865,22 +5980,45 @@ async function despacharPickupsProgramados() {
 
   let ok = 0;
   const despachados = [];
+  const despachadosPedidos = [];
   const fallidos = [];
   for (const pedido of vencidos) {
     try {
       await ejecutarFulfillmentPickup(pedido);
       despachados.push(pedido.numero_pedido);
+      despachadosPedidos.push(pedido);
       ok += 1;
     } catch (err) {
-      // Queda agendado: el próximo ciclo lo reintenta.
+      // Un solo intento: se saca de la programación y queda marcado para hacerlo a
+      // mano. Reintentar solo es riesgoso (el paso que notifica al cliente puede
+      // haber salido) y antes quedaba fallando cada 5 minutos para siempre.
       fallidos.push({ numeroPedido: pedido.numero_pedido, error: err.message });
-      logService.error(`❌ Pickup programado FALLÓ pedido #${pedido.numero_pedido}`, {
+      logService.error(`❌ Pickup programado FALLÓ pedido #${pedido.numero_pedido} — pasa a manual, no se reintenta`, {
         mensaje: err.message,
       });
+      pickupsConFalloAutomatico.add(pedido.id);
+      try {
+        await actualizarPedidoConProgramacion(pedido.id, {
+          fulfillment_pickup_programado_at: null,
+          fulfillment_pickup_error: String(err.message || 'Error desconocido').slice(0, 500),
+        });
+      } catch (errMarca) {
+        logService.error(
+          `No se pudo sacar de la programación el pickup #${pedido.numero_pedido} — puede reintentarse en el próximo ciclo`,
+          { mensaje: errMarca.message }
+        );
+      }
     }
   }
 
   logService.info(`[cron] Pickups programados despachados: ${ok}/${vencidos.length}`);
+
+  // e-Ticket de los pickup que salieron (los errores ya avisan por notificación).
+  try {
+    await facturarDespachados(despachadosPedidos, 'fulfillment pickup');
+  } catch (err) {
+    logService.error('Error facturando los pickups despachados', err);
+  }
 
   if (ok > 0) {
     await notificar({
@@ -5896,7 +6034,7 @@ async function despacharPickupsProgramados() {
       tipo: 'pickup_despachado',
       nivel: 'error',
       titulo: `${fallidos.length} pickup(s) no se pudieron despachar`,
-      mensaje: `Siguen agendados y se reintentan solos. ${fallidos
+      mensaje: `No se reintentan solos: hacé el fulfillment a mano en Shopify y marcalos como "Ya procesados". ${fallidos
         .map((f) => `#${f.numeroPedido}: ${f.error}`)
         .join(' | ')}`,
       data: { total: vencidos.length, fallidos },
@@ -5907,6 +6045,8 @@ async function despacharPickupsProgramados() {
 }
 
 async function handleFulfillmentShopify(req, res) {
+  // Progreso en vivo para el loader del front (fulfillment + facturación).
+  const progreso = progresoNdjson(req, res);
   try {
     const { pedidoIds } = req.body || {};
 
@@ -5931,7 +6071,8 @@ async function handleFulfillmentShopify(req, res) {
     // más abajo (los saca el cron). Solo se despachan al instante si la demora está en 0.
     const difierePickup = PICKUP_FULFILLMENT_DELAY_MIN > 0;
 
-    for (const pedido of candidatos) {
+    for (const [i, pedido] of candidatos.entries()) {
+      progreso.paso({ mensaje: `Fulfillment ${i + 1}/${candidatos.length} (#${pedido.numero_pedido})…`, hechos: i, total: candidatos.length });
       try {
         const esPickup = pedido.tipo_envio === 'pickup_local';
         if (esPickup && difierePickup) {
@@ -6075,7 +6216,21 @@ async function handleFulfillmentShopify(req, res) {
 
     logService.info(`Fulfillment Shopify ejecutado: ${successCount} OK, ${failCount} error. ${pedidosSinEmail.length} sin email requieren WhatsApp`);
 
-    res.json({
+    // e-Ticket de los pedidos de Shopify que salieron. Nunca frena el despacho:
+    // lo que no se pudo facturar queda con el error en el pedido.
+    let facturacion = null;
+    try {
+      facturacion = await facturarDespachados(
+        resultados.filter((r) => r.success && r.pedido).map((r) => r.pedido),
+        req.user?.nombre || req.user?.email || 'fulfillment',
+        (ev) => progreso.paso(ev)
+      );
+    } catch (err) {
+      logService.error('Error facturando los pedidos despachados', err);
+      facturacion = { emitidos: [], sinCosto: [], errores: [], corte: err.message };
+    }
+
+    progreso.responder(200, {
       success: true,
       count: resultados.length,
       successCount,
@@ -6083,10 +6238,11 @@ async function handleFulfillmentShopify(req, res) {
       data: resultados,
       pedidosSinEmail, // Frontend abrirá WhatsApp solo para estos
       pickupsProgramados, // { programados, programadoPara } | null
+      facturacion, // { emitidos, sinCosto, errores, desactivada, corte }
     });
   } catch (error) {
     logService.error('Error en fulfillment Shopify', error);
-    res.status(500).json({ success: false, error: error.message });
+    progreso.responder(500, { success: false, error: error.message });
   }
 }
 
@@ -6364,7 +6520,9 @@ app.post('/api/marcar-procesados-bulk', requireAuth, async (req, res) => {
             estado: 'enviado',
             notificacion_enviada_at: new Date().toISOString(),
             fulfillment_pickup_programado_at: null,
+            fulfillment_pickup_error: null,
           });
+          pickupsConFalloAutomatico.delete(pedidoId);
           return { pedidoId, success: true };
         } catch (err) {
           logService.warning(`No se pudo marcar como procesado pedido ${pedidoId}: ${err.message}`);
@@ -6420,7 +6578,9 @@ app.post('/api/revertir-a-etiqueta-generada-bulk', requireAuth, async (req, res)
             retirado_cadeteria_at: null,
             retirado_cadeteria_por: null,
             fulfillment_pickup_programado_at: null,
+            fulfillment_pickup_error: null,
           });
+          pickupsConFalloAutomatico.delete(pedidoId);
 
           return { pedidoId, numeroPedido: pedido.numero_pedido, success: true };
         } catch (err) {
