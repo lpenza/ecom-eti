@@ -104,7 +104,7 @@ function IframePreview({ src, title }) {
   const [loaded, setLoaded] = React.useState(false);
   React.useEffect(() => { setLoaded(false); }, [src]);
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+    <div style={{ position: 'relative', width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       {!loaded && (
         <div style={{
           position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
