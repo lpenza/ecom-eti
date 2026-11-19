@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { buscarEtiquetaDrive, guardarLinkDriveEnPedido } from '../services/api';
+import MlIds from './MlIds';
 import { formatFechaHoraCompletaUy, formatUy, parseTimestampUtc } from '../utils/fechas';
 
 // Extrae file ID de un link de Drive y devuelve URLs de preview y descarga.
@@ -581,6 +582,7 @@ function PedidoRow({
           )}
           {pedido.etiqueta_impresa && <span className="pedido-impresa-badge" title="Etiqueta ya impresa">🖨️</span>}
         </span>
+        <MlIds pedido={pedido} compact />
       </td>
       <td>{pedido.cliente_nombre || 'Sin nombre'}</td>
       <td>

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { obtenerDetallePedido } from '../../services/api';
+import MlIds from '../MlIds';
 
 // ID sintético para cada pieza de contenido físico fijo de un kit (no tiene line item).
 const fijoId = (kitLineId, idx) => `fijo:${kitLineId}:${idx}`;
@@ -334,6 +335,7 @@ export default function ArmadoReviewModal({ pedidos, initialIndex = 0, onConfirm
                       <span className="pedido-ml-badge">🛒 MERCADOLIBRE</span>
                     </div>
                   )}
+                  {pedido.origen === 'mercadolibre' && <MlIds pedido={pedido} />}
                   <div className="preview-sidebar-single-row">
                     <span>Cliente</span>
                     <strong>{pedido.cliente_nombre || '-'}</strong>

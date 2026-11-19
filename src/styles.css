@@ -10638,3 +10638,37 @@ button.stockdep-card:hover { box-shadow: var(--brand-shadow-soft); }
   font-size: 0.8rem; padding: 0.15rem 0.5rem; border-radius: 6px;
   background: var(--brand-surface-alt, #f8fafc); border: 1px solid var(--brand-border);
 }
+
+/* Números de venta / envío de MercadoLibre (MlIds.jsx). */
+.ml-ids {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.25rem;
+}
+.ml-id {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font: inherit;
+  font-size: 0.75rem;
+  background: rgba(255, 241, 89, 0.18);
+  border: 1px solid #e6d94f;
+  border-radius: 6px;
+  padding: 0.1rem 0.4rem;
+  color: inherit;
+  cursor: pointer;
+}
+.ml-id:hover:not(:disabled) { background: rgba(255, 241, 89, 0.4); }
+.ml-id-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.ml-id-valor {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-weight: 600;
+}
+.ml-id-vacio { opacity: 0.55; cursor: default; border-style: dashed; }
+.ml-ids-compact .ml-id { font-size: 0.7rem; }

@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import ArmadoReviewModal from './modals/ArmadoReviewModal';
+import MlIds from './MlIds';
 
 // Venta de ML con Mercado Envíos: la etiqueta la emite ML. Una venta de ML SIN
 // envío asignado sigue el flujo normal (UES/MarcoPostal).
@@ -326,6 +327,9 @@ export default function ArmadorPanel({ pedidos = [], onActualizar, onMarcarArmad
                           👥 mismo cliente · envío aparte
                         </span>
                       )}
+                      {(p._mergedPedidos && p._mergedPedidos.length ? p._mergedPedidos : [p]).map((mp) => (
+                        <MlIds key={mp.id} pedido={mp} compact />
+                      ))}
                     </td>
                     <td>
                       <span className={'armador-courier-badge armador-courier-badge--' + courier.key}>
