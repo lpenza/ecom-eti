@@ -888,7 +888,7 @@ function AppContent({ user, logout }) {
         }
         const overrides = Object.keys(mpOverrides).length > 0 ? mpOverrides : null;
 
-        const r = await generarGuiaMarcoPostalWeb(pedidoId, overrides);
+        const r = await generarGuiaMarcoPostalWeb(pedidoId, overrides, payloadOverrides?.payloadDireccion || null);
         if (!r?.success) {
           return { success: false, error: r?.error || 'Error MarcoPostal Web' };
         }
@@ -1731,7 +1731,7 @@ function AppContent({ user, logout }) {
         procesados += 1;
         setLoadingText(`Generando etiqueta ${procesados}/${total} — #${item.numeroPedido}...`);
         try {
-          const r = await generarGuiaMarcoPostalWeb(item.pedidoId, item.overrides || null);
+          const r = await generarGuiaMarcoPostalWeb(item.pedidoId, item.overrides || null, null, item.incluidos || null);
           const guiaId = r?.data?.guiaId;
           if (!r?.success || !guiaId) {
             errores.push(`#${item.numeroPedido}: ${r?.error || 'MarcoPostal no devolvió número de guía'}`);

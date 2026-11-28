@@ -27,12 +27,14 @@ function toMpDate(valor) {
   return m ? `${m[3]}/${m[2]}/${m[1]}` : s;
 }
 
-function formInicial(pedido) {
+// `incluidos`: los otros pedidos del mismo cliente que viajan en esta guía. La
+// referencia lleva todos los números para identificar el paquete al retirarlo.
+function formInicial(pedido, incluidos = []) {
   return {
     apellido_nombre: pedido.cliente_nombre || '',
     celular: pedido.cliente_telefono || '',
     email: pedido.cliente_email || '',
-    obs1: String(pedido.numero_pedido || ''),
+    obs1: [pedido, ...incluidos].map((p) => String(p.numero_pedido || '')).filter(Boolean).join(' / '),
     other_info: '',
     calle: '',
     altura: '',
@@ -74,14 +76,38 @@ export default function ValidarEtiquetasMPModal({ pedidos = [], tipo, onClose, o
     })
   ), [pedidos]);
 
-  const [forms, setForms]       = useState(() => Object.fromEntries(ordenados.map((p) => [p.id, formInicial(p)])));
-  const [checked, setChecked]   = useState(() => Object.fromEntries(ordenados.map((p) => [p.id, !p.link_etiqueta_drive])));
+  // Pedidos del mismo cliente (`grupo_cliente`, lo calcula el servidor) van en
+  // un solo paquete con UNA guía: se muestra una tarjeta por cliente, a nombre
+  // del primero, y los demás quedan con la misma guía al generarla.
+  const { principales, incluidosPor } = useMemo(() => {
+    const lista = [];
+    const porGrupo = new Map();
+    const incluidosMap = new Map();
+    for (const p of ordenados) {
+      const principal = p.grupo_cliente ? porGrupo.get(p.grupo_cliente) : null;
+      if (principal) {
+        incluidosMap.get(principal.id).push(p);
+        continue;
+      }
+      if (p.grupo_cliente) porGrupo.set(p.grupo_cliente, p);
+      incluidosMap.set(p.id, []);
+      lista.push(p);
+    }
+    return { principales: lista, incluidosPor: incluidosMap };
+  }, [ordenados]);
+
+  const [forms, setForms]       = useState(() => Object.fromEntries(principales.map((p) => [p.id, formInicial(p, incluidosPor.get(p.id))])));
+  const [checked, setChecked]   = useState(() => Object.fromEntries(principales.map((p) => [p.id, !p.link_etiqueta_drive])));
   const [previews, setPreviews] = useState({}); // { pedidoId: { loading, payload, destino, error } }
   const [loteForm, setLoteForm] = useState({ fecha_servicio: '', hora_desde: '', hora_hasta: '' });
 
   // Campos que el operador editó a mano: el preview no los pisa. No afecta al
   // render, así que vive en un ref y no en estado.
-  const tocadosRef = useRef({});
+  // Los grupos del mismo cliente arrancan con la referencia combinada: el
+  // preview (que trae sólo un número) no la pisa.
+  const tocadosRef = useRef(Object.fromEntries(
+    principales.filter((p) => incluidosPor.get(p.id)?.length).map((p) => [p.id, new Set(['obs1'])])
+  ));
 
   const marcarTocado = (pedidoId, campo) => {
     const set = tocadosRef.current[pedidoId] || new Set();
@@ -92,11 +118,11 @@ export default function ValidarEtiquetasMPModal({ pedidos = [], tipo, onClose, o
   // Preview real de MarcoPostal para los delivery: es donde se ve si la localidad
   // de destino resolvió. En pickup el destino es el punto fijo de MP, no hace falta.
   useEffect(() => {
-    if (esPickup || ordenados.length === 0) return undefined;
+    if (esPickup || principales.length === 0) return undefined;
     let cancelado = false;
-    const cola = [...ordenados];
+    const cola = [...principales];
 
-    setPreviews(Object.fromEntries(ordenados.map((p) => [p.id, { loading: true }])));
+    setPreviews(Object.fromEntries(principales.map((p) => [p.id, { loading: true }])));
 
     const worker = async () => {
       while (!cancelado) {
@@ -132,7 +158,7 @@ export default function ValidarEtiquetasMPModal({ pedidos = [], tipo, onClose, o
     const workers = Array.from({ length: Math.min(CONCURRENCIA_PREVIEW, cola.length) }, () => worker());
     Promise.all(workers).catch(() => {});
     return () => { cancelado = true; };
-  }, [ordenados, esPickup, campos]);
+  }, [principales, esPickup, campos]);
 
   const setCampo = useCallback((pedidoId, campo, valor) => {
     marcarTocado(pedidoId, campo);
@@ -142,7 +168,7 @@ export default function ValidarEtiquetasMPModal({ pedidos = [], tipo, onClose, o
   const aplicarLote = useCallback(() => {
     const cargados = CAMPOS_LOTE.filter((c) => String(loteForm[c] || '').trim());
     if (cargados.length === 0) return;
-    const destinos = ordenados.filter((p) => checked[p.id]);
+    const destinos = principales.filter((p) => checked[p.id]);
     destinos.forEach((p) => cargados.forEach((c) => marcarTocado(p.id, c)));
     setForms((prev) => {
       const next = { ...prev };
@@ -152,16 +178,17 @@ export default function ValidarEtiquetasMPModal({ pedidos = [], tipo, onClose, o
       }
       return next;
     });
-  }, [loteForm, ordenados, checked]);
+  }, [loteForm, principales, checked]);
 
-  const seleccionados = ordenados.filter((p) => checked[p.id]);
+  const seleccionados = principales.filter((p) => checked[p.id]);
   const algunoCargando = seleccionados.some((p) => previews[p.id]?.loading);
-  const todosMarcados = ordenados.length > 0 && ordenados.every((p) => checked[p.id]);
+  const todosMarcados = principales.length > 0 && principales.every((p) => checked[p.id]);
 
   const handleConfirmar = () => {
     const items = seleccionados.map((p) => ({
       pedidoId: p.id,
       numeroPedido: p.numero_pedido,
+      incluidos: (incluidosPor.get(p.id) || []).map((o) => o.id),
       overrides: construirOverrides(forms[p.id], previews[p.id]?.payload || null, campos),
     }));
     if (items.length === 0) return;
@@ -169,14 +196,14 @@ export default function ValidarEtiquetasMPModal({ pedidos = [], tipo, onClose, o
   };
 
   const toggleTodos = () => {
-    setChecked(Object.fromEntries(ordenados.map((p) => [p.id, !todosMarcados])));
+    setChecked(Object.fromEntries(principales.map((p) => [p.id, !todosMarcados])));
   };
 
   return (
     <div className="modal modal-open">
       <div className="modal-content modal-large">
         <div className="modal-header">
-          <h3>Validar y generar etiquetas — {tipoLabel} ({seleccionados.length}/{ordenados.length})</h3>
+          <h3>Validar y generar etiquetas — {tipoLabel} ({seleccionados.length}/{principales.length})</h3>
           <button className="btn-close" onClick={onClose}>✕</button>
         </div>
 
@@ -216,12 +243,13 @@ export default function ValidarEtiquetasMPModal({ pedidos = [], tipo, onClose, o
             </div>
           )}
 
-          {ordenados.length === 0 && (
+          {principales.length === 0 && (
             <p className="mpb-empty">No hay pedidos {tipoLabel} en el panel.</p>
           )}
 
-          {ordenados.map((pedido) => {
-            const form = forms[pedido.id] || formInicial(pedido);
+          {principales.map((pedido) => {
+            const incluidos = incluidosPor.get(pedido.id) || [];
+            const form = forms[pedido.id] || formInicial(pedido, incluidos);
             const pv   = previews[pedido.id] || {};
             const sel  = Boolean(checked[pedido.id]);
 
@@ -235,9 +263,17 @@ export default function ValidarEtiquetasMPModal({ pedidos = [], tipo, onClose, o
                       onChange={() => setChecked((prev) => ({ ...prev, [pedido.id]: !prev[pedido.id] }))}
                     />
                     <strong>#{pedido.numero_pedido}</strong>
+                    {incluidos.map((o) => <strong key={o.id}>+ #{o.numero_pedido}</strong>)}
                     <span className="mpb-card-cliente">{pedido.cliente_nombre || 'Sin nombre'}</span>
                   </label>
                   <div className="mpb-card-badges">
+                    {incluidos.length > 0 && (
+                      <span
+                        className="mpb-badge mpb-badge-ok"
+                        title={`Mismo cliente: #${pedido.numero_pedido} y ${incluidos.map((o) => '#' + o.numero_pedido).join(', ')} van en un solo paquete con una sola guía`}>
+                        👥 Mismo cliente · 1 etiqueta para {incluidos.length + 1} pedidos
+                      </span>
+                    )}
                     {pedido.link_etiqueta_drive && (
                       <span
                         className="mpb-badge mpb-badge-warn"

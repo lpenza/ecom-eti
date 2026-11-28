@@ -1957,10 +1957,14 @@ class SupabaseService {
     }));
   }
 
-  async crearKit({ nombre, patron_shopify, colores_esperados = 0, activo = true, contenido_fijo = [] }) {
+  async crearKit({ nombre, patron_shopify, patron_ml = null, colores_esperados = 0, activo = true, contenido_fijo = [] }) {
+    const fila = { nombre, patron_shopify, colores_esperados, activo };
+    // Solo se manda si viene: así crear kits sigue andando aunque todavía no se
+    // haya corrido sql/add_kits_patron_ml.sql.
+    if (patron_ml) fila.patron_ml = patron_ml;
     const { data, error } = await supabase
       .from('kits_config')
-      .insert({ nombre, patron_shopify, colores_esperados, activo })
+      .insert(fila)
       .select()
       .single();
     if (error) throw error;
@@ -2049,7 +2053,7 @@ class SupabaseService {
     return { kits, carriers };
   }
 
-  // Desglosa los line items de un pedido de Shopify usando la config de kits.
+  // Desglosa los line items de un pedido usando la config de kits.
   // Función PURA (no toca la BD): recibe los line items ya normalizados
   // ({ id, title, variant_title, quantity, sku }) y la config { kits, carriers }.
   //
@@ -2057,17 +2061,27 @@ class SupabaseService {
   // Si el pedido contiene un kit, todas las líneas de carriers (colores/adicionales)
   // se consideran parte de ese kit. Si no hay kit, las líneas quedan como sueltos.
   //
+  // canal 'ml': las publicaciones de MercadoLibre tienen otro título que el
+  // producto de Shopify, así que el kit se reconoce por `patron_ml`. En ML el
+  // color viene dentro de la misma publicación (la variación) y no hay líneas
+  // ayudantes, por eso no se buscan carriers ni se controla colores_esperados.
+  //
+  // Un patrón admite varias alternativas separadas por "|" (ML renombra las
+  // publicaciones y conviven ventas con el título viejo y el nuevo).
+  //
   // Devuelve null si el pedido no contiene ningún kit (armado normal, sin agrupar).
-  desglosarLineItems(lineItems = [], config = null) {
+  desglosarLineItems(lineItems = [], config = null, { canal = 'shopify' } = {}) {
     const { kits = [], carriers = [] } = config || {};
     if (!Array.isArray(lineItems) || lineItems.length === 0) return null;
     if (kits.length === 0) return null;
+    const esMl = canal === 'ml';
 
     const norm = (s) => String(s || '').toLowerCase().trim();
     const matchPatron = (title, patron) => {
-      const p = norm(patron);
-      return p !== '' && norm(title).includes(p);
+      const t = norm(title);
+      return String(patron || '').split('|').map(norm).some((p) => p !== '' && t.includes(p));
     };
+    const patronKit = (k) => (esMl ? k.patron_ml : k.patron_shopify);
 
     // Clasificar cada line item.
     const kitLines = [];      // { item, kit }
@@ -2077,9 +2091,9 @@ class SupabaseService {
 
     for (const item of lineItems) {
       const title = item.title || '';
-      const kit = kits.find((k) => matchPatron(title, k.patron_shopify));
+      const kit = kits.find((k) => matchPatron(title, patronKit(k)));
       if (kit) { kitLines.push({ item, kit }); continue; }
-      const carrier = carriers.find((c) => matchPatron(title, c.patron_shopify));
+      const carrier = esMl ? null : carriers.find((c) => matchPatron(title, c.patron_shopify));
       if (carrier) {
         if (carrier.tipo === 'adicional') adicionalLines.push(item);
         else colorLines.push(item);
@@ -2093,16 +2107,19 @@ class SupabaseService {
 
     // Asociar carriers al kit. Con un solo kit es directo; con varios no podemos
     // saber a cuál pertenece cada color, así que los colgamos del primero y avisamos.
-    const ambiguo = kitLines.length > 1;
+    // Solo es ambiguo si hay colores/adicionales que repartir entre los kits.
+    const ambiguo = kitLines.length > 1 && (colorLines.length + adicionalLines.length) > 0;
     const kitsOut = kitLines.map(({ item, kit }, idx) => {
       const esPrimero = idx === 0;
       const colores = esPrimero ? colorLines : [];
       const adicionales = esPrimero ? adicionalLines : [];
+      // Las piezas fijas son por unidad de kit: 2 kits llevan 2 lámparas.
+      const unidadesKit = Math.max(1, parseInt(item.quantity, 10) || 1);
       const fijos = (kit.kit_contenido_fijo || [])
         .slice()
         .sort((a, b) => (a.orden || 0) - (b.orden || 0))
-        .map((f) => ({ descripcion: f.descripcion, cantidad: f.cantidad }));
-      const coloresEsperados = Number(kit.colores_esperados) || 0;
+        .map((f) => ({ descripcion: f.descripcion, cantidad: (Number(f.cantidad) || 1) * unidadesKit }));
+      const coloresEsperados = esMl ? 0 : (Number(kit.colores_esperados) || 0);
       let aviso = null;
       if (esPrimero && coloresEsperados > 0) {
         const total = colores.reduce((n, c) => n + (Number(c.quantity) || 1), 0);
@@ -2380,6 +2397,32 @@ class SupabaseService {
         updated_at: new Date().toISOString(),
       }, { onConflict: 'pedido_id' });
     if (error) throw error;
+  }
+
+  // ── Última dirección de etiqueta por cliente ─────────────────────────────────
+
+  // Guarda la misma fila bajo cada clave del cliente (ml:, mail:, tel:).
+  async guardarDireccionEtiquetaCliente(claves, registro) {
+    if (!Array.isArray(claves) || claves.length === 0) return;
+    const ahora = new Date().toISOString();
+    const filas = claves.map((clave) => ({ ...registro, clave, updated_at: ahora }));
+    const { error } = await supabase
+      .from('cliente_direccion_etiqueta')
+      .upsert(filas, { onConflict: 'clave' });
+    if (error) throw error;
+  }
+
+  // La más reciente entre todas las claves del cliente, o null.
+  async obtenerDireccionEtiquetaCliente(claves) {
+    if (!Array.isArray(claves) || claves.length === 0) return null;
+    const { data, error } = await supabase
+      .from('cliente_direccion_etiqueta')
+      .select('*')
+      .in('clave', claves)
+      .order('updated_at', { ascending: false })
+      .limit(1);
+    if (error) throw error;
+    return data?.[0] || null;
   }
 
   // ── Parámetros de reglas Meta Ads (fila única) ───────────────────────────────

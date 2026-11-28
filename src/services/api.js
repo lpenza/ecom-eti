@@ -361,11 +361,20 @@ export async function previewGuiaMarcoPostal(pedidoIdOrNumero) {
   return await fetchAPI(`/marcopostal/preview-guia/${pedidoIdOrNumero}`, { method: 'POST' });
 }
 
-export async function generarGuiaMarcoPostalWeb(pedidoIdOrNumero, payloadOverrides = null) {
+// direccionEtiqueta: el payloadDireccion del modal (formato UES) para recordarlo
+// como última dirección del cliente.
+// pedidosIncluidos: ids de otros pedidos del mismo cliente que van en el mismo
+// paquete; quedan con la misma guía.
+export async function generarGuiaMarcoPostalWeb(pedidoIdOrNumero, payloadOverrides = null, direccionEtiqueta = null, pedidosIncluidos = null) {
   return await fetchAPI(`/marcopostal/generar-guia-web/${pedidoIdOrNumero}`, {
     method: 'POST',
-    body: JSON.stringify({ payloadOverrides }),
+    body: JSON.stringify({ payloadOverrides, direccionEtiqueta, pedidosIncluidos }),
   });
+}
+
+// Última dirección con la que se generó etiqueta para el cliente de este pedido.
+export async function obtenerDireccionAnteriorCliente(pedidoId) {
+  return await fetchAPI(`/pedidos/${pedidoId}/direccion-anterior`, { method: 'GET' });
 }
 
 /**

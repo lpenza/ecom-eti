@@ -31,7 +31,7 @@ function describirCron(expr) {
 
 const nuevoUsuarioVacio = { nombre: '', email: '', password: '', role: 'user' };
 const nuevoProductoVacio = { nombre: '', descripcion: '', sku: '', precio: '', activo: true };
-const nuevoKitVacio = { nombre: '', patron_shopify: '', colores_esperados: '', activo: true, contenido_fijo: [] };
+const nuevoKitVacio = { nombre: '', patron_shopify: '', patron_ml: '', colores_esperados: '', activo: true, contenido_fijo: [] };
 const nuevoCarrierVacio = { patron_shopify: '', tipo: 'color', activo: true };
 
 const ESTADOS_PEDIDO = ['pendiente', 'etiqueta_generada', 'despachado', 'enviado', 'cancelado'];
@@ -487,6 +487,9 @@ export default function AdminPanel() {
     setEditKitForm({
       nombre: kit.nombre,
       patron_shopify: kit.patron_shopify,
+      patron_ml: kit.patron_ml || '',
+      // Sin la columna (SQL sin correr) no se manda patron_ml vacío: el update fallaría.
+      _tieneColumnaMl: Object.prototype.hasOwnProperty.call(kit, 'patron_ml'),
       colores_esperados: kit.colores_esperados ?? 0,
       activo: kit.activo,
       contenido_fijo: (kit.kit_contenido_fijo || []).map((f) => ({ descripcion: f.descripcion, cantidad: f.cantidad })),
@@ -495,10 +498,12 @@ export default function AdminPanel() {
 
   async function guardarEdicionKit(id) {
     setGuardandoKit((g) => ({ ...g, [id]: true }));
+    const { _tieneColumnaMl, ...form } = editKitForm;
+    if (!_tieneColumnaMl && !String(form.patron_ml || '').trim()) delete form.patron_ml;
     const res = await fetchAdmin(`/admin/kits/${id}`, {
       method: 'PUT',
       body: JSON.stringify({
-        ...editKitForm,
+        ...form,
         colores_esperados: Number(editKitForm.colores_esperados) || 0,
         contenido_fijo: (editKitForm.contenido_fijo || []).filter((f) => String(f.descripcion || '').trim()),
       }),
@@ -1351,6 +1356,10 @@ export default function AdminPanel() {
               Ej: patrón "Kit Studio" reconoce "Kit Studio Velinne™". El armador verá el kit con sus colores,
               adicionales y las piezas físicas fijas que definas acá.
             </p>
+            <p className="admin-section-desc">
+              Para que el mismo kit se reconozca en ventas de <strong>MercadoLibre</strong>, completá el patrón ML con
+              un texto del título de la publicación (ej. "Kit Studio Velinne"). Varias alternativas se separan con "|".
+            </p>
             <form className="admin-nuevo-form" onSubmit={handleCrearKit}>
               <div className="admin-nuevo-fields">
                 <div className="admin-field">
@@ -1364,13 +1373,21 @@ export default function AdminPanel() {
                   />
                 </div>
                 <div className="admin-field">
-                  <label>Patrón nombre Shopify *</label>
+                  <label>Patrón nombre Shopify</label>
                   <input
                     type="text"
-                    placeholder="Kit Studio"
+                    placeholder="Kit Signature"
                     value={nuevoKit.patron_shopify}
                     onChange={(e) => setNuevoKit((k) => ({ ...k, patron_shopify: e.target.value }))}
-                    required
+                  />
+                </div>
+                <div className="admin-field">
+                  <label>Patrón título MercadoLibre</label>
+                  <input
+                    type="text"
+                    placeholder="Kit Studio Velinne"
+                    value={nuevoKit.patron_ml}
+                    onChange={(e) => setNuevoKit((k) => ({ ...k, patron_ml: e.target.value }))}
                   />
                 </div>
                 <div className="admin-field">
@@ -1432,7 +1449,9 @@ export default function AdminPanel() {
                               </span>
                             </div>
                             <div className="admin-rep-email" style={{ marginTop: '0.25rem' }}>
-                              Reconoce Shopify: “{kit.patron_shopify}” · Colores esperados: {kit.colores_esperados || '—'}
+                              Reconoce Shopify: {kit.patron_shopify ? `“${kit.patron_shopify}”` : '—'}
+                              {' · '}ML: {kit.patron_ml ? `“${kit.patron_ml}”` : '—'}
+                              {' · '}Colores esperados: {kit.colores_esperados || '—'}
                             </div>
                             {(kit.kit_contenido_fijo || []).length > 0 && (
                               <div style={{ marginTop: '0.35rem', fontSize: '0.82rem', color: 'var(--text-muted)' }}>
@@ -1455,6 +1474,10 @@ export default function AdminPanel() {
                             <div className="admin-field">
                               <label>Patrón nombre Shopify</label>
                               <input type="text" value={editKitForm.patron_shopify} onChange={(e) => setEditKitForm((f) => ({ ...f, patron_shopify: e.target.value }))} />
+                            </div>
+                            <div className="admin-field">
+                              <label>Patrón título MercadoLibre</label>
+                              <input type="text" placeholder="Kit Studio Velinne" value={editKitForm.patron_ml || ''} onChange={(e) => setEditKitForm((f) => ({ ...f, patron_ml: e.target.value }))} />
                             </div>
                             <div className="admin-field">
                               <label>Colores esperados</label>

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   geocodificarPedido,
   obtenerCatalogoDepartamentosUES,
+  obtenerDireccionAnteriorCliente,
   obtenerCatalogoLocalidadesUES,
   obtenerPayloadPreviewUES,
   obtenerPuntosRetiroUES,
@@ -23,6 +24,8 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
   const [geocodificando, setGeocodificando] = useState(false);
   const [geoResultadoByPedidoId, setGeoResultadoByPedidoId] = useState({});
   const [geoAplicadoByPedidoId, setGeoAplicadoByPedidoId] = useState({});
+  // Última dirección con la que se generó etiqueta para el mismo cliente (otro pedido).
+  const [direccionAnteriorByPedidoId, setDireccionAnteriorByPedidoId] = useState({});
   const [localidadSugerida, setLocalidadSugerida] = useState(null); // { id, nombre, score }
   const [numeroPuertaSugerido, setNumeroPuertaSugerido] = useState(false); // true si se autocompletó con s/n
 
@@ -545,6 +548,8 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
     // Solo aplicar si: hay resultado ok, el form está listo, y aún no se aplicó
     if (!geo?.ok || !geo.ues_id || !form) return;
     if (geoAplicadoByPedidoId[currentPedido.id]) return;
+    // La dirección de la etiqueta anterior del cliente ya trae la localidad correcta.
+    if (form.direccionAnteriorAplicada) return;
     // Si localidad y departamento del pedido coinciden entre sí en UES, se respetan;
     // lo que sugiere Google Maps queda sólo como advertencia.
     const base = geo.pedidoCoincide || geo;
@@ -647,6 +652,7 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
   useEffect(() => {
     if (!currentPedido || !currentPreview?.error) return;
     if (localidadesActuales.length === 0) return;
+    if (formsByPedidoId[currentPedido.id]?.direccionAnteriorAplicada) return;
 
     const pedidoData = currentPreview.pedidoDataFallback || currentPedido;
     const localidadOriginal = String(pedidoData.localidad || '').trim();
@@ -735,6 +741,82 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
       setNumeroPuertaSugerido(false);
     }
   }, [currentPedido, currentForm?.payloadDireccion?.nro_puerta]);
+
+  // Buscar la última dirección con la que se generó etiqueta para este cliente.
+  useEffect(() => {
+    const pedidoId = currentPedido?.id;
+    if (!pedidoId || direccionAnteriorByPedidoId[pedidoId] !== undefined) return;
+    setDireccionAnteriorByPedidoId((prev) => ({ ...prev, [pedidoId]: null }));
+    obtenerDireccionAnteriorCliente(pedidoId)
+      .then((resp) => {
+        setDireccionAnteriorByPedidoId((prev) => ({ ...prev, [pedidoId]: resp?.data || null }));
+      })
+      .catch(() => {});
+  }, [currentPedido?.id]);
+
+  const aplicarDireccionAnterior = async (pedidoId) => {
+    const anterior = direccionAnteriorByPedidoId[pedidoId];
+    if (!anterior?.direccion) return;
+    const dir = anterior.direccion;
+    if (dir.departamento_id) await loadLocalidades(String(dir.departamento_id));
+    setFormsByPedidoId((prev) => {
+      const existing = prev[pedidoId];
+      if (!existing || existing.direccionAnteriorAplicada) return prev;
+      return {
+        ...prev,
+        [pedidoId]: {
+          ...existing,
+          direccionAnteriorAplicada: true,
+          // Para poder volver a la dirección que escribió el cliente en esta compra.
+          payloadDireccionDeEstaCompra: existing.payloadDireccion,
+          localidadAlternativa: null,
+          payloadDireccion: {
+            ...existing.payloadDireccion,
+            calle: dir.calle || '',
+            nro_puerta: dir.nro_puerta || '',
+            numero_apartamento: dir.numero_apartamento || '',
+            zip_code: dir.zip_code || existing.payloadDireccion?.zip_code || '',
+            latitud: dir.latitud || '',
+            longitud: dir.longitud || '',
+            departamento_id: dir.departamento_id ? String(dir.departamento_id) : existing.payloadDireccion?.departamento_id || '',
+            departamento: dir.departamento || existing.payloadDireccion?.departamento || '',
+            localidad_id: dir.localidad_id ? String(dir.localidad_id) : existing.payloadDireccion?.localidad_id || '',
+            observaciones: dir.observaciones || '',
+          },
+        },
+      };
+    });
+    if (pedidoId === currentPedido?.id) setLocalidadSugerida(null);
+  };
+
+  const descartarDireccionAnterior = (pedidoId) => {
+    setFormsByPedidoId((prev) => {
+      const existing = prev[pedidoId];
+      if (!existing?.direccionAnteriorAplicada) return prev;
+      return {
+        ...prev,
+        [pedidoId]: {
+          ...existing,
+          direccionAnteriorAplicada: false,
+          direccionAnteriorDescartada: true,
+          payloadDireccion: existing.payloadDireccionDeEstaCompra || existing.payloadDireccion,
+          payloadDireccionDeEstaCompra: null,
+        },
+      };
+    });
+  };
+
+  // Si el cliente escribió la misma dirección que en el pedido anterior, se usa
+  // directamente la que quedó en aquella etiqueta (ya corregida) sin preguntar.
+  useEffect(() => {
+    const pedidoId = currentPedido?.id;
+    if (!pedidoId) return;
+    const anterior = direccionAnteriorByPedidoId[pedidoId];
+    const form = formsByPedidoId[pedidoId];
+    if (!anterior?.coincide || !form || form.direccionAnteriorAplicada || form.direccionAnteriorDescartada) return;
+    if (form.tipoEntrega === 'pickup') return;
+    aplicarDireccionAnterior(pedidoId);
+  }, [currentPedido?.id, direccionAnteriorByPedidoId[currentPedido?.id], Boolean(formsByPedidoId[currentPedido?.id])]);
 
   const updateCurrentForm = (section, key, value) => {
     if (!currentPedido) return;
@@ -1273,6 +1355,47 @@ function DatosPreviewModal({ pedidos = [], selectedPedidoIds = [], initialIndex 
               {currentValidation.warnings.map((msg) => <span key={`w-${msg}`} className="tag-warn">{msg}</span>)}
             </div>
           )}
+
+          {currentPedido && direccionAnteriorByPedidoId[currentPedido.id]?.direccion && (() => {
+            const anterior = direccionAnteriorByPedidoId[currentPedido.id];
+            const d = anterior.direccion;
+            const texto = [
+              [d.calle, d.nro_puerta].filter(Boolean).join(' '),
+              d.numero_apartamento ? `apto ${d.numero_apartamento}` : '',
+              d.observaciones || '',
+            ].filter(Boolean).join(' · ');
+            const aplicada = Boolean(currentForm?.direccionAnteriorAplicada);
+            return (
+              <div className="preview-section" style={{ borderLeft: `4px solid ${aplicada ? '#16a34a' : '#f59e0b'}` }}>
+                <h4>🏠 Dirección de la etiqueta anterior del cliente</h4>
+                <div className="preview-field preview-field-column">
+                  <span>
+                    {aplicada
+                      ? `Se cargó la dirección con la que salió el pedido #${anterior.numero_pedido || '?'}`
+                      : `El pedido #${anterior.numero_pedido || '?'} salió con esta dirección`}
+                    {anterior.fecha ? ` (${formatFechaUy(anterior.fecha)})` : ''}:
+                  </span>
+                  <strong>{texto}</strong>
+                  {!anterior.coincide && (
+                    <span className="preview-hint">
+                      En esta compra escribió otra dirección; revisá cuál corresponde antes de generar.
+                    </span>
+                  )}
+                </div>
+                <div className="preview-contact-actions">
+                  {aplicada ? (
+                    <button className="btn btn-secondary btn-sm" onClick={() => descartarDireccionAnterior(currentPedido.id)}>
+                      Usar la de esta compra
+                    </button>
+                  ) : (
+                    <button className="btn btn-primary btn-sm" onClick={() => aplicarDireccionAnterior(currentPedido.id)}>
+                      Usar esta dirección
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="preview-section preview-section-contact-review">
             <h4>📞 Nota Interna de Contacto</h4>

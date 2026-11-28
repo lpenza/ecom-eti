@@ -61,7 +61,7 @@ app.use((req, res, next) => {
 
 // Importar servicios
 const supabaseService = require('./services/supabaseService');
-const { asignarGruposCliente } = require('./services/clienteAgrupador');
+const { asignarGruposCliente, clavesCliente } = require('./services/clienteAgrupador');
 const uesService = require('./services/uesService');
 const marcoPostalService = require('./services/marcoPostalService');
 const marcoPostalWebService = require('./services/marcoPostalWebService');
@@ -880,16 +880,17 @@ app.get('/api/admin/kits', requireAuth, requireAdmin, async (req, res) => {
 
 app.post('/api/admin/kits', requireAuth, requireAdmin, async (req, res) => {
   try {
-    const { nombre, patron_shopify, colores_esperados, activo, contenido_fijo } = req.body || {};
+    const { nombre, patron_shopify, patron_ml, colores_esperados, activo, contenido_fijo } = req.body || {};
     if (!nombre || !String(nombre).trim()) {
       return res.status(400).json({ success: false, error: 'El nombre es requerido' });
     }
-    if (!patron_shopify || !String(patron_shopify).trim()) {
-      return res.status(400).json({ success: false, error: 'El patrón de nombre de Shopify es requerido' });
+    if (!String(patron_shopify || '').trim() && !String(patron_ml || '').trim()) {
+      return res.status(400).json({ success: false, error: 'Poné al menos un patrón: de Shopify o de MercadoLibre' });
     }
     const kit = await supabaseService.crearKit({
       nombre: String(nombre).trim(),
-      patron_shopify: String(patron_shopify).trim(),
+      patron_shopify: String(patron_shopify || '').trim(),
+      patron_ml: String(patron_ml || '').trim() || null,
       colores_esperados: Number(colores_esperados) || 0,
       activo: activo !== false,
       contenido_fijo: Array.isArray(contenido_fijo) ? contenido_fijo : [],
@@ -904,15 +905,16 @@ app.post('/api/admin/kits', requireAuth, requireAdmin, async (req, res) => {
 app.put('/api/admin/kits/:id', requireAuth, requireAdmin, async (req, res) => {
   try {
     const { id } = req.params;
-    const { nombre, patron_shopify, colores_esperados, activo, contenido_fijo } = req.body || {};
+    const { nombre, patron_shopify, patron_ml, colores_esperados, activo, contenido_fijo } = req.body || {};
     const campos = {};
     if (nombre !== undefined) {
       if (!String(nombre).trim()) return res.status(400).json({ success: false, error: 'El nombre no puede estar vacío' });
       campos.nombre = String(nombre).trim();
     }
-    if (patron_shopify !== undefined) {
-      if (!String(patron_shopify).trim()) return res.status(400).json({ success: false, error: 'El patrón no puede estar vacío' });
-      campos.patron_shopify = String(patron_shopify).trim();
+    if (patron_shopify !== undefined) campos.patron_shopify = String(patron_shopify || '').trim();
+    if (patron_ml !== undefined) campos.patron_ml = String(patron_ml || '').trim() || null;
+    if (patron_shopify !== undefined && patron_ml !== undefined && !campos.patron_shopify && !campos.patron_ml) {
+      return res.status(400).json({ success: false, error: 'Poné al menos un patrón: de Shopify o de MercadoLibre' });
     }
     if (colores_esperados !== undefined) campos.colores_esperados = Number(colores_esperados) || 0;
     if (activo !== undefined) campos.activo = !!activo;
@@ -1895,6 +1897,80 @@ async function guardarRevisionContacto(pedidoId, revision) {
     else delete revisiones[pedidoId];
     await fs.writeFile(CONTACT_REVIEW_FILE, JSON.stringify(revisiones, null, 2), 'utf-8');
   }
+}
+
+// ── Última dirección de etiqueta por cliente ─────────────────────────────────
+// Al generar una etiqueta a domicilio se guarda la dirección con la que salió
+// (incluida la corrección hecha tras contactar al cliente). Si el cliente vuelve
+// a comprar, el modal de datos la precarga y no hay que contactarlo de nuevo.
+// Requiere sql/create_cliente_direccion_etiqueta.sql; si falta, no rompe nada.
+
+function normalizarTextoDireccion(texto) {
+  return String(texto || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+// Claves estables del cliente (sin la de nombre+dirección: la dirección es
+// justamente lo que puede cambiar).
+function clavesClienteDireccion(pedido) {
+  return clavesCliente(pedido || {}).filter((c) => !c.startsWith('dir:'));
+}
+
+const CAMPOS_DIRECCION_ETIQUETA = [
+  'calle', 'nro_puerta', 'numero_apartamento', 'zip_code', 'latitud', 'longitud',
+  'departamento_id', 'departamento', 'localidad_id', 'observaciones',
+];
+
+async function guardarDireccionEtiquetaCliente(pedido, payloadDireccion) {
+  try {
+    const claves = clavesClienteDireccion(pedido);
+    if (claves.length === 0 || !payloadDireccion) return;
+    const direccion = {};
+    for (const campo of CAMPOS_DIRECCION_ETIQUETA) {
+      const valor = payloadDireccion[campo];
+      if (valor !== undefined && valor !== null && String(valor).trim() !== '') {
+        direccion[campo] = String(valor).trim();
+      }
+    }
+    if (!direccion.calle) return;
+    await supabaseService.guardarDireccionEtiquetaCliente(claves, {
+      pedido_id: String(pedido.id),
+      numero_pedido: pedido.numero_pedido != null ? String(pedido.numero_pedido) : null,
+      direccion_original: pedido.direccion_envio || null,
+      localidad_original: pedido.localidad || null,
+      departamento_original: pedido.departamento || null,
+      direccion,
+    });
+  } catch (error) {
+    logService.warning('No se pudo guardar la dirección de etiqueta del cliente', {
+      pedidoId: pedido?.id,
+      error: error.message,
+    });
+  }
+}
+
+// Devuelve la última dirección de etiqueta del cliente (de OTRO pedido) y si la
+// compra nueva trae la misma dirección escrita que aquella (`coincide`).
+async function buscarDireccionEtiquetaAnterior(pedido) {
+  const claves = clavesClienteDireccion(pedido);
+  if (claves.length === 0) return null;
+  const registro = await supabaseService.obtenerDireccionEtiquetaCliente(claves);
+  if (!registro || String(registro.pedido_id) === String(pedido.id)) return null;
+  const mismo = (a, b) => normalizarTextoDireccion(a) === normalizarTextoDireccion(b);
+  const coincide = mismo(registro.direccion_original, pedido.direccion_envio)
+    && mismo(registro.localidad_original, pedido.localidad)
+    && mismo(registro.departamento_original, pedido.departamento);
+  return {
+    coincide,
+    numero_pedido: registro.numero_pedido,
+    fecha: registro.updated_at,
+    direccion_original: registro.direccion_original,
+    localidad_original: registro.localidad_original,
+    direccion: registro.direccion || {},
+  };
 }
 
 // Rutas
@@ -3596,6 +3672,20 @@ app.post('/api/ues/levante-automatico/ejecutar', requireAuth, async (req, res) =
 });
 
 // Vista previa de payloads UES (sin enviar a UES)
+// Última dirección con la que se generó etiqueta para este cliente (otro pedido).
+app.get('/api/pedidos/:pedidoId/direccion-anterior', async (req, res) => {
+  try {
+    const pedido = await supabaseService.obtenerPedido(req.params.pedidoId);
+    if (!pedido) return res.status(404).json({ success: false, error: 'Pedido no encontrado' });
+    const data = await buscarDireccionEtiquetaAnterior(pedido);
+    res.json({ success: true, data });
+  } catch (error) {
+    // Tabla sin crear u otro problema: el modal sigue con la dirección del pedido.
+    logService.warning('No se pudo buscar la dirección anterior del cliente', { error: error.message });
+    res.json({ success: true, data: null });
+  }
+});
+
 app.get('/api/ues/payload-preview/:pedidoId', async (req, res) => {
   try {
     const { pedidoId } = req.params;
@@ -3947,6 +4037,40 @@ app.post('/api/marcopostal/generar-guia-web/:pedidoRef', async (req, res) => {
       despachado_por_nombre: null,
       armado_at: null,
     });
+    if (!isPickup && req.body?.direccionEtiqueta) {
+      await guardarDireccionEtiquetaCliente(pedido, req.body.direccionEtiqueta);
+    }
+
+    // Otros pedidos del mismo cliente que viajan en este mismo paquete: quedan
+    // con la misma guía en vez de generar una etiqueta propia. Sólo se aceptan
+    // los del mismo tipo de envío que todavía no salieron.
+    const incluidos = [];
+    const idsIncluidos = Array.isArray(req.body?.pedidosIncluidos) ? req.body.pedidosIncluidos : [];
+    for (const idIncluido of idsIncluidos) {
+      if (!idIncluido || String(idIncluido) === String(pedido.id)) continue;
+      try {
+        const otro = await supabaseService.obtenerPedido(idIncluido);
+        if (!otro || otro.tipo_envio !== pedido.tipo_envio) continue;
+        if (['enviado', 'despachado', 'cancelado', 'entregado'].includes(otro.estado)) continue;
+        await supabaseService.actualizarPedido(otro.id, {
+          estado: 'pendiente',
+          numero_seguimiento_ues: String(result.guiaId),
+          link_etiqueta_drive: dbLink,
+          etiqueta_generada: true,
+          etiqueta_impresa: false,
+          notificacion_enviada_at: null,
+          despachado_por_nombre: null,
+          armado_at: null,
+        });
+        incluidos.push(otro.numero_pedido);
+      } catch (errIncluido) {
+        logService.warning(`MarcoPostal Web — no se pudo asociar ${idIncluido} a la guía ${result.guiaId}: ${errIncluido.message}`);
+      }
+    }
+    if (incluidos.length) {
+      logService.info(`MarcoPostal Web — guía ${result.guiaId} de ${pedido.numero_pedido} cubre también ${incluidos.join(', ')} (mismo cliente)`);
+    }
+
     logService.info('MarcoPostal Web — etiqueta registrada en pedido', {
       pedidoId: pedido.id,
       guiaId: result.guiaId,
@@ -3959,6 +4083,7 @@ app.post('/api/marcopostal/generar-guia-web/:pedidoRef', async (req, res) => {
         pedidoId: pedido.id,
         numeroPedido: pedido.numero_pedido,
         guiaId: result.guiaId,
+        pedidosIncluidos: incluidos,
         pdfUrl,
         labelUrl: pdfUrl,
         externalUrl: `https://marcopostal.epresis.com/guias/remito/imprimir-guia?url=ETIQUETA_100X150_HTML&guia_id=%20${encodeURIComponent(result.guiaId)}`,
@@ -6814,6 +6939,32 @@ app.post('/api/analytics/color-trends/refresh', requireAuth, async (req, res) =>
   }
 });
 
+// Ítems de una venta de ML listos para el checklist de armado:
+//  - id único por línea: el id guardado es el de la publicación, y un carrito
+//    puede traer la misma publicación en dos variaciones (los checks chocarían).
+//  - variant_title con solo el color ("Color de los geles: X" → "X"). Si la
+//    venta no trajo la variación, se toma el nombre del producto NC por SKU,
+//    que es el color: así el kit muestra qué tiras de gel van adentro.
+async function prepararItemsMlParaArmado(mlItems) {
+  const items = (mlItems || []).filter((i) => (i.quantity || 0) > 0);
+  const out = [];
+  for (const [idx, it] of items.entries()) {
+    let variante = it.variant_title || null;
+    if (variante && !variante.includes(' / ')) {
+      const m = variante.match(/^[^:]+:\s*(.+)$/);
+      if (m) variante = m[1].trim();
+    }
+    if (!variante && it.sku) {
+      try {
+        const prod = await supabaseService.obtenerProductoPorSku(it.sku);
+        if (prod?.nombre) variante = String(prod.nombre).trim();
+      } catch (_) { /* sin color: se muestra solo el título */ }
+    }
+    out.push({ ...it, id: `${it.id || 'ml'}:${idx}`, variant_title: variante });
+  }
+  return out;
+}
+
 // Obtener detalle de una orden (line_items) desde Shopify por numero_pedido
 app.get('/api/pedido-detalle/:numeroPedido', requireAuth, async (req, res) => {
   try {
@@ -6826,11 +6977,11 @@ app.get('/api/pedido-detalle/:numeroPedido', requireAuth, async (req, res) => {
       if (!pedidoMl) {
         return res.status(404).json({ success: false, error: `Pedido ${numeroPedido} no encontrado` });
       }
-      const lineItems = (pedidoMl.ml_items || []).filter((i) => (i.quantity || 0) > 0);
+      const lineItems = await prepararItemsMlParaArmado(pedidoMl.ml_items || []);
       let desgloseMl = null;
       try {
         const config = await supabaseService.obtenerConfigKits();
-        desgloseMl = supabaseService.desglosarLineItems(lineItems, config);
+        desgloseMl = supabaseService.desglosarLineItems(lineItems, config, { canal: 'ml' });
       } catch (e) {
         logService.error('Error calculando desglose de kit para pedido ML (se ignora)', e);
       }
@@ -7844,6 +7995,10 @@ app.post('/api/generar-etiqueta/:pedidoId', async (req, res) => {
       await supabaseService.actualizarPedido(pedidoId, updateBase);
     }
 
+    if (!isPickup && payloadOverrides?.payloadDireccion) {
+      await guardarDireccionEtiquetaCliente(pedido, payloadOverrides.payloadDireccion);
+    }
+
     const pdfMissingWarning = !etiqueta.urlPdf
       ? 'UES generó la etiqueta pero no devolvió el PDF en este momento'
       : null;
@@ -8462,7 +8617,8 @@ app.post('/api/pedidos/:id/crear-reenvio', async (req, res) => {
 // ── Pedidos Pick-UP ──────────────────────────────────────────────────────────
 app.get('/api/pedidos-pickup', async (req, res) => {
   try {
-    const pedidos = await supabaseService.obtenerPedidosPickup();
+    // Marca los del mismo cliente: el modal de validación los junta en UNA guía.
+    const pedidos = asignarGruposCliente(await supabaseService.obtenerPedidosPickup());
     res.json({ success: true, data: pedidos });
   } catch (error) {
     logService.error('Error al obtener pedidos pickup', error);
@@ -8473,7 +8629,7 @@ app.get('/api/pedidos-pickup', async (req, res) => {
 // ── Pedidos Recibilo Hoy ─────────────────────────────────────────────────────
 app.get('/api/pedidos-recibilo', async (req, res) => {
   try {
-    const pedidos = await supabaseService.obtenerPedidosRecibilo();
+    const pedidos = asignarGruposCliente(await supabaseService.obtenerPedidosRecibilo());
     res.json({ success: true, data: pedidos });
   } catch (error) {
     logService.error('Error al obtener pedidos recibilo', error);
