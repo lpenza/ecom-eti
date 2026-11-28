@@ -586,7 +586,12 @@ class SupabaseService {
       // `grupo_cliente_numeros` en los pedidos que comparten comprador. El panel
       // lo necesita para saber si un pedido va en el paquete de otro (p.ej. una
       // venta de ML sin envío que viaja con la etiqueta de otra orden).
-      return asignarGruposCliente(data || []);
+      // Sólo se cruzan los pedidos abiertos: uno ya entregado es una compra
+      // cerrada y no tiene que marcar como "mismo cliente" a una nueva.
+      const lista = data || [];
+      const abiertos = asignarGruposCliente(lista.filter((p) => p.estado !== 'entregado'));
+      const porId = new Map(abiertos.map((p) => [String(p.id), p]));
+      return lista.map((p) => porId.get(String(p.id)) || p);
     } catch (error) {
       console.error('❌ Error en obtenerPedidosActivos:', error);
       throw error;
